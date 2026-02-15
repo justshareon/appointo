@@ -3,7 +3,9 @@ require('dotenv').config();
 
 const LOG = {
     info: (msg) => console.log(`[DB INFO] ${new Date().toLocaleTimeString()} | ${msg}`),
-    error: (msg) => console.error(`[DB ERROR] ${new Date().toLocaleTimeString()} | ${msg}`)
+    error: (msg, detail = "") => console.error(`[DB ERROR] ${new Date().toLocaleTimeString()} | ${msg} ${detail}`),
+    success: (msg) => console.log(`[DB SUCCESS] ${new Date().toLocaleTimeString()} | ${msg}`),
+    warning: (msg) => console.log(`[DB WARN] ${new Date().toLocaleTimeString()} | ${msg}`)
 };
 
 const DB_TYPE = process.env.DB_TYPE || 'inmemory';
