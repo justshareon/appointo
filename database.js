@@ -157,6 +157,7 @@ let inMemoryDb = {
 // --- MYSQL CONNECTION ---
 let pool;
 if (DB_TYPE === 'mysql') {
+    LOG.info(`Connecting to MySQL at ${process.env.DB_HOST}:${process.env.DB_PORT || 3306}...`);
     pool = mysql.createPool({
         host: process.env.DB_HOST || 'localhost',
         port: process.env.DB_PORT || 3306,
@@ -170,6 +171,17 @@ if (DB_TYPE === 'mysql') {
             rejectUnauthorized: false
         }
     }).promise();
+
+    // Test connection immediately
+    pool.getConnection()
+        .then(conn => {
+            LOG.success("MySQL Database Connected successfully!");
+            conn.release();
+        })
+        .catch(err => {
+            LOG.error("MySQL Connection Failed!", err.message);
+            console.error(err);
+        });
 }
 
 const normalizeProductRow = (row) => {
