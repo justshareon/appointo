@@ -14,12 +14,23 @@ const io = new Server(server, {
         origin: "*",
         methods: ["GET", "POST"]
     },
-    transports: ['websocket', 'polling']
+    transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000
 });
 const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
 
 app.use(cors());
 app.use(express.json());
+
+// Root route for health check
+app.get('/', (req, res) => {
+    res.json({ 
+        status: "alive", 
+        mode: db.getType(),
+        database: process.env.DB_HOST || 'local'
+    });
+});
 
 // --- LOGGING UTILITY ---
 const LOG = {
@@ -481,19 +492,22 @@ app.post('/api/queue/join', authenticateToken, async (req, res) => {
     try {
         const { vendor_id } = req.body;
 
-        // 1. CHECK OWNERSHIP: Vendor cannot join their own shop's queue
-        const vendor = await db.getVendorById(vendor_id);
+        // 1. Parallelize checks to reduce latency
+        const [vendor, existing] = await Promise.all([
+            db.getVendorById(vendor_id),
+            db.getQueueByVendor(vendor_id)
+        ]);
+
         if (vendor && vendor.owner_id === req.user.id) {
             return res.status(403).json({ error: "You cannot join the queue of your own shop." });
         }
 
-        // 2. Check if already in queue
-        const existing = await db.getQueueByVendor(vendor_id);
         const alreadyIn = existing.some(q => q.user_id === req.user.id);
         if (alreadyIn) {
             return res.json({ success: true, alreadyIn: true });
         }
 
+        // 2. Perform write
         await db.addQueueItem({
             vendor_id,
             user_id: req.user.id,
@@ -501,11 +515,15 @@ app.post('/api/queue/join', authenticateToken, async (req, res) => {
             joined_at: new Date()
         });
         
-        const updatedQueue = await db.getQueueByVendor(vendor_id);
-        io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+        // 3. Respond immediately to the user
+        res.json({ success: true });
+
+        // 4. Update the room in background
+        db.getQueueByVendor(vendor_id).then(updatedQueue => {
+            io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+        }).catch(e => LOG.error("Background queue update failed", e.message));
         
         LOG.success(`User ${req.user.id} joined queue ${vendor_id}`);
-        res.json({ success: true });
     } catch (err) { 
         LOG.error("Failed to join queue", err.message);
         res.status(500).json({ error: err.message }); 
@@ -515,15 +533,18 @@ app.post('/api/queue/join', authenticateToken, async (req, res) => {
 app.post('/api/queue/leave', authenticateToken, async (req, res) => {
     try {
         const { vendor_id } = req.body;
-        const removed = await db.removeQueueItem(req.user.id, vendor_id);
         
+        // Respond immediately after the delete operation
+        const removed = await db.removeQueueItem(req.user.id, vendor_id);
+        res.json({ success: true, removed });
+
         if (removed) {
-            const updatedQueue = await db.getQueueByVendor(vendor_id);
-            io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+            // Re-fetch and emit in background
+            db.getQueueByVendor(vendor_id).then(updatedQueue => {
+                io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+            }).catch(e => LOG.error("Background queue update failed", e.message));
             LOG.success(`User ${req.user.id} left queue ${vendor_id}`);
         }
-        
-        res.json({ success: true, removed });
     } catch (err) {
         LOG.error("Failed to leave queue", err.message);
         res.status(500).json({ error: err.message });
@@ -651,8 +672,13 @@ app.get('/api/activities', async (req, res) => {
 // --- ADMIN ---
 app.get('/api/admin/vendors', authenticateToken, async (req, res) => {
     if (req.user.role !== 'super_admin') return res.sendStatus(403);
-    const vendors = await db.getVendors(false);
-    res.json(vendors);
+    try {
+        const vendors = await db.getVendors(false);
+        res.json(vendors);
+    } catch (err) {
+        LOG.error("Admin fetch vendors failed", err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.post('/api/admin/update-vendor', authenticateToken, async (req, res) => {

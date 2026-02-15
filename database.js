@@ -13,148 +13,162 @@ const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-2
 
 // --- IN-MEMORY DATA ---
 let inMemoryDb = {
-    users: [
-        { id: 'usr_admin', name: 'Super Admin', email: 'admin@qrqueue.com', mobile: '9999999999', role: 'super_admin' },
-        { id: 'usr_vendor', name: 'Demo Vendor', email: 'vendor@qrqueue.com', mobile: '8888888888', role: 'vendor' },
-        { id: 'usr_user', name: 'Demo User', email: 'user@qrqueue.com', mobile: '7777777777', role: 'user' },
-        { id: 'usr_temple_owner', name: 'Temple Admin', email: 'temple@qrqueue.com', mobile: '6666666666', role: 'vendor' },
-        { id: 'usr_temple_user', name: 'Temple User', email: 'devotee@qrqueue.com', mobile: '5555555555', role: 'user' },
-        { id: 'usr_new_patient', name: 'Clinic Patient', email: 'patient@example.com', mobile: '4444444444', role: 'user' }
-    ],
-    vendors: [
-        {
-            id: 'v_1',
-            owner_id: 'usr_vendor',
-            shop_name: 'Smile Dental Clinic',
-            category: 'Medical',
-            is_active: true,
-            is_promoted: true,
-            latitude: 0,
-            longitude: 0,
-            appointmentCount: 5,
-            google_link: 'https://g.page/r/smile-dental-clinic',
-            instagram_handle: 'smiledentalclinic',
-            facebook_link: 'https://facebook.com/smiledentalclinic',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true
-        },
-        {
-            id: 'v_2',
-            owner_id: 'usr_vendor',
-            shop_name: 'Star Salon',
-            category: 'Services',
-            is_active: true,
-            is_promoted: false,
-            latitude: 0,
-            longitude: 0,
-            appointmentCount: 2,
-            google_link: 'https://g.page/r/star-salon',
-            instagram_handle: 'starsalonofficial',
-            facebook_link: 'https://facebook.com/starsalon',
-            features_products: true,
-            features_payments: false,
-            features_appointments: true
-        },
-        {
-            id: 'v_3',
-            owner_id: 'usr_admin',
-            shop_name: 'Admin Health Hub',
-            category: 'Healthcare',
-            is_active: true,
-            is_promoted: true,
-            latitude: 0,
-            longitude: 0,
-            appointmentCount: 1,
-            google_link: 'https://g.page/r/admin-health-hub',
-            instagram_handle: 'adminhealthhub',
-            facebook_link: 'https://facebook.com/adminhealthhub',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true
-        },
-        {
-            id: 'v_4',
-            owner_id: 'usr_temple_owner',
-            shop_name: 'City Temple',
-            category: 'Temple',
-            is_active: true,
-            is_promoted: false,
-            latitude: 0,
-            longitude: 0,
-            appointmentCount: 3,
-            google_link: 'https://maps.google.com/?q=city+temple',
-            instagram_handle: 'citytempleofficial',
-            facebook_link: 'https://facebook.com/citytemple',
-            features_products: false,
-            features_payments: false,
-            features_appointments: true
-        }
-    ],
-    products: [
-        {
-            id: 1, vendor_id: 'v_1', name: 'Dental Cleaning Package', price: 999, offer: '10% OFF', offer_amount: 100,
-            validity_from: '2026-01-01', validity_to: '2026-12-31',
-            image_urls: [
-                'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800',
-                'https://images.unsplash.com/photo-1588776814546-ec7e4f0f4c6e?w=800',
-                'https://images.unsplash.com/photo-1609840114035-3c981b782dfe?w=800'
-            ]
-        },
-        {
-            id: 2, vendor_id: 'v_1', name: 'Teeth Whitening', price: 1499, offer: '15% OFF', offer_amount: 225,
-            validity_from: '2026-01-01', validity_to: '2026-12-31',
-            image_urls: [
-                'https://images.unsplash.com/photo-1588776814546-daab30f310ce?w=800',
-                'https://images.unsplash.com/photo-1598256989800-fe5f95da9787?w=800',
-                'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=800'
-            ]
-        },
-        {
-            id: 3, vendor_id: 'v_1', name: 'Root Canal Consultation', price: 699, offer: 'Flat 50 OFF', offer_amount: 50,
-            validity_from: '2026-01-01', validity_to: '2026-12-31',
-            image_urls: [
-                'https://images.unsplash.com/photo-1606811841689-23dfddce3e95?w=800',
-                'https://images.unsplash.com/photo-1593022356769-11f762e25ed9?w=800',
-                'https://images.unsplash.com/photo-1579684385127-1ef15d508118?w=800'
-            ]
-        },
-        {
-            id: 4, vendor_id: 'v_1', name: 'Dental X-Ray', price: 499, offer: 'No Offer', offer_amount: 0,
-            validity_from: '2026-01-01', validity_to: '2026-12-31',
-            image_urls: [
-                'https://images.unsplash.com/photo-1583912267550-d4bcdd8f8b9e?w=800',
-                'https://images.unsplash.com/photo-1516549655169-df83a0774514?w=800',
-                'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=800'
-            ]
-        },
-        { id: 5, vendor_id: 'v_2', name: 'Hair Spa Premium', price: 799, offer: 'Flat 100 OFF', offer_amount: 100, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
-        { id: 6, vendor_id: 'v_3', name: 'Health Checkup Basic', price: 1299, offer: 'Free Follow-up', offer_amount: 0, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
-        { id: 7, vendor_id: 'v_4', name: 'Prasad Combo', price: 199, offer: 'Temple Special', offer_amount: 20, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] }
-    ],
+    users: [],
+    vendors: [],
+    products: [],
     orders: [],
-    queues: [
-        { id: 1, vendor_id: 'v_1', user_id: 'usr_user', status: 'waiting', joined_at: new Date(Date.now() - 20 * 60 * 1000) },
-        { id: 2, vendor_id: 'v_1', user_id: 'usr_admin', status: 'waiting', joined_at: new Date(Date.now() - 10 * 60 * 1000) },
-        { id: 3, vendor_id: 'v_1', user_id: 'usr_user', status: 'done', joined_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
-        { id: 4, vendor_id: 'v_1', user_id: 'usr_admin', status: 'cancelled', joined_at: new Date(Date.now() - 24 * 60 * 60 * 1000) },
-        { id: 5, vendor_id: 'v_4', user_id: 'usr_temple_user', status: 'waiting', joined_at: new Date(Date.now() - 15 * 60 * 1000) }
-    ],
+    queues: [],
     otps: [],
-    appointments: [
-        { id: 1, vendor_id: 'v_1', user_id: 'usr_user', date: '2026-02-15', time: '10:30', status: 'pending', created_at: new Date() },
-        { id: 2, vendor_id: 'v_2', user_id: 'usr_user', date: '2026-02-16', time: '15:00', status: 'confirmed', created_at: new Date() },
-        { id: 3, vendor_id: 'v_3', user_id: 'usr_admin', date: '2026-02-17', time: '11:00', status: 'pending', created_at: new Date() },
-        { id: 4, vendor_id: 'v_1', user_id: 'usr_admin', date: '2026-02-18', time: '16:30', status: 'confirmed', created_at: new Date() },
-        { id: 5, vendor_id: 'v_2', user_id: 'usr_vendor', date: '2026-02-19', time: '09:30', status: 'pending', created_at: new Date() },
-        { id: 6, vendor_id: 'v_3', user_id: 'usr_vendor', date: '2026-02-20', time: '14:00', status: 'confirmed', created_at: new Date() },
-        { id: 7, vendor_id: 'v_4', user_id: 'usr_temple_user', date: '2026-02-21', time: '08:00', status: 'confirmed', created_at: new Date() }
-    ],
-    activities: [
-        { id: 1, type: 'appointment', userId: 'usr_user', userName: 'Demo User', message: 'booked an appointment at Smile Dental Clinic', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
-        { id: 2, type: 'review', userId: 'usr_admin', userName: 'Super Admin', message: 'rated Star Salon 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
-    ]
+    appointments: [],
+    activities: []
 };
+
+// Only populate in-memory seed if NOT in MySQL mode to save RAM on Render
+if (DB_TYPE !== 'mysql') {
+    inMemoryDb = {
+        users: [
+            { id: 'usr_admin', name: 'Super Admin', email: 'admin@qrqueue.com', mobile: '9999999999', role: 'super_admin' },
+            { id: 'usr_vendor', name: 'Demo Vendor', email: 'vendor@qrqueue.com', mobile: '8888888888', role: 'vendor' },
+            { id: 'usr_user', name: 'Demo User', email: 'user@qrqueue.com', mobile: '7777777777', role: 'user' },
+            { id: 'usr_temple_owner', name: 'Temple Admin', email: 'temple@qrqueue.com', mobile: '6666666666', role: 'vendor' },
+            { id: 'usr_temple_user', name: 'Temple User', email: 'devotee@qrqueue.com', mobile: '5555555555', role: 'user' },
+            { id: 'usr_new_patient', name: 'Clinic Patient', email: 'patient@example.com', mobile: '4444444444', role: 'user' }
+        ],
+        vendors: [
+            {
+                id: 'v_1',
+                owner_id: 'usr_vendor',
+                shop_name: 'Smile Dental Clinic',
+                category: 'Medical',
+                is_active: true,
+                is_promoted: true,
+                latitude: 0,
+                longitude: 0,
+                appointmentCount: 5,
+                google_link: 'https://g.page/r/smile-dental-clinic',
+                instagram_handle: 'smiledentalclinic',
+                facebook_link: 'https://facebook.com/smiledentalclinic',
+                features_products: true,
+                features_payments: true,
+                features_appointments: true
+            },
+            {
+                id: 'v_2',
+                owner_id: 'usr_vendor',
+                shop_name: 'Star Salon',
+                category: 'Services',
+                is_active: true,
+                is_promoted: false,
+                latitude: 0,
+                longitude: 0,
+                appointmentCount: 2,
+                google_link: 'https://g.page/r/star-salon',
+                instagram_handle: 'starsalonofficial',
+                facebook_link: 'https://facebook.com/starsalon',
+                features_products: true,
+                features_payments: false,
+                features_appointments: true
+            },
+            {
+                id: 'v_3',
+                owner_id: 'usr_admin',
+                shop_name: 'Admin Health Hub',
+                category: 'Healthcare',
+                is_active: true,
+                is_promoted: true,
+                latitude: 0,
+                longitude: 0,
+                appointmentCount: 1,
+                google_link: 'https://g.page/r/admin-health-hub',
+                instagram_handle: 'adminhealthhub',
+                facebook_link: 'https://facebook.com/adminhealthhub',
+                features_products: true,
+                features_payments: true,
+                features_appointments: true
+            },
+            {
+                id: 'v_4',
+                owner_id: 'usr_temple_owner',
+                shop_name: 'City Temple',
+                category: 'Temple',
+                is_active: true,
+                is_promoted: false,
+                latitude: 0,
+                longitude: 0,
+                appointmentCount: 3,
+                google_link: 'https://maps.google.com/?q=city+temple',
+                instagram_handle: 'citytempleofficial',
+                facebook_link: 'https://facebook.com/citytemple',
+                features_products: false,
+                features_payments: false,
+                features_appointments: true
+            }
+        ],
+        products: [
+            {
+                id: 1, vendor_id: 'v_1', name: 'Dental Cleaning Package', price: 999, offer: '10% OFF', offer_amount: 100,
+                validity_from: '2026-01-01', validity_to: '2026-12-31',
+                image_urls: [
+                    'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800',
+                    'https://images.unsplash.com/photo-1588776814546-ec7e4f0f4c6e?w=800',
+                    'https://images.unsplash.com/photo-1609840114035-3c981b782dfe?w=800'
+                ]
+            },
+            {
+                id: 2, vendor_id: 'v_1', name: 'Teeth Whitening', price: 1499, offer: '15% OFF', offer_amount: 225,
+                validity_from: '2026-01-01', validity_to: '2026-12-31',
+                image_urls: [
+                    'https://images.unsplash.com/photo-1588776814546-daab30f310ce?w=800',
+                    'https://images.unsplash.com/photo-1598256989800-fe5f95da9787?w=800',
+                    'https://images.unsplash.com/photo-1621605815971-fbc98d665033?w=800'
+                ]
+            },
+            {
+                id: 3, vendor_id: 'v_1', name: 'Root Canal Consultation', price: 699, offer: 'Flat 50 OFF', offer_amount: 50,
+                validity_from: '2026-01-01', validity_to: '2026-12-31',
+                image_urls: [
+                    'https://images.unsplash.com/photo-1606811841689-23dfddce3e95?w=800',
+                    'https://images.unsplash.com/photo-1593022356769-11f762e25ed9?w=800',
+                    'https://images.unsplash.com/photo-1579684385127-1ef15d508118?w=800'
+                ]
+            },
+            {
+                id: 4, vendor_id: 'v_1', name: 'Dental X-Ray', price: 499, offer: 'No Offer', offer_amount: 0,
+                validity_from: '2026-01-01', validity_to: '2026-12-31',
+                image_urls: [
+                    'https://images.unsplash.com/photo-1583912267550-d4bcdd8f8b9e?w=800',
+                    'https://images.unsplash.com/photo-1516549655169-df83a0774514?w=800',
+                    'https://images.unsplash.com/photo-1559839734-2b71ea197ec2?w=800'
+                ]
+            },
+            { id: 5, vendor_id: 'v_2', name: 'Hair Spa Premium', price: 799, offer: 'Flat 100 OFF', offer_amount: 100, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
+            { id: 6, vendor_id: 'v_3', name: 'Health Checkup Basic', price: 1299, offer: 'Free Follow-up', offer_amount: 0, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
+            { id: 7, vendor_id: 'v_4', name: 'Prasad Combo', price: 199, offer: 'Temple Special', offer_amount: 20, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] }
+        ],
+        orders: [],
+        queues: [
+            { id: 1, vendor_id: 'v_1', user_id: 'usr_user', status: 'waiting', joined_at: new Date(Date.now() - 20 * 60 * 1000) },
+            { id: 2, vendor_id: 'v_1', user_id: 'usr_admin', status: 'waiting', joined_at: new Date(Date.now() - 10 * 60 * 1000) },
+            { id: 3, vendor_id: 'v_1', user_id: 'usr_user', status: 'done', joined_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
+            { id: 4, vendor_id: 'v_1', user_id: 'usr_admin', status: 'cancelled', joined_at: new Date(Date.now() - 24 * 60 * 60 * 1000) },
+            { id: 5, vendor_id: 'v_4', user_id: 'usr_temple_user', status: 'waiting', joined_at: new Date(Date.now() - 15 * 60 * 1000) }
+        ],
+        otps: [],
+        appointments: [
+            { id: 1, vendor_id: 'v_1', user_id: 'usr_user', date: '2026-02-15', time: '10:30', status: 'pending', created_at: new Date() },
+            { id: 2, vendor_id: 'v_2', user_id: 'usr_user', date: '2026-02-16', time: '15:00', status: 'confirmed', created_at: new Date() },
+            { id: 3, vendor_id: 'v_3', user_id: 'usr_admin', date: '2026-02-17', time: '11:00', status: 'pending', created_at: new Date() },
+            { id: 4, vendor_id: 'v_1', user_id: 'usr_admin', date: '2026-02-18', time: '16:30', status: 'confirmed', created_at: new Date() },
+            { id: 5, vendor_id: 'v_2', user_id: 'usr_vendor', date: '2026-02-19', time: '09:30', status: 'pending', created_at: new Date() },
+            { id: 6, vendor_id: 'v_3', user_id: 'usr_vendor', date: '2026-02-20', time: '14:00', status: 'confirmed', created_at: new Date() },
+            { id: 7, vendor_id: 'v_4', user_id: 'usr_temple_user', date: '2026-02-21', time: '08:00', status: 'confirmed', created_at: new Date() }
+        ],
+        activities: [
+            { id: 1, type: 'appointment', userId: 'usr_user', userName: 'Demo User', message: 'booked an appointment at Smile Dental Clinic', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
+            { id: 2, type: 'review', userId: 'usr_admin', userName: 'Super Admin', message: 'rated Star Salon 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
+        ]
+    };
+}
 
 // --- MYSQL CONNECTION ---
 let pool;
@@ -174,17 +188,37 @@ if (DB_TYPE === 'mysql') {
         }
     }).promise();
 
-    // Test connection immediately
-    pool.getConnection()
-        .then(conn => {
-            LOG.success("MySQL Database Connected successfully!");
-            conn.release();
-        })
-        .catch(err => {
-            LOG.error("MySQL Connection Failed!", err.message);
-            console.error(err);
-        });
+    // Error handling for the pool
+    pool.on('error', (err) => {
+        LOG.error('Unexpected database pool error', err.message);
+        if (err.code === 'PROTOCOL_CONNECTION_LOST') {
+            LOG.warning('Database connection lost. Reconnecting...');
+        }
+    });
+
+    // Test connection after a delay to ensure the server starts up first
+    setTimeout(() => {
+        LOG.info("Testing database connection (delayed)...");
+        pool.getConnection()
+            .then(conn => {
+                LOG.success("MySQL Database Connected successfully!");
+                conn.release();
+            })
+            .catch(err => {
+                LOG.error("MySQL Connection Failed!", err.message);
+                LOG.warning("Verify TiDB IP Whitelist (0.0.0.0/0) and Render Env Variables.");
+            });
+    }, 5000);
 }
+
+// Cleanup on exit
+process.on('SIGINT', async () => {
+    if (pool) {
+        LOG.info('Closing database pool...');
+        await pool.end();
+    }
+    process.exit(0);
+});
 
 const normalizeProductRow = (row) => {
     const product = { ...row };
@@ -321,15 +355,14 @@ const db = {
     // Vendors
     getVendors: async (activeOnly = true) => {
         if (DB_TYPE === 'mysql') {
-            const query = activeOnly 
-                ? `SELECT v.*, 
-                   (SELECT COUNT(*) FROM queues WHERE vendor_id = v.id) + 
-                   (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id) as appointmentCount
-                   FROM vendors v WHERE v.is_active = TRUE`
-                : `SELECT v.*, 
-                   (SELECT COUNT(*) FROM queues WHERE vendor_id = v.id) + 
-                   (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id) as appointmentCount
-                   FROM vendors v`;
+            const query = `
+                SELECT v.*, 
+                COALESCE(q_counts.q_count, 0) + COALESCE(a_counts.a_count, 0) as appointmentCount
+                FROM vendors v
+                LEFT JOIN (SELECT vendor_id, COUNT(*) as q_count FROM queues WHERE status = 'waiting' GROUP BY vendor_id) q_counts ON v.id = q_counts.vendor_id
+                LEFT JOIN (SELECT vendor_id, COUNT(*) as a_count FROM appointments WHERE status != 'cancelled' GROUP BY vendor_id) a_counts ON v.id = a_counts.vendor_id
+                ${activeOnly ? 'WHERE v.is_active = TRUE' : ''}
+            `;
             const [rows] = await pool.query(query);
             return rows;
         }
@@ -433,14 +466,22 @@ const db = {
     getUserHistory: async (userId) => {
         if (DB_TYPE === 'mysql') {
             const [rows] = await pool.query(`
-                SELECT q.*, v.shop_name,
-                (SELECT COUNT(*) FROM queues WHERE vendor_id = q.vendor_id AND status = 'waiting') as total_waiting,
-                (SELECT COUNT(*) + 1 FROM queues WHERE vendor_id = q.vendor_id AND status = 'waiting' AND joined_at < q.joined_at) as queue_position
-                FROM queues q 
-                JOIN vendors v ON q.vendor_id = v.id 
-                WHERE q.user_id = ? 
-                ORDER BY q.joined_at DESC`, [userId]);
-            return rows;
+                WITH QueueStats AS (
+                    SELECT q.*, v.shop_name,
+                           COUNT(*) OVER(PARTITION BY q.vendor_id, q.status) as total_waiting_calc,
+                           RANK() OVER(PARTITION BY q.vendor_id, q.status ORDER BY q.joined_at ASC) as queue_position_calc
+                    FROM queues q
+                    JOIN vendors v ON q.vendor_id = v.id
+                    WHERE q.user_id = ? OR q.status = 'waiting'
+                )
+                SELECT * FROM QueueStats WHERE user_id = ? ORDER BY joined_at DESC`, [userId, userId]);
+            
+            // Map the window function results to the expected property names
+            return rows.map(r => ({
+                ...r,
+                total_waiting: r.status === 'waiting' ? r.total_waiting_calc : 0,
+                queue_position: r.status === 'waiting' ? r.queue_position_calc : 0
+            }));
         }
         if (!userId) return [];
         return inMemoryDb.queues.filter(q => q.user_id === userId)
@@ -471,14 +512,21 @@ const db = {
     getAppointmentsByUser: async (userId) => {
         if (DB_TYPE === 'mysql') {
             const [rows] = await pool.query(`
-                SELECT a.*, v.shop_name,
-                (SELECT COUNT(*) FROM appointments WHERE vendor_id = a.vendor_id AND date = a.date AND status != 'cancelled') as total_at_shop_on_day,
-                (SELECT COUNT(*) + 1 FROM appointments WHERE vendor_id = a.vendor_id AND date = a.date AND created_at < a.created_at AND status != 'cancelled') as appointment_number
-                FROM appointments a 
-                JOIN vendors v ON a.vendor_id = v.id 
-                WHERE a.user_id = ? 
-                ORDER BY a.date ASC, a.time ASC`, [userId]);
-            return rows;
+                WITH AppStats AS (
+                    SELECT a.*, v.shop_name,
+                           COUNT(*) OVER(PARTITION BY a.vendor_id, a.date) as total_at_shop_on_day_calc,
+                           RANK() OVER(PARTITION BY a.vendor_id, a.date ORDER BY a.created_at ASC) as appointment_number_calc
+                    FROM appointments a
+                    JOIN vendors v ON a.vendor_id = v.id
+                    WHERE a.user_id = ? AND a.status != 'cancelled'
+                )
+                SELECT * FROM AppStats ORDER BY date ASC, time ASC`, [userId]);
+            
+            return rows.map(r => ({
+                ...r,
+                total_at_shop_on_day: r.total_at_shop_on_day_calc,
+                appointment_number: r.appointment_number_calc
+            }));
         }
         if (!userId) return [];
         return inMemoryDb.appointments
