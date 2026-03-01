@@ -69,7 +69,7 @@ const authenticateToken = (req, res, next) => {
 
     jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
         if (err) {
-            LOG.error("Token Verification Failed", err.message);
+            LOG.error("Token Verification Failed", `${err.message} (Secret: ${process.env.JWT_SECRET ? 'Env Set' : 'Default/Fallback'})`);
             return res.sendStatus(403);
         }
         req.user = user;
