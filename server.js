@@ -6,22 +6,22 @@ const db = require('./database');
 require('dotenv').config();
 
 // Import utilities and middleware
-const LOG = require('./utils/logger');
-const requestLogger = require('./middleware/requestLogger');
+const LOG = require('./logger');
+const requestLogger = require('./requestLogger');
 
 // Import route modules
-const authRoutes = require('./routes/authRoutes');
-const vendorRoutes = require('./routes/vendorRoutes');
-const productRoutes = require('./routes/productRoutes');
-const queueRoutes = require('./routes/queueRoutes');
-const appointmentRoutes = require('./routes/appointmentRoutes');
-const orderRoutes = require('./routes/orderRoutes');
-const matchmakingRoutes = require('./routes/matchmakingRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const historyRoutes = require('./routes/historyRoutes');
-const settingsRoutes = require('./routes/settingsRoutes');
+const authRoutes = require('./authRoutes');
+const vendorRoutes = require('./vendorRoutes');
+const productRoutes = require('./productRoutes');
+const queueRoutes = require('./queueRoutes');
+const appointmentRoutes = require('./appointmentRoutes');
+const orderRoutes = require('./orderRoutes');
+const matchmakingRoutes = require('./matchmakingRoutes');
+const adminRoutes = require('./adminRoutes');
+const historyRoutes = require('./historyRoutes');
+const settingsRoutes = require('./settingsRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
-const fleetRoutes = require('./routes/fleetRoutes');
+const fleetRoutes = require('./fleetRoutes');
 
 // Import services
 const dealsService = require('./dealsService');
