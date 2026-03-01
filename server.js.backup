@@ -1,0 +1,1271 @@
+const express = require('express');
+const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
+const otpService = require('./otpService');
+const db = require('./database');
+require('dotenv').config();
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: "*",
+        methods: ["GET", "POST"]
+    },
+    transports: ['websocket', 'polling'],
+    pingTimeout: 60000,
+    pingInterval: 25000
+});
+const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
+
+app.use(cors());
+app.use(express.json());
+
+// Root route for health check
+app.get('/', (req, res) => {
+    res.json({ 
+        status: "alive", 
+        mode: db.getType(),
+        database: process.env.DB_HOST || 'local'
+    });
+});
+
+// DEV: Get all users for testing
+app.get('/api/users', async (req, res) => {
+    try {
+        const users = await db.getUsers();
+        LOG.info(`[API /users] Returning ${users.length} users`);
+        res.json(users);
+    } catch (err) {
+        LOG.error("Failed to fetch users", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- LOGGING UTILITY ---
+const LOG = {
+    error: (msg, detail = "") => {
+        const errorMsg = `[ERROR] ${new Date().toLocaleTimeString()} | ${msg} | ${detail}`;
+        console.error("\x1b[31m%s\x1b[0m", errorMsg);
+    },
+    info: (msg) => {
+        const infoMsg = `[INFO] ${new Date().toLocaleTimeString()} | ${msg}`;
+        console.log("\x1b[36m%s\x1b[0m", infoMsg);
+    },
+    success: (msg) => {
+        const successMsg = `[SUCCESS] ${new Date().toLocaleTimeString()} | ${msg}`;
+        console.log("\x1b[32m%s\x1b[0m", successMsg);
+    },
+    warning: (msg) => {
+        const warnMsg = `[WARN] ${new Date().toLocaleTimeString()} | ${msg}`;
+        console.log("\x1b[33m%s\x1b[0m", warnMsg);
+    }
+};
+
+// Log all incoming requests with duration
+app.use((req, res, next) => {
+    // Basic health check endpoint - skip logging to reduce noise
+    if (req.url === '/' && req.method === 'GET') {
+        return next();
+    }
+    
+    // Performance log check
+    if (db.LOG_CONFIG && !db.LOG_CONFIG.ENABLED) return next();
+
+    const start = Date.now();
+    res.on('finish', () => {
+        const duration = Date.now() - start;
+        const color = res.statusCode >= 400 ? "\x1b[31m" : "\x1b[32m"; // Red for error, Green for success
+        console.log(`${color}[REQ] ${req.method} ${req.url} - ${res.statusCode} (${duration}ms)\x1b[0m`);
+    });
+    next();
+});
+
+// Middleware
+const authenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) {
+        // Suppress error logging for /vendors/me endpoint when token is missing (expected behavior)
+        // This happens when user is not logged in and frontend tries to check vendor profile
+        const isVendorMeEndpoint = req.path === '/api/vendors/me';
+        if (!isVendorMeEndpoint) {
+            LOG.error("Access Denied", "No Authorization token provided");
+        }
+        return res.sendStatus(401);
+    }
+
+    jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
+        if (err) {
+            LOG.error("Token Verification Failed", `${err.message} (Secret: ${process.env.JWT_SECRET ? 'Env Set' : 'Default/Fallback'})`);
+            return res.sendStatus(403);
+        }
+        req.user = user;
+        next();
+    });
+};
+
+// Real-time communication
+io.on('connection', (socket) => {
+    LOG.info(`New client connected: ${socket.id}`);
+    socket.on('join_vendor_room', (vendorId) => {
+        socket.join(`vendor_${vendorId}`);
+        LOG.success(`Socket joined vendor room: ${vendorId}`);
+    });
+    socket.on('disconnect', () => {
+        LOG.warning(`Client disconnected: ${socket.id}`);
+    });
+});
+
+// Periodic task: Auto-expire appointments every minute (configurable backend task)
+setInterval(async () => {
+    try {
+        const affectedVendorIds = await db.autoExpireAppointments();
+        if (affectedVendorIds.length > 0) {
+            LOG.info(`Auto-expired appointments for vendors: ${affectedVendorIds.join(', ')}`);
+            
+            for (const vId of affectedVendorIds) {
+                // Emit updates to vendor rooms
+                const updatedQueue = await db.getQueueByVendor(vId);
+                io.to(`vendor_${vId}`).emit('queue_updated', updatedQueue);
+                io.to(`vendor_${vId}`).emit('appointments_updated'); // New event to trigger appointment list refresh
+                
+                // Broadcast globally or to user rooms if implemented (for now, frontend polling/refresh handles user side, or we broadcast broadly)
+                io.emit('appointments_updated'); // Simple broad refresh signal for users
+            }
+        }
+    } catch (e) {
+        LOG.error("Auto-expire task failed", e.message);
+    }
+}, 60000);
+
+// --- AUTH ROUTES ---
+
+app.post('/api/auth/send-otp', async (req, res) => {
+    let { mobile, email } = req.body;
+    
+    // Normalize inputs - handle empty strings, null, undefined as null/undefined
+    // Check if mobile exists in body and has a valid value
+    if (mobile === undefined || mobile === null || mobile === '') {
+        mobile = undefined;
+    }
+    // Check if email exists in body and has a valid value  
+    if (email === undefined || email === null || email === '') {
+        email = undefined;
+    }
+    
+    LOG.info(`[send-otp] Received request - email: ${email || 'none'}, mobile: ${mobile || 'none'}`);
+    
+    // Support both email and mobile login
+    // Priority: If email is provided, use it to lookup mobile FIRST
+    if (email && email.trim && email.trim().length > 0) {
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(email.trim())) {
+            LOG.warning(`[send-otp] Invalid email format: ${email}`);
+            return res.status(400).json({ error: "Please enter a valid email address." });
+        }
+        
+        // Look up mobile number from email (case-insensitive)
+        try {
+            const user = await db.getUserByEmail(email.trim().toLowerCase());
+            if (!user) {
+                LOG.warning(`[send-otp] Email not found: ${email}`);
+                return res.status(404).json({ error: "No account found with this email. Please register first or use mobile number." });
+            }
+            if (!user.mobile || user.mobile.toString().trim().length === 0) {
+                LOG.warning(`[send-otp] User found but no mobile: ${email}`, user);
+                return res.status(400).json({ error: "This account doesn't have a mobile number. Please use mobile number login or contact support." });
+            }
+            mobile = user.mobile;
+            LOG.info(`[send-otp] Email login: ${email} mapped to mobile ${mobile}`);
+        } catch (err) {
+            LOG.error("[send-otp] Email lookup failed", err.message, err.stack);
+            return res.status(500).json({ error: "Failed to lookup email. Please try again or use mobile number." });
+        }
+    }
+    
+    // After email lookup (if email was provided), we must have mobile
+    // If no email was provided, mobile must be in the request
+    if (!mobile) {
+        LOG.warning("[send-otp] No mobile number available after processing", { email, mobile, body: req.body });
+        return res.status(400).json({ error: "Mobile number or email is required" });
+    }
+    
+    // Normalize mobile: remove spaces, dashes, +91 etc.
+    const cleanMobile = mobile.toString().replace(/\D/g, '').slice(-10);
+    
+    if (cleanMobile.length < 10) {
+        LOG.error("[send-otp] Invalid mobile after cleaning", { original: mobile, cleaned: cleanMobile });
+        return res.status(400).json({ error: "Invalid mobile number. Please enter a valid 10-digit mobile number or use email login." });
+    }
+    
+    // Use cleaned mobile for the rest of the process
+    mobile = cleanMobile;
+
+    try {
+        const isConsoleMode = (process.env.OTP_DELIVERY_MODE || 'console') === 'console';
+        // Keep deterministic OTP in console mode to avoid confusion during local/dev testing.
+        const otp = isConsoleMode ? '1234' : Math.floor(1000 + Math.random() * 9000).toString();
+        const expiresAt = Date.now() + 5 * 60 * 1000;
+        
+        await db.addOtp({ mobile, otp, expires_at: expiresAt, created_at: new Date() });
+        
+        LOG.info(`Generated OTP ${otp} for ${mobile}${email ? ` (via email: ${email})` : ''}`);
+        
+        const result = await otpService.sendOTP(mobile, otp);
+        if (!result.success) {
+            LOG.error(`OTP delivery failed for ${mobile}`, result.error);
+            return res.status(500).json({ error: "OTP delivery failed", detail: result.error });
+        }
+        
+        const responsePayload = { success: true, channel: result.channel };
+        if (result.channel === 'console') {
+            responsePayload.debugOtp = otp;
+        }
+        res.json(responsePayload);
+    } catch (err) { 
+        LOG.error("Server Error in /send-otp", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/auth/verify-otp', async (req, res) => {
+    let { mobile, email, otp } = req.body;
+    if ((!mobile && !email) || !otp) return res.status(400).json({ error: "Mobile/Email and OTP are required" });
+
+    // Support email login - lookup mobile from email
+    if (email && !mobile) {
+        try {
+            const user = await db.getUserByEmail(email);
+            if (!user || !user.mobile) {
+                return res.status(404).json({ error: "No account found with this email." });
+            }
+            mobile = user.mobile;
+            LOG.info(`Email login verification: ${email} mapped to mobile ${mobile}`);
+        } catch (err) {
+            LOG.error("Email lookup failed during verify", err.message);
+            return res.status(500).json({ error: "Failed to lookup email." });
+        }
+    }
+
+    // Normalize
+    mobile = mobile.toString().replace(/\D/g, '').slice(-10);
+    otp = otp.toString().trim();
+
+    LOG.info(`Verification attempt for ${mobile}${email ? ` (via email: ${email})` : ''} with code ${otp}`);
+
+    try {
+        const isConsoleMode = (process.env.OTP_DELIVERY_MODE || 'console') === 'console';
+        let validOtp = await db.getValidOtp(mobile, otp);
+
+        // In console/dev mode, prioritize "latest valid OTP for mobile" to avoid MySQL ordering/timezone mismatches.
+        // This intentionally favors reliability for local/dev usage.
+        if (isConsoleMode && !validOtp) {
+            const latestValid = await db.getLatestValidOtpByMobile(mobile);
+            if (latestValid) {
+                validOtp = latestValid;
+                LOG.warning(`OTP fallback used for ${mobile}. Entered=${otp}, LatestValid=${latestValid.otp}`);
+            }
+        }
+
+        if (!validOtp) {
+            LOG.error("Verification failed", `Invalid/Expired code ${otp} for ${mobile}. (Check server timezone or DB connection)`);
+            return res.status(401).json({ error: "Invalid or expired OTP" });
+        }
+
+        await db.deleteOtpsByMobile(mobile);
+        LOG.success(`OTP verified for ${mobile}${email ? ` (via email: ${email})` : ''}`);
+
+        // Search user by normalized mobile
+        const user = await db.getUserByMobile(mobile);
+        if (user) {
+            const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET || 'secret');
+            LOG.success(`User logged in: ${user.name}`);
+            res.json({ success: true, isNewUser: false, token, user });
+        } else {
+            res.json({ success: true, isNewUser: true, mobile });
+        }
+    } catch (err) { 
+        LOG.error("Server Error in /verify-otp", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/auth/register', async (req, res) => {
+    try {
+        let { name, email, mobile, location_name, role } = req.body;
+        
+        // Normalize mobile
+        if (mobile) mobile = mobile.toString().replace(/\D/g, '').slice(-10);
+
+        const userId = 'usr_' + Math.random().toString(36).substring(2, 11);
+        const newUser = { id: userId, name, email, mobile, location_name, role: role || 'user', created_at: new Date() };
+        
+        await db.addUser(newUser);
+        const token = jwt.sign({ id: userId, role: newUser.role }, process.env.JWT_SECRET || 'secret');
+        
+        LOG.success(`New user registered: ${email}`);
+        res.json({ token, user: newUser });
+    } catch (err) { 
+        LOG.error("Server Error in /register", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/auth/update-role', authenticateToken, async (req, res) => {
+    try {
+        await db.updateUserRole(req.user.id, req.body.role);
+        LOG.info(`Role updated for user ${req.user.id}`);
+        res.json({ success: true });
+    } catch (err) { 
+        LOG.error("Server Error in /update-role", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/auth/update-profile', authenticateToken, async (req, res) => {
+    try {
+        const { name, email, location_name } = req.body;
+        
+        // 1. If email is provided, check if it's already taken by ANOTHER user
+        if (email) {
+            const existing = await db.getUserByEmail(email);
+            if (existing && existing.id !== req.user.id) {
+                LOG.error("Profile update conflict", `Email ${email} already used by ${existing.id}`);
+                return res.status(400).json({ error: "This email address is already registered with another account." });
+            }
+        }
+
+        // 2. Proceed with update
+        await db.updateUserProfile(req.user.id, { name, email, location_name });
+        
+        const updated = await db.getUserById(req.user.id);
+        LOG.success(`Profile updated for user: ${updated.email}`);
+        res.json({ success: true, user: updated });
+    } catch (err) {
+        LOG.error("Server Error in /update-profile", err.message);
+        res.status(500).json({ error: "Internal server error during profile update." });
+    }
+});
+
+// --- VENDOR & QUEUE ROUTES ---
+
+app.get('/api/vendors', async (req, res) => {
+    try {
+        // Check if we should include trade/offer vendors (for offer/trade screens)
+        const includeTradeOffer = req.query.include_trade_offer === 'true';
+        LOG.info(`[API /vendors] Request received - include_trade_offer: ${includeTradeOffer}`);
+        
+        const vendors = await db.getVendors(true, 1, 1000, 'newest', '', includeTradeOffer);
+        LOG.info(`[API /vendors] Returning ${vendors.length} vendors`);
+        
+        // Debug: Log ALL vendors and their features
+        const offerVendors = vendors.filter(v => v.features_offer === true || v.features_offer === 1 || v.features_offer === '1');
+        const tradeVendors = vendors.filter(v => v.features_trade === true || v.features_trade === 1 || v.features_trade === '1');
+        const regularVendors = vendors.filter(v => (v.features_offer !== true && v.features_offer !== 1 && v.features_offer !== '1') && 
+                                                    (v.features_trade !== true && v.features_trade !== 1 && v.features_trade !== '1'));
+        
+        LOG.info(`[API /vendors] Vendor breakdown: ${regularVendors.length} regular, ${offerVendors.length} offer, ${tradeVendors.length} trade`);
+        
+        if (includeTradeOffer) {
+            LOG.info(`[API /vendors] Include trade/offer enabled - Response contains ${offerVendors.length} offer vendors, ${tradeVendors.length} trade vendors`);
+            if (offerVendors.length > 0) {
+                LOG.info(`[API /vendors] Offer vendors:`, offerVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_offer: v.features_offer, visibility_list: v.visibility_list })));
+            }
+            if (tradeVendors.length > 0) {
+                LOG.info(`[API /vendors] Trade vendors:`, tradeVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_trade: v.features_trade, visibility_list: v.visibility_list })));
+            }
+        } else {
+            LOG.info(`[API /vendors] Include trade/offer disabled - Only returning ${regularVendors.length} regular vendors`);
+        }
+        
+        // Log all vendor names for debugging
+        LOG.info(`[API /vendors] All vendor names:`, vendors.map(v => `${v.shop_name} (offer:${v.features_offer}, trade:${v.features_trade}, visible:${v.visibility_list})`));
+        
+        // If user is logged in (optional auth), mark which ones they've joined
+        const authHeader = req.headers['authorization'];
+        const token = authHeader && authHeader.split(' ')[1];
+        let userId = null;
+        if (token) {
+            try {
+                const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret');
+                userId = decoded.id;
+            } catch (e) {}
+        }
+
+        if (userId) {
+            const history = await db.getUserHistory(userId);
+            const activeQueueVendorIds = history
+                .filter(h => h.status === 'waiting')
+                .map(h => h.vendor_id);
+            
+            const enriched = vendors.map(v => ({
+                ...v,
+                is_joined: activeQueueVendorIds.includes(v.id)
+            }));
+            return res.json(enriched);
+        }
+
+        res.json(vendors);
+    } catch (err) { 
+        LOG.error("Failed to fetch vendors", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.get('/api/vendors/me', authenticateToken, async (req, res) => {
+    try {
+        // Get user email from database if not in token
+        let userEmail = req.user.email;
+        if (!userEmail && req.user.id) {
+            const user = await db.getUserById(req.user.id);
+            userEmail = user?.email;
+        }
+        
+        LOG.info(`[API /vendors/me] Request from user: ${userEmail || 'NO_EMAIL'} (id: ${req.user.id})`);
+        
+        // First, try to find vendor by owner_id (normal case)
+        let vendor = await db.getVendorByOwnerId(req.user.id);
+        LOG.info(`[API /vendors/me] Vendor by owner_id: ${vendor ? vendor.id : 'NOT FOUND'}`);
+        
+        // If not found, try to find vendor by user ID pattern (e.g., usr_offer1 -> v_offer1, usr_qlessvendor1 -> v_qless1)
+        if (!vendor && req.user.id) {
+            LOG.info(`[API /vendors/me] Attempting user ID pattern match for: ${req.user.id}`);
+            // Extract service pattern from user ID (handles usr_offer1, usr_trade1, usr_qlessvendor1, usr_fleetvendor1, usr_realvendor1, etc.)
+            let userIdMatch = req.user.id.match(/(?:usr_)?(offer|trade|qless|fleet|realestate|real)(\d+)(?:vendor)?/);
+            if (!userIdMatch) {
+                // Try alternative pattern: just look for service name followed by number
+                userIdMatch = req.user.id.match(/(offer|trade|qless|fleet|realestate|real)(\d+)/);
+            }
+            
+            if (userIdMatch) {
+                const serviceName = userIdMatch[1] === 'real' ? 'realestate' : userIdMatch[1]; // Normalize 'real' to 'realestate'
+                const vendorId = `v_${serviceName}${userIdMatch[2]}`;
+                LOG.info(`[API /vendors/me] Pattern matched: ${req.user.id} -> looking for vendor ${vendorId}`);
+                
+                // Try direct lookup first (faster)
+                vendor = await db.getVendorById(vendorId);
+                if (vendor) {
+                    LOG.info(`[API /vendors/me] ✓ Found vendor ${vendor.id} (${vendor.shop_name}) by direct lookup`);
+                } else {
+                    // Fallback: search in all vendors list
+                    const allVendors = await db.getVendors(true, 1, 1000, 'newest', '', true);
+                    LOG.info(`[API /vendors/me] Fetched ${allVendors.length} vendors. Available IDs:`, allVendors.map(v => v.id));
+                    vendor = allVendors.find(v => v.id === vendorId);
+                    if (vendor) {
+                        LOG.info(`[API /vendors/me] ✓ Found vendor ${vendor.id} (${vendor.shop_name}) by user ID pattern`);
+                    } else {
+                        LOG.warning(`[API /vendors/me] ✗ Vendor ${vendorId} not found in vendor list`);
+                    }
+                }
+            } else {
+                LOG.warning(`[API /vendors/me] ✗ User ID pattern match failed for ${req.user.id}`);
+            }
+        }
+        
+        // If still not found and user has email, try email pattern matching
+        if (!vendor && userEmail) {
+            const email = userEmail.toLowerCase();
+            LOG.info(`[API /vendors/me] User email: ${email}, checking for service pattern...`);
+            
+            // Check for any service pattern (offer, trade, qless, fleet, realestate)
+            if (email.includes('offer') || email.includes('trade') || email.includes('qless') || email.includes('fleet') || email.includes('real')) {
+                // Try to find vendor with matching pattern (e.g., offer1@test.com -> v_offer1, qlessvendor1@test.com -> v_qless1)
+                const allVendors = await db.getVendors(true, 1, 1000, 'newest', '', true);
+                LOG.info(`[API /vendors/me] Fetched ${allVendors.length} vendors (including all services)`);
+                
+                const emailMatch = email.match(/(offer|trade|qless|fleet|realestate|real)(\d+)/);
+                if (emailMatch) {
+                    const serviceName = emailMatch[1] === 'real' ? 'realestate' : emailMatch[1]; // Normalize 'real' to 'realestate'
+                    const vendorId = `v_${serviceName}${emailMatch[2]}`;
+                    LOG.info(`[API /vendors/me] Looking for vendor ID: ${vendorId}`);
+                    LOG.info(`[API /vendors/me] Available vendor IDs:`, allVendors.map(v => v.id));
+                    
+                    vendor = allVendors.find(v => v.id === vendorId);
+                    if (vendor) {
+                        LOG.info(`[API /vendors/me] ✓ Found associated vendor ${vendor.id} (${vendor.shop_name}) for service user ${userEmail}`);
+                    } else {
+                        LOG.warning(`[API /vendors/me] ✗ Vendor ${vendorId} not found in vendor list`);
+                    }
+                } else {
+                    LOG.warning(`[API /vendors/me] ✗ Email pattern match failed for ${email}`);
+                }
+            }
+        }
+        
+        if (vendor) {
+            LOG.info(`[API /vendors/me] Returning vendor: ${vendor.id} - ${vendor.shop_name}`);
+        } else {
+            LOG.warning(`[API /vendors/me] No vendor found for user ${userEmail || req.user.id}, returning empty object`);
+        }
+        
+        res.json(vendor || {});
+    } catch (err) { 
+        LOG.error("Failed to fetch vendor profile", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/vendors/create-my-shop', authenticateToken, async (req, res) => {
+    try {
+        const user = await db.getUserById(req.user.id);
+        if (!user) {
+            LOG.error('Failed to create vendor profile', `User not found for token id: ${req.user.id}`);
+            return res.status(404).json({ error: 'User not found. Please login again.' });
+        }
+
+        const existing = await db.getVendorByOwnerId(req.user.id);
+        if (existing) {
+            return res.json({ success: true, vendor: existing, created: false });
+        }
+
+        const shopName = req.body.shop_name || `${user?.name || 'My'} Shop`;
+        const vendor = {
+            id: 'v_' + Math.random().toString(36).substring(2, 10),
+            owner_id: req.user.id,
+            shop_name: shopName,
+            category: req.body.category || 'General',
+            is_active: true,
+            is_promoted: false,
+            latitude: 0,
+            longitude: 0,
+            features_matchmaking: false
+        };
+        await db.addVendor(vendor);
+        LOG.success(`Vendor profile created for user ${req.user.id}`);
+        res.json({ success: true, vendor, created: true });
+    } catch (err) {
+        LOG.error('Failed to create vendor profile', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/vendors/update-my-profile', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) {
+            return res.status(404).json({ error: 'Vendor profile not found' });
+        }
+
+        const allowedFields = ['shop_name', 'category', 'google_link', 'instagram_handle', 'facebook_link', 'features_products', 'features_payments', 'features_appointments', 'features_queue', 'features_matchmaking', 'features_trade', 'features_offer', 'gateway_razorpay', 'gateway_sabpaisa', 'visibility_top_rated', 'visibility_list', 'visibility_feed'];
+        for (const field of allowedFields) {
+            if (Object.prototype.hasOwnProperty.call(req.body, field)) {
+                await db.updateVendor(vendor.id, field, req.body[field]);
+            }
+        }
+        const updated = await db.getVendorByOwnerId(req.user.id);
+        res.json({ success: true, vendor: updated });
+    } catch (err) {
+        LOG.error('Failed to update vendor profile', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/:id', async (req, res) => {
+    try {
+        const vendor = await db.getVendorById(req.params.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+        res.json(vendor);
+    } catch (err) {
+        LOG.error("Failed to fetch vendor details", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/:id/queue', async (req, res) => {
+    try {
+        const queue = await db.getQueueByVendor(req.params.id);
+        res.json(queue);
+    } catch (err) { 
+        LOG.error("Failed to fetch queue", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.get('/api/vendors/:id/products', async (req, res) => {
+    try {
+        const vendor = await db.getVendorById(req.params.id);
+        if (!vendor || vendor.features_products === false) {
+            return res.json([]);
+        }
+        const products = await db.getProductsByVendor(req.params.id);
+        res.json(products || []);
+    } catch (err) {
+        LOG.error("Failed to fetch vendor products", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/products', async (req, res) => {
+    try {
+        const products = await db.getAllProductsWithVendors();
+        res.json(products || []);
+    } catch (err) {
+        LOG.error("Failed to fetch products", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/products/:id', async (req, res) => {
+    try {
+        const product = await db.getProductById(req.params.id);
+        if (!product) return res.status(404).json({ error: "Product not found" });
+        const vendor = await db.getVendorById(product.vendor_id);
+        if (!vendor || vendor.features_products === false) return res.status(404).json({ error: "Product not available" });
+        res.json({
+            ...product,
+            shop_name: vendor.shop_name
+        });
+    } catch (err) {
+        LOG.error("Failed to fetch product details", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/me/products', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.json([]);
+        const products = await db.getProductsByVendor(vendor.id);
+        res.json(products || []);
+    } catch (err) {
+        LOG.error("Failed to fetch own products", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/me/appointments', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.json([]);
+        
+        // Return appointments for ALL vendors owned by this user
+        const ownedVendors = await db.getVendors(false);
+        const myVendorIds = ownedVendors.filter(v => v.owner_id === req.user.id).map(v => v.id);
+        
+        let allAppointments = [];
+        for (const vId of myVendorIds) {
+            const apps = await db.getAppointmentsByVendor(vId);
+            allAppointments = [...allAppointments, ...apps];
+        }
+        
+        res.json(allAppointments || []);
+    } catch (err) {
+        LOG.error("Failed to fetch vendor appointments", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/vendors/me/products/add', authenticateToken, async (req, res) => {
+    try {
+        let vendor = await db.getVendorByOwnerId(req.user.id);
+        
+        // AUTO-CREATE VENDOR PROFILE IF MISSING
+        if (!vendor) {
+            LOG.warning(`No vendor profile found for user ${req.user.id}. Creating default...`);
+            const user = await db.getUserById(req.user.id);
+            vendor = {
+                id: 'v_' + Math.random().toString(36).substring(2, 10),
+                owner_id: req.user.id,
+            shop_name: user?.name ? `${user.name}'s Shop` : "My New Shop",
+            category: 'General',
+            is_active: true,
+            is_promoted: false,
+            latitude: 0,
+            longitude: 0,
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false
+        };
+        await db.addVendor(vendor);
+            LOG.success(`Auto-created vendor profile: ${vendor.id}`);
+        }
+
+        const { name, price, offer, offer_amount, validity_from, validity_to, description, image_urls } = req.body;
+        if (!name || !price) return res.status(400).json({ error: "name and price are required" });
+        
+        const normalizedImages = Array.isArray(image_urls) ? image_urls.filter(Boolean) : [];
+        const finalImages = normalizedImages.length ? normalizedImages : [DEFAULT_PRODUCT_IMAGE];
+        
+        const product = {
+            vendor_id: vendor.id, // Explicitly mapped to the vendor we found/created
+            name,
+            price: Number(price),
+            offer: offer || '',
+            offer_amount: Number(offer_amount || 0),
+            validity_from: validity_from || null,
+            validity_to: validity_to || null,
+            description: description || '',
+            image_urls: finalImages,
+            category: vendor.category || 'General',
+            stock: 100
+        };
+        
+        const added = await db.addProduct(product);
+        LOG.success(`Product added to vendor ${vendor.id}: ${name}`);
+        res.json({ success: true, product: added });
+    } catch (err) {
+        LOG.error("Failed to add product", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/vendors/me/products/:id/update', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const existing = await db.getProductById(req.params.id);
+        if (!existing || existing.vendor_id !== vendor.id) {
+            return res.status(404).json({ error: "Product not found for this vendor" });
+        }
+
+        const updateData = {};
+        const fields = ['name', 'price', 'offer', 'offer_amount', 'validity_from', 'validity_to', 'description', 'image_urls', 'stock'];
+        fields.forEach((f) => {
+            if (Object.prototype.hasOwnProperty.call(req.body, f)) updateData[f] = req.body[f];
+        });
+
+        // Keep first/default image fixed; only allow editing images after index 0.
+        if (Object.prototype.hasOwnProperty.call(updateData, 'image_urls')) {
+            const existingImages = Array.isArray(existing.image_urls) ? existing.image_urls.filter(Boolean) : [];
+            const fixedFirstImage = existingImages[0] || DEFAULT_PRODUCT_IMAGE;
+            const incoming = Array.isArray(updateData.image_urls) ? updateData.image_urls.filter(Boolean) : [];
+            const extras = incoming.filter((u) => u && u !== fixedFirstImage);
+            updateData.image_urls = [fixedFirstImage, ...extras];
+        }
+
+        const updated = await db.updateProduct(req.params.id, updateData);
+        res.json({ success: true, product: updated });
+    } catch (err) {
+        LOG.error("Failed to update product", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/queue/join', authenticateToken, async (req, res) => {
+    try {
+        const { vendor_id } = req.body;
+
+        // 1. Parallelize checks to reduce latency
+        const [vendor, existing] = await Promise.all([
+            db.getVendorById(vendor_id),
+            db.getQueueByVendor(vendor_id)
+        ]);
+
+        if (vendor && vendor.owner_id === req.user.id) {
+            return res.status(403).json({ error: "You cannot join the queue of your own shop." });
+        }
+
+        const alreadyIn = existing.some(q => q.user_id === req.user.id);
+        if (alreadyIn) {
+            return res.json({ success: true, alreadyIn: true });
+        }
+
+        // 2. Perform write
+        await db.addQueueItem({
+            vendor_id,
+            user_id: req.user.id,
+            status: "waiting",
+            joined_at: new Date()
+        });
+        
+        // 3. Respond immediately to the user
+        res.json({ success: true });
+
+        // 4. Update the room in background
+        db.getQueueByVendor(vendor_id).then(updatedQueue => {
+            io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+        }).catch(e => LOG.error("Background queue update failed", e.message));
+        
+        LOG.success(`User ${req.user.id} joined queue ${vendor_id}`);
+    } catch (err) { 
+        LOG.error("Failed to join queue", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+app.post('/api/queue/leave', authenticateToken, async (req, res) => {
+    try {
+        const { vendor_id } = req.body;
+        
+        // Respond immediately after the delete operation
+        const removed = await db.removeQueueItem(req.user.id, vendor_id);
+        res.json({ success: true, removed });
+
+        if (removed) {
+            // Re-fetch and emit in background
+            db.getQueueByVendor(vendor_id).then(updatedQueue => {
+                io.to(`vendor_${vendor_id}`).emit('queue_updated', updatedQueue);
+            }).catch(e => LOG.error("Background queue update failed", e.message));
+            LOG.success(`User ${req.user.id} left queue ${vendor_id}`);
+        }
+    } catch (err) {
+        LOG.error("Failed to leave queue", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/queue/delete', authenticateToken, async (req, res) => {
+    try {
+        const { queue_id } = req.body;
+        // In a real app, verify that req.user.id is the vendor/owner of this queue item.
+        // For now, we trust the vendor's request.
+        
+        await db.deleteQueueItemById(queue_id);
+        
+        // If we had vendor_id in body, we could emit socket update.
+        if (req.body.vendor_id) {
+            const updatedQueue = await db.getQueueByVendor(req.body.vendor_id);
+            io.to(`vendor_${req.body.vendor_id}`).emit('queue_updated', updatedQueue);
+        }
+        
+        res.json({ success: true });
+    } catch (err) {
+        LOG.error("Failed to delete queue item", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/queue/update-status', authenticateToken, async (req, res) => {
+    try {
+        const vId = await db.updateQueueStatus(req.body.queue_id, req.body.status);
+        if (vId) {
+            const updatedQueue = await db.getQueueByVendor(vId);
+            io.to(`vendor_${vId}`).emit('queue_updated', updatedQueue);
+        }
+        res.json({ success: true });
+    } catch (err) { 
+        LOG.error("Failed to update status", err.message);
+        res.status(500).json({ error: err.message }); 
+    }
+});
+
+// --- HISTORY & APPOINTMENTS ---
+
+app.get('/api/history/user', authenticateToken, async (req, res) => {
+    try {
+        const history = await db.getUserHistory(req.user.id);
+        res.json(history || []);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/history/vendor', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.json([]);
+        const history = await db.getVendorHistory(vendor.id);
+        res.json(history);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/appointments/me', authenticateToken, async (req, res) => {
+    try {
+        const apps = await db.getAppointmentsByUser(req.user.id);
+        res.json(apps || []);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/appointments/book', authenticateToken, async (req, res) => {
+    try {
+        const { vendor_id } = req.body;
+
+        // CHECK OWNERSHIP: Vendor cannot book appointment with their own shop
+        const vendor = await db.getVendorById(vendor_id);
+        if (vendor && vendor.owner_id === req.user.id) {
+            return res.status(403).json({ error: "You cannot book an appointment with your own shop." });
+        }
+
+        await db.addAppointment({
+            vendor_id,
+            user_id: req.user.id,
+            date: req.body.date,
+            time: req.body.time,
+            status: 'pending',
+            created_at: new Date()
+        });
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/appointments/delete', authenticateToken, async (req, res) => {
+    try {
+        const { appointment_id } = req.body;
+        await db.deleteAppointmentById(appointment_id);
+        res.json({ success: true });
+    } catch (err) {
+        LOG.error("Failed to delete appointment", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/appointments/update-status', authenticateToken, async (req, res) => {
+    try {
+        const { appointment_id, status } = req.body;
+        await db.updateAppointmentStatus(appointment_id, status);
+        res.json({ success: true });
+    } catch (err) {
+        LOG.error("Failed to update appointment status", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/orders/create', authenticateToken, async (req, res) => {
+    try {
+        const { vendor_id, items, total_amount, payment_gateway, payment_ref } = req.body;
+        if (!vendor_id || !Array.isArray(items) || !items.length) {
+            return res.status(400).json({ error: "vendor_id and items are required" });
+        }
+        const vendor = await db.getVendorById(vendor_id);
+        if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+        if (vendor.features_payments === false) {
+            return res.status(403).json({ error: "Payments are disabled for this vendor" });
+        }
+        const order = {
+            vendor_id,
+            user_id: req.user.id,
+            total_amount: Number(total_amount || 0),
+            payment_gateway: payment_gateway || 'unknown',
+            payment_ref: payment_ref || '',
+            status: 'paid',
+            items_json: JSON.stringify(items),
+            created_at: new Date()
+        };
+        await db.addOrder(order);
+        res.json({ success: true });
+    } catch (err) {
+        LOG.error("Failed to create order", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/orders/vendor', authenticateToken, async (req, res) => {
+    try {
+        const rows = await db.getOrdersByVendorOwner(req.user.id);
+        res.json(rows || []);
+    } catch (err) {
+        LOG.error("Failed to fetch vendor orders", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/activities', async (req, res) => {
+    try {
+        const activities = await db.getActivities();
+        res.json(activities);
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// --- MATCHMAKING ---
+app.get('/api/matchmaking/presets', authenticateToken, async (req, res) => {
+    try {
+        const presets = await db.getMatchmakingPresets();
+        res.json(presets || []);
+    } catch (err) {
+        LOG.error("Failed to fetch matchmaking presets", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/:id/matchmaking/template', async (req, res, next) => {
+    try {
+        // Let explicit self/me routes handle these reserved IDs.
+        if (req.params.id === 'me' || req.params.id === 'self') {
+            return next();
+        }
+        const vendor = await db.getVendorById(req.params.id);
+        if (!vendor || vendor.features_matchmaking === false) {
+            return res.status(404).json({ error: "Matchmaking is not enabled for this vendor." });
+        }
+        const template = await db.getVendorMatchmakingTemplate(req.params.id);
+        if (!template || template.is_active === false) {
+            return res.status(404).json({ error: "No active matchmaking template found." });
+        }
+        res.json({
+            vendor_id: req.params.id,
+            template_name: template.template_name,
+            selected_preset: template.selected_preset,
+            scoring: template.scoring,
+            questions: template.questions
+        });
+    } catch (err) {
+        LOG.error("Failed to fetch vendor matchmaking template", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/self/matchmaking/template', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const template = await db.getVendorMatchmakingTemplate(vendor.id);
+        res.json(template || null);
+    } catch (err) {
+        LOG.error("Failed to fetch own matchmaking template", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/vendors/self/matchmaking/template', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const saved = await db.saveVendorMatchmakingTemplate(vendor.id, req.body || {});
+        await db.updateVendor(vendor.id, 'features_matchmaking', true);
+        res.json({ success: true, template: saved });
+    } catch (err) {
+        LOG.error("Failed to save matchmaking template", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Backward-compatible aliases (older clients may still call /vendors/me/...)
+app.get('/api/vendors/me/matchmaking/template', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const template = await db.getVendorMatchmakingTemplate(vendor.id);
+        res.json(template || null);
+    } catch (err) {
+        LOG.error("Failed to fetch own matchmaking template (me alias)", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/vendors/me/matchmaking/template', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const saved = await db.saveVendorMatchmakingTemplate(vendor.id, req.body || {});
+        await db.updateVendor(vendor.id, 'features_matchmaking', true);
+        res.json({ success: true, template: saved });
+    } catch (err) {
+        LOG.error("Failed to save matchmaking template (me alias)", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/vendors/me/matchmaking/results', authenticateToken, async (req, res) => {
+    try {
+        const vendor = await db.getVendorByOwnerId(req.user.id);
+        if (!vendor) return res.status(404).json({ error: "Vendor profile not found" });
+        const results = await db.getVendorMatchmakingResults(vendor.id);
+        res.json(results || []);
+    } catch (err) {
+        LOG.error("Failed to fetch matchmaking results", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/matchmaking/submit', authenticateToken, async (req, res) => {
+    try {
+        const { vendor_id, answers } = req.body || {};
+        if (!vendor_id || !answers || typeof answers !== 'object') {
+            return res.status(400).json({ error: 'vendor_id and answers are required' });
+        }
+        const vendor = await db.getVendorById(vendor_id);
+        if (!vendor || vendor.features_matchmaking === false) {
+            return res.status(404).json({ error: "Matchmaking is not available for this vendor." });
+        }
+        const user = await db.getUserById(req.user.id);
+        const saved = await db.submitMatchmakingAnswers({
+            vendor_id,
+            user_id: req.user.id,
+            answers,
+            user_name: user?.name || 'User'
+        });
+        res.json({ success: true, result: saved });
+    } catch (err) {
+        LOG.error("Failed to submit matchmaking answers", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/matchmaking/me', authenticateToken, async (req, res) => {
+    try {
+        const rows = await db.getUserMatchmakingSubmissions(req.user.id);
+        res.json(rows || []);
+    } catch (err) {
+        LOG.error("Failed to fetch user matchmaking submissions", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// --- ADMIN ---
+app.get('/api/admin/vendors', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        const page = parseInt(req.query.page) || 1;
+        const limit = parseInt(req.query.limit) || 10;
+        const sortBy = req.query.sortBy || 'newest';
+        const search = req.query.search || '';
+        
+        // Super admin should see ALL vendors including Trade and Offer
+        const vendors = await db.getVendors(false, page, limit, sortBy, search, true);
+        res.json(vendors);
+    } catch (err) {
+        LOG.error("Admin fetch vendors failed", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/update-vendor', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        await db.updateVendor(req.body.vendorId, req.body.field, req.body.value);
+        res.json({ success: true });
+    } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/add-vendor', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        const { shop_name, category, owner_mobile, owner_name, owner_email } = req.body;
+        if (!shop_name || !owner_mobile) {
+            return res.status(400).json({ error: 'shop_name and owner_mobile are required' });
+        }
+
+        let owner = await db.getUserByMobile(owner_mobile);
+        if (!owner) {
+            const ownerId = 'usr_' + Math.random().toString(36).substring(2, 11);
+            owner = {
+                id: ownerId,
+                name: owner_name || 'Vendor Owner',
+                email: owner_email || `vendor_${owner_mobile}@qrqueue.local`,
+                mobile: owner_mobile,
+                role: 'vendor',
+                created_at: new Date()
+            };
+            await db.addUser(owner);
+        } else if (owner.role !== 'vendor') {
+            await db.updateUserRole(owner.id, 'vendor');
+            owner.role = 'vendor';
+        }
+
+        const vendor = {
+            id: 'v_' + Math.random().toString(36).substring(2, 10),
+            owner_id: owner.id,
+            shop_name,
+            category: category || 'General',
+            is_active: true,
+            is_promoted: false,
+            latitude: 0,
+            longitude: 0,
+            features_matchmaking: false
+        };
+
+        await db.addVendor(vendor);
+        LOG.success(`Admin added vendor ${vendor.shop_name} for mobile ${owner_mobile}`);
+        res.json({ success: true, vendor, owner });
+    } catch (err) {
+        LOG.error('Failed to add vendor', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.get('/api/admin/vendor-dashboard/:vendorId', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        const { vendorId } = req.params;
+        const [vendor, queue, appointments] = await Promise.all([
+            db.getVendorById(vendorId),
+            db.getQueueByVendor(vendorId),
+            db.getAppointmentsByVendor(vendorId)
+        ]);
+
+        if (!vendor) return res.status(404).json({ error: "Vendor not found" });
+
+        res.json({
+            profile: vendor,
+            queue: queue || [],
+            appointments: appointments || []
+        });
+    } catch (err) {
+        LOG.error("Admin fetch vendor dashboard failed", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Analytics Routes
+app.use('/api/analytics', require('./analyticsRoutes'));
+
+// --- SYSTEM SETTINGS ---
+app.get('/api/settings', async (req, res) => {
+    try {
+        const settings = await db.getSettings();
+        res.json(settings);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/admin/settings', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        const updated = await db.updateSettings(req.body);
+        // Broadcast change via socket so apps update in real-time
+        io.emit('settings_updated', updated);
+        res.json(updated);
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Deals sync endpoint
+const dealsService = require('./dealsService');
+
+app.get('/api/deals', async (req, res) => {
+    try {
+        const filters = {
+            company_id: req.query.company_id ? parseInt(req.query.company_id) : null,
+            category_id: req.query.category_id ? parseInt(req.query.category_id) : null,
+            min_discount_percentage: req.query.min_discount ? parseFloat(req.query.min_discount) : null,
+            limit: req.query.limit ? parseInt(req.query.limit) : 100
+        };
+        const deals = await dealsService.getDealsFromDB(filters);
+        res.json(deals);
+    } catch (err) {
+        LOG.error("Failed to fetch deals", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+app.post('/api/deals/sync/:companyId', authenticateToken, async (req, res) => {
+    if (req.user.role !== 'super_admin') return res.sendStatus(403);
+    try {
+        await dealsService.syncCompanyDeals(parseInt(req.params.companyId));
+        res.json({ success: true, message: 'Deals synced successfully' });
+    } catch (err) {
+        LOG.error("Failed to sync deals", err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// Auto-sync deals every 30 minutes (configurable)
+const SYNC_INTERVAL_MS = (process.env.DEALS_SYNC_INTERVAL_MINUTES || 30) * 60 * 1000;
+setInterval(() => {
+    dealsService.autoSyncAllCompanies();
+}, SYNC_INTERVAL_MS);
+
+// Initial sync on server start (after 1 minute delay)
+setTimeout(() => {
+    LOG.info("Starting initial deals sync...");
+    dealsService.autoSyncAllCompanies();
+}, 60000); // 1 minute delay
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log("\n========================================");
+    LOG.success(`QR Queue Server Started [Mode: ${db.getType().toUpperCase()}]`);
+    LOG.info(`Listening on: http://localhost:${PORT}`);
+    LOG.info(`DB Methods available: ${Object.keys(db).join(', ')}`);
+    LOG.info(`Deals auto-sync interval: ${SYNC_INTERVAL_MS / 60000} minutes`);
+    if (db.getType() === 'inmemory') {
+        LOG.info(`Seed Users -> Super Admin: 9999999999 | Vendor: 8888888888 | User: 7777777777 | Test Vendor: 3333333333`);
+    }
+    console.log("========================================\n");
+});

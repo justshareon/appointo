@@ -8,7 +8,11 @@
     "start:inmemory": "set DB_TYPE=inmemory&& node server.js",
     "start:mysql": "set DB_TYPE=mysql&& node server.js",
     "dev": "node server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "test:fleet": "node test_fleet_realtime.js",
+    "seed:fleet": "node seed_fleet_test_data.js",
+    "verify:gates": "node verify_fleet_gates.js",
+    "check:data": "node check_fleet_data.js"
   },
   "keywords": [
     "node",

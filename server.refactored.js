@@ -21,7 +21,6 @@ const adminRoutes = require('./routes/adminRoutes');
 const historyRoutes = require('./routes/historyRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
-const fleetRoutes = require('./routes/fleetRoutes');
 
 // Import services
 const dealsService = require('./dealsService');
@@ -95,57 +94,6 @@ setInterval(async () => {
     }
 }, 60000);
 
-// Periodic task: Update fleet queue positions and wait times every 30 seconds
-setInterval(async () => {
-    try {
-        if (db.getType() === 'mysql' && db.getPool) {
-            const pool = db.getPool();
-            
-            // Get all active queues
-            const [queues] = await pool.query(`
-                SELECT DISTINCT gate_id FROM fleet_queues WHERE status = 'waiting'
-            `);
-            
-            for (const row of queues) {
-                const gateId = row.gate_id;
-                
-                // Recalculate positions for all drivers in this gate's queue
-                const [queueRows] = await pool.query(`
-                    SELECT driver_id, joined_at FROM fleet_queues 
-                    WHERE gate_id = ? AND status = 'waiting'
-                    ORDER BY joined_at ASC
-                `, [gateId]);
-                
-                // Update positions and wait times
-                for (let i = 0; i < queueRows.length; i++) {
-                    const position = i + 1;
-                    const avgProcessingTime = 3;
-                    const [gateInfo] = await pool.query(`SELECT estimated_wait_time FROM fleet_gates WHERE gate_id = ?`, [gateId]);
-                    const baseWaitTime = gateInfo[0]?.estimated_wait_time || 10;
-                    const estimatedWaitTime = Math.max(5, baseWaitTime + ((position - 1) * avgProcessingTime));
-                    
-                    await pool.query(`
-                        UPDATE fleet_queues 
-                        SET position = ?, estimated_wait_time = ?
-                        WHERE driver_id = ? AND gate_id = ? AND status = 'waiting'
-                    `, [position, estimatedWaitTime, queueRows[i].driver_id, gateId]);
-                }
-                
-                // Emit update to all drivers in this queue
-                if (queueRows.length > 0) {
-                    io.emit('fleet_queue_updated', {
-                        gate_id: gateId,
-                        action: 'position_updated',
-                        queue_count: queueRows.length
-                    });
-                }
-            }
-        }
-    } catch (e) {
-        LOG.error("Fleet queue update task failed", e.message);
-    }
-}, 30000); // Every 30 seconds
-
 // ============================================
 // FEATURE ROUTES - Modularized by Feature
 // ============================================
@@ -189,24 +137,6 @@ app.get('/api/activities', async (req, res) => {
 
 // Settings Routes
 app.use('/api/settings', settingsRoutes);
-
-// Fleet Routes
-LOG.info('[Server] Registering Fleet routes...');
-fleetRoutes.setIO(io); // Pass Socket.IO instance to fleet routes
-app.use('/api/fleet', fleetRoutes.router);
-LOG.success('[Server] ✅ Fleet routes registered at /api/fleet');
-LOG.info('[Server] Available Fleet endpoints:');
-LOG.info('[Server]   GET  /api/fleet/operations/stats');
-LOG.info('[Server]   GET  /api/fleet/operations/gates');
-LOG.info('[Server]   GET  /api/fleet/operations/alerts');
-LOG.info('[Server]   GET  /api/fleet/operations/drivers');
-LOG.info('[Server]   GET  /api/fleet/operations/suspicious-locations');
-LOG.info('[Server]   GET  /api/fleet/queue/active');
-LOG.info('[Server]   POST /api/fleet/queue/join');
-LOG.info('[Server]   POST /api/fleet/hazards/report');
-LOG.info('[Server]   GET  /api/fleet/gates');
-LOG.info('[Server]   GET  /api/fleet/drivers/:driverId/stats');
-LOG.info('[Server]   GET  /api/fleet/drivers/:driverId/trips/active');
 
 // Admin Settings Update (with socket broadcast)
 app.post('/api/admin/settings', require('./middleware/auth').authenticateToken, async (req, res) => {
@@ -266,17 +196,6 @@ setTimeout(() => {
 }, 60000);
 
 // Start server
-// Initialize fleet tables on server start (if MySQL)
-if (db.getType() === 'mysql' && db.ensureFleetTables) {
-    setTimeout(async () => {
-        try {
-            await db.ensureFleetTables();
-        } catch (e) {
-            LOG.warning("Fleet tables initialization on startup failed", e.message);
-        }
-    }, 2000); // Wait 2 seconds for DB connection to be ready
-}
-
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
     console.log("\n========================================");
@@ -289,3 +208,4 @@ server.listen(PORT, () => {
     }
     console.log("========================================\n");
 });
+
