@@ -232,7 +232,7 @@ CREATE TABLE IF NOT EXISTS corporate_actions (
 -- Board Meetings Table
 CREATE TABLE IF NOT EXISTS board_meetings (
     id INT AUTO_INCREMENT PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
+    symbol VARCHAR(50) NOT NULL,
     company_name VARCHAR(255),
     meeting_date DATE,
     meeting_type VARCHAR(100),

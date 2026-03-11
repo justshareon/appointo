@@ -9,6 +9,9 @@ require('dotenv').config();
 const LOG = require('./utils/logger');
 const requestLogger = require('./middleware/requestLogger');
 
+// Optional: Trading/Real Estate DB setup helper (auto-creates missing tables like live_stock_data)
+const { setupDatabase: setupTradingRealestateDatabase } = require('./setup_trading_realestate_db');
+
 // Import route modules
 const authRoutes = require('./routes/authRoutes');
 const vendorRoutes = require('./routes/vendorRoutes');
@@ -430,6 +433,42 @@ if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
             LOG.warning("Cyber users and vendor initialization on startup failed", e.message);
         }
     }, 3000); // Wait 3 seconds for DB connection to be ready
+}
+
+// Ensure trading/real-estate + corporate actions + mutual fund tables exist on startup (if MySQL)
+if (db.getType() === 'mysql') {
+    setTimeout(async () => {
+        try {
+            // Allow disabling via env flag if ever needed
+            if (process.env.AUTO_SETUP_TRADING_DB === 'false') {
+                LOG.info('[Server] Trading/real-estate DB auto-setup disabled via AUTO_SETUP_TRADING_DB=false');
+                return;
+            }
+
+            LOG.info('[Server] Ensuring trading/real-estate tables exist (setup_trading_realestate_db)...');
+            await setupTradingRealestateDatabase();
+            LOG.success('[Server] Trading/real-estate tables verified/created successfully on startup');
+
+            // Also ensure corporate actions and mutual fund tables via their services
+            try {
+                const mutualFundDataService = require('./services/mutualFundDataService');
+                await mutualFundDataService.initializeTables();
+                LOG.success('[Server] Mutual fund tables verified/created successfully on startup');
+            } catch (e) {
+                LOG.warning('[Server] Mutual fund tables initialization on startup failed', e.message);
+            }
+
+            try {
+                const corporateActionsDataService = require('./services/corporateActionsDataService');
+                await corporateActionsDataService.initializeTables();
+                LOG.success('[Server] Corporate actions tables verified/created successfully on startup');
+            } catch (e) {
+                LOG.warning('[Server] Corporate actions tables initialization on startup failed', e.message);
+            }
+        } catch (e) {
+            LOG.warning('[Server] Trading/real-estate DB setup on startup failed', e.message);
+        }
+    }, 4000); // Run after other MySQL initializers
 }
 
 const PORT = process.env.PORT || 5000;

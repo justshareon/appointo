@@ -56,7 +56,7 @@ class MutualFundDataService {
                     nav DECIMAL(15, 4),
                     returns DECIMAL(10, 4),
                     aum BIGINT,
-                    expense_ratio DECIMAL(5, 4),
+                    expense_ratio DECIMAL(10, 4),
                     rating DECIMAL(3, 1),
                     risk VARCHAR(50),
                     sheet_name VARCHAR(100),
@@ -77,7 +77,7 @@ class MutualFundDataService {
                     nav DECIMAL(15, 4),
                     returns DECIMAL(10, 4),
                     aum BIGINT,
-                    expense_ratio DECIMAL(5, 4),
+                    expense_ratio DECIMAL(10, 4),
                     rating DECIMAL(3, 1),
                     risk VARCHAR(50),
                     sheet_name VARCHAR(100),
@@ -86,6 +86,18 @@ class MutualFundDataService {
                     INDEX idx_sheet_name (sheet_name),
                     INDEX idx_archived_at (archived_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+            `);
+
+            // Ensure existing tables have a wide enough expense_ratio column
+            // to avoid "Out of range value for column 'expense_ratio'" errors
+            await pool.query(`
+                ALTER TABLE mutual_funds 
+                MODIFY COLUMN expense_ratio DECIMAL(10, 4) NULL
+            `);
+
+            await pool.query(`
+                ALTER TABLE mutual_fund_history 
+                MODIFY COLUMN expense_ratio DECIMAL(10, 4) NULL
             `);
 
             this.initialized = true;

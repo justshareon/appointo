@@ -965,6 +965,36 @@ const ensureCyberThreatTables = async () => {
 };
 
 /**
+ * Ensure vendor feature/visibility columns exist in MySQL vendors table
+ * (needed for cyber, trading, trust-score, etc. feature flags)
+ */
+let vendorFeatureColumnsReady = false;
+const ensureVendorFeatureColumns = async () => {
+    if (!pool || vendorFeatureColumnsReady) return;
+    try {
+        await pool.query(`
+            ALTER TABLE vendors
+                ADD COLUMN IF NOT EXISTS features_queue TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_matchmaking TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_cyber TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_trade TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_offer TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_qless TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_fleet TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_realestate TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_trust_score TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS visibility_top_rated TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS visibility_list TINYINT(1) DEFAULT 1,
+                ADD COLUMN IF NOT EXISTS visibility_feed TINYINT(1) DEFAULT 0
+        `);
+        vendorFeatureColumnsReady = true;
+        LOG.success('[Database] Vendor feature/visibility columns ensured');
+    } catch (err) {
+        LOG.warning('[Database] Error ensuring vendor feature columns (non-fatal):', err.message || err);
+    }
+};
+
+/**
  * Ensure cyber users and vendor exist in MySQL
  * Syncs cyber users and vendor from in-memory DB to MySQL
  */
@@ -972,6 +1002,9 @@ const ensureCyberUsersAndVendor = async () => {
     if (!pool) return;
     
     try {
+        // Make sure vendors table has required feature flags/visibility columns
+        await ensureVendorFeatureColumns();
+
         // Ensure cyber users exist in MySQL
         const cyberUsers = [
             { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },

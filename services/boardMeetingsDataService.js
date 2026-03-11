@@ -48,7 +48,7 @@ class BoardMeetingsDataService {
             await pool.query(`
                 CREATE TABLE IF NOT EXISTS board_meetings (
                     id INT AUTO_INCREMENT PRIMARY KEY,
-                    symbol VARCHAR(20) NOT NULL,
+                    symbol VARCHAR(50) NOT NULL,
                     company_name VARCHAR(255),
                     series VARCHAR(10),
                     purpose TEXT,
@@ -60,6 +60,13 @@ class BoardMeetingsDataService {
                     INDEX idx_symbol (symbol),
                     INDEX idx_meeting_date (meeting_date)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            `);
+
+            // Ensure existing board_meetings table has a wide enough symbol column
+            // to avoid "Data too long for column 'symbol'" errors during sync
+            await pool.query(`
+                ALTER TABLE board_meetings 
+                MODIFY COLUMN symbol VARCHAR(50) NOT NULL
             `);
 
             LOG.success('[Board Meetings] Database tables initialized');
