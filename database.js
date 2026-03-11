@@ -948,10 +948,10 @@ const ensureCyberThreatTables = async () => {
                 title VARCHAR(500) NOT NULL,
                 message TEXT,
                 threat_data JSON,
-                read BOOLEAN DEFAULT FALSE,
+                is_read BOOLEAN DEFAULT FALSE,
                 read_at DATETIME NULL,
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                INDEX idx_user_read (user_id, read),
+                INDEX idx_user_read (user_id, is_read),
                 INDEX idx_threat (threat_id),
                 FOREIGN KEY (threat_id) REFERENCES cyber_threats(id) ON DELETE CASCADE
             )

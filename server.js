@@ -435,6 +435,17 @@ if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
     }, 3000); // Wait 3 seconds for DB connection to be ready
 }
 
+// Ensure cyber threat tables on startup (if MySQL)
+if (db.getType() === 'mysql' && db.ensureCyberThreatTables) {
+    setTimeout(async () => {
+        try {
+            await db.ensureCyberThreatTables();
+        } catch (e) {
+            LOG.warning("Cyber threat tables initialization on startup failed", e.message);
+        }
+    }, 3500); // Run after basic DB initialization
+}
+
 // Ensure trading/real-estate + corporate actions + mutual fund tables exist on startup (if MySQL)
 if (db.getType() === 'mysql') {
     setTimeout(async () => {
@@ -445,9 +456,20 @@ if (db.getType() === 'mysql') {
                 return;
             }
 
-            LOG.info('[Server] Ensuring trading/real-estate tables exist (setup_trading_realestate_db)...');
-            await setupTradingRealestateDatabase();
-            LOG.success('[Server] Trading/real-estate tables verified/created successfully on startup');
+            // TiDB Cloud serverless requires secure (SSL) connections; our standalone
+            // setup_trading_realestate_db script opens a separate, non-SSL connection.
+            // When using TiDB Cloud, skip this script and rely on per-service initializeTables()
+            // which use the main pooled connection (already configured for SSL).
+            const dbHost = process.env.DB_HOST || '';
+            const isTiDBCloud = dbHost.includes('tidbcloud.com');
+
+            if (isTiDBCloud) {
+                LOG.info('[Server] Detected TiDB Cloud; skipping setup_trading_realestate_db auto-run (use per-service initializeTables instead)');
+            } else {
+                LOG.info('[Server] Ensuring trading/real-estate tables exist (setup_trading_realestate_db)...');
+                await setupTradingRealestateDatabase();
+                LOG.success('[Server] Trading/real-estate tables verified/created successfully on startup');
+            }
 
             // Also ensure corporate actions and mutual fund tables via their services
             try {
