@@ -8,7 +8,7 @@ const LOG = require('../utils/logger');
  * GET /api/matchmaking/presets
  * Get matchmaking presets
  */
-router.get('/presets', authenticateToken, async (req, res) => {
+router.get('/matchmaking/presets', authenticateToken, async (req, res) => {
     try {
         const presets = await matchmakingService.getPresets();
         res.json(presets);
@@ -25,11 +25,14 @@ router.get('/presets', authenticateToken, async (req, res) => {
 router.get('/vendors/self/matchmaking/template', authenticateToken, async (req, res) => {
     try {
         const template = await matchmakingService.getMyTemplate(req.user.id);
+        // Return null if no vendor profile exists (not an error)
+        if (template === null) {
+            return res.json(null);
+        }
         res.json(template);
     } catch (err) {
         LOG.error("Failed to fetch own matchmaking template", err.message);
-        const statusCode = err.message.includes('not found') ? 404 : 500;
-        res.status(statusCode).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -52,11 +55,14 @@ router.post('/vendors/self/matchmaking/template', authenticateToken, async (req,
 router.get('/vendors/me/matchmaking/template', authenticateToken, async (req, res) => {
     try {
         const template = await matchmakingService.getMyTemplate(req.user.id);
+        // Return null if no vendor profile exists (not an error)
+        if (template === null) {
+            return res.json(null);
+        }
         res.json(template);
     } catch (err) {
         LOG.error("Failed to fetch own matchmaking template (me alias)", err.message);
-        const statusCode = err.message.includes('not found') ? 404 : 500;
-        res.status(statusCode).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
 });
 
@@ -78,11 +84,11 @@ router.post('/vendors/me/matchmaking/template', authenticateToken, async (req, r
 router.get('/vendors/me/matchmaking/results', authenticateToken, async (req, res) => {
     try {
         const results = await matchmakingService.getMyResults(req.user.id);
-        res.json(results);
+        // Always return an array (empty if no vendor profile)
+        res.json(results || []);
     } catch (err) {
         LOG.error("Failed to fetch matchmaking results", err.message);
-        const statusCode = err.message.includes('not found') ? 404 : 500;
-        res.status(statusCode).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
 });
 

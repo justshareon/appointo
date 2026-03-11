@@ -42,7 +42,8 @@ class MatchmakingService {
     async getMyTemplate(userId) {
         const vendor = await db.getVendorByOwnerId(userId);
         if (!vendor) {
-            throw new Error("Vendor profile not found");
+            // Return null instead of throwing error - allows frontend to handle gracefully
+            return null;
         }
         return await db.getVendorMatchmakingTemplate(vendor.id) || null;
     }
@@ -67,7 +68,8 @@ class MatchmakingService {
     async getMyResults(userId) {
         const vendor = await db.getVendorByOwnerId(userId);
         if (!vendor) {
-            throw new Error("Vendor profile not found");
+            // Return empty array instead of throwing error - allows frontend to handle gracefully
+            return [];
         }
         return await db.getVendorMatchmakingResults(vendor.id) || [];
     }

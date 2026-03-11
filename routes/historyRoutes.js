@@ -32,19 +32,5 @@ router.get('/vendor', authenticateToken, async (req, res) => {
     }
 });
 
-/**
- * GET /api/activities
- * Get activities
- */
-router.get('/activities', async (req, res) => {
-    try {
-        const activities = await historyService.getActivities();
-        res.json(activities);
-    } catch (err) {
-        LOG.error("Failed to fetch activities", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 module.exports = router;
 

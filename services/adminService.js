@@ -23,7 +23,27 @@ class AdminService {
         const search = query.search || '';
 
         // Super admin should see ALL vendors including Trade and Offer
-        return await db.getVendors(false, page, limit, sortBy, search, true);
+        // getVendors(activeOnly, page, limit, sortBy, searchQuery, includeTradeOffer)
+        const result = await db.getVendors(false, page, limit, sortBy, search, true);
+        
+        // Ensure result is in expected format
+        if (Array.isArray(result)) {
+            return {
+                vendors: result,
+                total: result.length,
+                page: page,
+                limit: limit
+            };
+        }
+        
+        return result;
+    }
+
+    /**
+     * Get vendor by ID
+     */
+    async getVendorById(vendorId) {
+        return await db.getVendorById(vendorId);
     }
 
     /**
@@ -82,21 +102,42 @@ class AdminService {
      * Get vendor dashboard data
      */
     async getVendorDashboard(vendorId) {
-        const [vendor, queue, appointments] = await Promise.all([
-            db.getVendorById(vendorId),
-            db.getQueueByVendor(vendorId),
-            db.getAppointmentsByVendor(vendorId)
-        ]);
+        try {
+            // Get vendor first
+            const vendor = await db.getVendorById(vendorId);
+            
+            if (!vendor) {
+                throw new Error("Vendor not found");
+            }
 
-        if (!vendor) {
-            throw new Error("Vendor not found");
+            // For trade/cyber/trust vendors, they might not have queues/appointments
+            // So we handle errors gracefully
+            let queue = [];
+            let appointments = [];
+
+            try {
+                queue = await db.getQueueByVendor(vendorId) || [];
+            } catch (err) {
+                LOG.warning(`[Admin Service] Error fetching queue for ${vendorId}:`, err.message);
+                queue = [];
+            }
+
+            try {
+                appointments = await db.getAppointmentsByVendor(vendorId) || [];
+            } catch (err) {
+                LOG.warning(`[Admin Service] Error fetching appointments for ${vendorId}:`, err.message);
+                appointments = [];
+            }
+
+            return {
+                profile: vendor,
+                queue: queue,
+                appointments: appointments
+            };
+        } catch (err) {
+            LOG.error(`[Admin Service] Error in getVendorDashboard for ${vendorId}:`, err.message);
+            throw err;
         }
-
-        return {
-            profile: vendor,
-            queue: queue || [],
-            appointments: appointments || []
-        };
     }
 }
 

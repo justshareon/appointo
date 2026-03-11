@@ -28,6 +28,13 @@ class HistoryService {
     async getActivities() {
         return await db.getActivities() || [];
     }
+
+    /**
+     * Create activity
+     */
+    async createActivity(activityData) {
+        return await db.createActivity(activityData);
+    }
 }
 
 module.exports = new HistoryService();

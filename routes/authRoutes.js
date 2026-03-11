@@ -80,5 +80,34 @@ router.post('/update-profile', authenticateToken, async (req, res) => {
     }
 });
 
+/**
+ * POST /api/auth/logout
+ * Logout user (logs the logout event)
+ */
+router.post('/logout', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.user?.id;
+        const userEmail = req.user?.email;
+        const userName = req.user?.name || 'Unknown';
+        
+        LOG.info(`[LOGOUT] User logout request received - User ID: ${userId}, Email: ${userEmail || 'N/A'}, Name: ${userName}`);
+        LOG.info(`[LOGOUT] Logout successful for user: ${userName} (${userId})`);
+        
+        res.json({ 
+            success: true, 
+            message: 'Logout successful',
+            userId: userId 
+        });
+    } catch (err) {
+        LOG.error("[LOGOUT] Server Error in /logout", err.message);
+        // Even if there's an error, logout should succeed on client side
+        res.status(200).json({ 
+            success: true, 
+            message: 'Logout processed (with warnings)',
+            warning: err.message 
+        });
+    }
+});
+
 module.exports = router;
 

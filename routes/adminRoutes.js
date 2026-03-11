@@ -1,76 +1,145 @@
+/**
+ * Admin Routes
+ * Routes for super admin functionality
+ */
 const express = require('express');
 const router = express.Router();
-const adminService = require('../services/adminService');
 const { authenticateToken } = require('../middleware/auth');
-const LOG = require('../utils/logger');
+const cyberFeaturesController = require('../controllers/admin/cyberFeaturesController');
+const adminController = require('../controllers/admin/adminController');
 
-/**
- * Middleware to check super admin access
- */
-const requireSuperAdmin = (req, res, next) => {
-    if (!adminService.isSuperAdmin(req.user)) {
-        return res.sendStatus(403);
+// Middleware to attach io to request
+const attachSocket = (io) => (req, res, next) => {
+    req.io = io;
+    if (req.user?.id) {
+        req.userRoom = `user_${req.user.id}`;
     }
     next();
 };
 
+// Set IO instance (called from server.js)
+let ioInstance = null;
+router.setIO = (io) => {
+    ioInstance = io;
+};
+
+// All admin routes require authentication
+router.use(authenticateToken);
+
+// Vendor Management
+router.get('/vendors', (req, res) => adminController.getVendors(req, res));
+router.post('/update-vendor', (req, res) => adminController.updateVendor(req, res));
+router.post('/add-vendor', (req, res) => adminController.addVendor(req, res));
+router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendorDashboard(req, res));
+
+// Cyber Features Management
+router.get('/cyber-features', (req, res) => cyberFeaturesController.getCyberFeatures(req, res));
+router.post('/cyber-features', attachSocket(ioInstance), (req, res) => cyberFeaturesController.updateCyberFeatures(req, res));
+router.post('/cyber-features/toggle/:featureName', attachSocket(ioInstance), (req, res) => cyberFeaturesController.toggleFeature(req, res));
+
+// Trading Data Source Management
+const tradingConfigService = require('../services/tradingConfigService');
+const stockDataService = require('../services/stockDataService');
+const LOG = require('../utils/logger');
+
 /**
- * GET /api/admin/vendors
- * Get all vendors (admin view)
+ * GET /api/admin/trading-config
+ * Get current trading data source configuration
  */
-router.get('/vendors', authenticateToken, requireSuperAdmin, async (req, res) => {
+router.get('/trading-config', async (req, res) => {
     try {
-        const vendors = await adminService.getVendors(req.query);
-        res.json(vendors);
-    } catch (err) {
-        LOG.error("Admin fetch vendors failed", err.message);
-        res.status(500).json({ error: err.message });
+        const config = tradingConfigService.getConfig();
+        res.json({ success: true, data: config });
+    } catch (error) {
+        LOG.error('[Admin] Error getting trading config:', error);
+        res.status(500).json({ error: error.message || 'Failed to get trading config' });
     }
 });
 
 /**
- * POST /api/admin/update-vendor
- * Update vendor field
+ * POST /api/admin/trading-config/yahoo-finance
+ * Enable/disable Yahoo Finance data source
+ * Body: { enabled: true/false }
  */
-router.post('/update-vendor', authenticateToken, requireSuperAdmin, async (req, res) => {
+router.post('/trading-config/yahoo-finance', async (req, res) => {
     try {
-        const result = await adminService.updateVendor(req.body.vendorId, req.body.field, req.body.value);
-        res.json(result);
-    } catch (err) {
-        LOG.error("Admin update vendor failed", err.message);
-        res.status(500).json({ error: err.message });
+        const { enabled } = req.body;
+        const updatedBy = req.user?.email || req.user?.id || 'admin';
+        
+        if (typeof enabled !== 'boolean') {
+            return res.status(400).json({ error: 'enabled must be a boolean value' });
+        }
+
+        const result = await tradingConfigService.updateYahooFinanceSetting(enabled, updatedBy);
+        res.json({ success: true, ...result });
+    } catch (error) {
+        LOG.error('[Admin] Error updating Yahoo Finance setting:', error);
+        res.status(500).json({ error: error.message || 'Failed to update setting' });
     }
 });
 
 /**
- * POST /api/admin/add-vendor
- * Add vendor
+ * POST /api/admin/trading-data/seed-sample
+ * Seed sample stock data for testing (DEPRECATED - Use Excel file or CSV import instead)
+ * Body: { count: number (optional, default: 50) }
  */
-router.post('/add-vendor', authenticateToken, requireSuperAdmin, async (req, res) => {
+router.post('/trading-data/seed-sample', async (req, res) => {
     try {
-        const result = await adminService.addVendor(req.body);
-        res.json(result);
-    } catch (err) {
-        LOG.error('Failed to add vendor', err.message);
-        const statusCode = err.message.includes('required') ? 400 : 500;
-        res.status(statusCode).json({ error: err.message });
+        LOG.warning('[Admin] Sample data seeding is deprecated. Use Excel file sync or CSV import instead.');
+        res.status(410).json({ 
+            success: false, 
+            message: 'Sample data seeding is disabled. Please use Excel file sync or CSV import.',
+            suggestion: 'Use POST /api/admin/trading-data/import-csv to import data from CSV file'
+        });
+    } catch (error) {
+        LOG.error('[Admin] Error in seed-sample endpoint:', error);
+        res.status(500).json({ error: error.message || 'Failed to process request' });
     }
 });
 
 /**
- * GET /api/admin/vendor-dashboard/:vendorId
- * Get vendor dashboard data
+ * POST /api/admin/trading-data/import-csv
+ * Import stock data from CSV file (downloaded from Google Sheets)
+ * Body: { csvData: string (CSV content) }
  */
-router.get('/vendor-dashboard/:vendorId', authenticateToken, requireSuperAdmin, async (req, res) => {
+router.post('/trading-data/import-csv', async (req, res) => {
     try {
-        const result = await adminService.getVendorDashboard(req.params.vendorId);
-        res.json(result);
-    } catch (err) {
-        LOG.error("Admin fetch vendor dashboard failed", err.message);
-        const statusCode = err.message.includes('not found') ? 404 : 500;
-        res.status(statusCode).json({ error: err.message });
+        const { csvData } = req.body;
+        
+        if (!csvData) {
+            return res.status(400).json({ error: 'csvData is required' });
+        }
+
+        const csvImportService = require('../services/csvImportService');
+        const result = await csvImportService.importFromCSV(csvData);
+        
+        res.json({ 
+            success: true, 
+            message: `Imported ${result.inserted} stock records from CSV`,
+            data: result 
+        });
+    } catch (error) {
+        LOG.error('[Admin] Error importing CSV:', error);
+        res.status(500).json({ error: error.message || 'Failed to import CSV data' });
+    }
+});
+
+/**
+ * DELETE /api/admin/trading-data/clear
+ * Clear all stock data (for testing)
+ */
+router.delete('/trading-data/clear', async (req, res) => {
+    try {
+        await stockDataService.truncateLiveData();
+        const pool = require('../database').getPool();
+        if (pool) {
+            await pool.query('TRUNCATE TABLE stock_data_history');
+        }
+        res.json({ success: true, message: 'All stock data cleared' });
+    } catch (error) {
+        LOG.error('[Admin] Error clearing stock data:', error);
+        res.status(500).json({ error: error.message || 'Failed to clear data' });
     }
 });
 
 module.exports = router;
-
