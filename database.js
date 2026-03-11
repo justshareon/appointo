@@ -10,6 +10,14 @@ const {
     buildAiInsight
 } = require('./matchmakingEngine');
 
+// Import test data from data.js
+let testData = {};
+try {
+    testData = require('./database/data.js');
+} catch (error) {
+    console.warn('[DB] Could not load test data from data.js:', error.message);
+}
+
 const LOG_FILE = path.join(__dirname, 'error.log');
 
 const appendErrorLog = (msg, detail) => {
@@ -80,7 +88,9 @@ let inMemoryDb = {
         { id: 'usr_fleetuser1', name: 'Fleet User 1', email: 'fleetuser1@test.com', mobile: '8000000007', role: 'user', location_name: 'Delhi' },
         { id: 'usr_fleetvendor1', name: 'Fleet Vendor 1', email: 'fleetvendor1@test.com', mobile: '8000000008', role: 'vendor', location_name: 'Delhi' },
         { id: 'usr_realuser1', name: 'Realestate User 1', email: 'realuser1@test.com', mobile: '8000000009', role: 'user', location_name: 'Bangalore' },
-        { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' }
+        { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
+        { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' }
     ],
     vendors: [
         {
@@ -338,6 +348,306 @@ let inMemoryDb = {
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false
+        },
+        {
+            id: 'v_cyber1',
+            owner_id: 'usr_cybervendor1',
+            shop_name: 'Cyber Shop 1',
+            category: 'Cyber',
+            is_active: true,
+            is_promoted: false,
+            latitude: 0,
+            longitude: 0,
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false,
+            features_cyber: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        }
+    ],
+    // Suraksha (Cyber Safety) in-memory data
+    surakshaValidations: [],
+    surakshaReports: [],
+    surakshaDevices: [],
+    // Caller Validation (Truecaller-like) data
+    spamNumbers: [],
+    callHistory: [],
+    communityReports: [],
+    // Cyber Threats (User-reported threats) - Test data based on real internet searches
+    cyberThreats: [
+        // Phone Scams (Most Common)
+        {
+            id: 'threat_phone_001',
+            user_id: 'usr_user',
+            type: 'phone',
+            value: '9876543210',
+            title: 'Fake Bank OTP Scam',
+            description: 'Caller claiming to be from SBI asking for OTP to verify account. Multiple users reported.',
+            severity: 'high',
+            category: 'scam',
+            tags: ['bank', 'otp', 'sbi', 'fraud'],
+            report_count: 45,
+            reported_by: ['usr_user', 'usr_u1', 'usr_u2'],
+            status: 'active',
+            verified: true,
+            verified_by: 'admin',
+            location: 'Mumbai',
+            created_at: new Date('2024-01-10'),
+            updated_at: new Date('2024-01-14')
+        },
+        {
+            id: 'threat_phone_002',
+            user_id: 'usr_u1',
+            type: 'phone',
+            value: '9876543211',
+            title: 'Income Tax Refund Scam',
+            description: 'Caller claiming income tax refund and asking for bank details. Reported by 32 users.',
+            severity: 'high',
+            category: 'fraud',
+            tags: ['income-tax', 'refund', 'bank-details'],
+            report_count: 32,
+            reported_by: ['usr_u1', 'usr_u2', 'usr_u3'],
+            status: 'active',
+            verified: true,
+            location: 'Delhi',
+            created_at: new Date('2024-01-08'),
+            updated_at: new Date('2024-01-13')
+        },
+        {
+            id: 'threat_phone_003',
+            user_id: 'usr_u2',
+            type: 'phone',
+            value: '9876543212',
+            title: 'KYC Update Scam',
+            description: 'Caller asking to update KYC by clicking link. Multiple reports from Bangalore.',
+            severity: 'critical',
+            category: 'phishing',
+            tags: ['kyc', 'link', 'update'],
+            report_count: 67,
+            reported_by: ['usr_u2', 'usr_u4', 'usr_u5'],
+            status: 'active',
+            verified: true,
+            location: 'Bangalore',
+            created_at: new Date('2024-01-05'),
+            updated_at: new Date('2024-01-15')
+        },
+        // Email Threats
+        {
+            id: 'threat_email_001',
+            user_id: 'usr_u3',
+            type: 'email',
+            value: 'support@bank-sbi-update.com',
+            title: 'Phishing Email - Fake SBI',
+            description: 'Phishing email claiming to be from SBI asking for login credentials. Reported by 28 users.',
+            severity: 'high',
+            category: 'phishing',
+            tags: ['email', 'sbi', 'phishing', 'credentials'],
+            report_count: 28,
+            reported_by: ['usr_u3', 'usr_u1'],
+            status: 'active',
+            verified: true,
+            location: 'Pune',
+            created_at: new Date('2024-01-09'),
+            updated_at: new Date('2024-01-12')
+        },
+        {
+            id: 'threat_email_002',
+            user_id: 'usr_u4',
+            type: 'email',
+            value: 'noreply@paytm-security.com',
+            title: 'Fake Paytm Security Alert',
+            description: 'Fake Paytm security alert email asking to verify account. Multiple reports.',
+            severity: 'medium',
+            category: 'phishing',
+            tags: ['paytm', 'security', 'alert'],
+            report_count: 19,
+            reported_by: ['usr_u4', 'usr_u5'],
+            status: 'active',
+            verified: false,
+            location: 'Mumbai',
+            created_at: new Date('2024-01-11'),
+            updated_at: new Date('2024-01-14')
+        },
+        // URL Threats
+        {
+            id: 'threat_url_001',
+            user_id: 'usr_u5',
+            type: 'url',
+            value: 'https://sbi-online-verify.in',
+            title: 'Fake SBI Website',
+            description: 'Fake SBI website designed to steal banking credentials. Reported by 54 users.',
+            severity: 'critical',
+            category: 'phishing',
+            tags: ['url', 'sbi', 'fake-website', 'credentials'],
+            report_count: 54,
+            reported_by: ['usr_u5', 'usr_user', 'usr_u1'],
+            status: 'active',
+            verified: true,
+            location: 'Delhi',
+            created_at: new Date('2024-01-07'),
+            updated_at: new Date('2024-01-15')
+        },
+        {
+            id: 'threat_url_002',
+            user_id: 'usr_user',
+            type: 'url',
+            value: 'http://paytm-kyc-update.com',
+            title: 'Fake Paytm KYC Portal',
+            description: 'Fake Paytm KYC update portal. Multiple users reported losing money.',
+            severity: 'critical',
+            category: 'fraud',
+            tags: ['paytm', 'kyc', 'fake-portal'],
+            report_count: 41,
+            reported_by: ['usr_user', 'usr_u2'],
+            status: 'active',
+            verified: true,
+            location: 'Bangalore',
+            created_at: new Date('2024-01-06'),
+            updated_at: new Date('2024-01-13')
+        },
+        // UPI Threats
+        {
+            id: 'threat_upi_001',
+            user_id: 'usr_u1',
+            type: 'upi',
+            value: 'fraud@paytm',
+            title: 'Fake UPI ID - Money Theft',
+            description: 'UPI ID used to receive fraudulent payments. Multiple victims reported.',
+            severity: 'high',
+            category: 'fraud',
+            tags: ['upi', 'paytm', 'money-theft'],
+            report_count: 23,
+            reported_by: ['usr_u1', 'usr_u3'],
+            status: 'active',
+            verified: true,
+            location: 'Mumbai',
+            created_at: new Date('2024-01-12'),
+            updated_at: new Date('2024-01-14')
+        },
+        // More Phone Scams
+        {
+            id: 'threat_phone_004',
+            user_id: 'usr_u2',
+            type: 'phone',
+            value: '9876543213',
+            title: 'Credit Card Activation Scam',
+            description: 'Caller claiming credit card needs activation and asking for card details.',
+            severity: 'high',
+            category: 'scam',
+            tags: ['credit-card', 'activation', 'card-details'],
+            report_count: 38,
+            reported_by: ['usr_u2', 'usr_u4'],
+            status: 'active',
+            verified: true,
+            location: 'Delhi',
+            created_at: new Date('2024-01-11'),
+            updated_at: new Date('2024-01-15')
+        },
+        {
+            id: 'threat_phone_005',
+            user_id: 'usr_u3',
+            type: 'phone',
+            value: '9876543214',
+            title: 'Lottery Winner Scam',
+            description: 'Caller claiming lottery win and asking for processing fee. Classic scam.',
+            severity: 'medium',
+            category: 'scam',
+            tags: ['lottery', 'winner', 'processing-fee'],
+            report_count: 15,
+            reported_by: ['usr_u3'],
+            status: 'active',
+            verified: false,
+            location: 'Pune',
+            created_at: new Date('2024-01-13'),
+            updated_at: new Date('2024-01-13')
+        },
+        {
+            id: 'threat_phone_006',
+            user_id: 'usr_u4',
+            type: 'phone',
+            value: '9876543215',
+            title: 'SIM Card Deactivation Scam',
+            description: 'Caller claiming SIM will be deactivated and asking for personal details.',
+            severity: 'high',
+            category: 'fraud',
+            tags: ['sim', 'deactivation', 'personal-details'],
+            report_count: 29,
+            reported_by: ['usr_u4', 'usr_u5'],
+            status: 'active',
+            verified: true,
+            location: 'Bangalore',
+            created_at: new Date('2024-01-09'),
+            updated_at: new Date('2024-01-14')
+        }
+    ],
+    threatAlerts: [
+        {
+            id: 'alert_001',
+            threat_id: 'threat_phone_001',
+            user_id: null,
+            type: 'threat_alert',
+            title: 'New High Severity Threat: Fake Bank OTP Scam',
+            message: 'A high severity threat has been reported. Be cautious of calls asking for OTP.',
+            threat_data: { type: 'phone', severity: 'high' },
+            read: false,
+            created_at: new Date('2024-01-10')
+        },
+        {
+            id: 'alert_002',
+            threat_id: 'threat_url_001',
+            user_id: null,
+            type: 'threat_alert',
+            title: 'Critical Threat: Fake SBI Website Detected',
+            message: 'A fake SBI website has been reported. Do not enter credentials on suspicious sites.',
+            threat_data: { type: 'url', severity: 'critical' },
+            read: false,
+            created_at: new Date('2024-01-07')
+        }
+    ],
+    // Cyber Security Tips
+    cyberSecurityTips: [
+        {
+            id: 1,
+            title: 'Use Strong, Unique Passwords',
+            description: 'Create passwords with at least 12 characters, mixing letters, numbers, and symbols.',
+            category: 'Password',
+            priority: 'high'
+        },
+        {
+            id: 2,
+            title: 'Enable Two-Factor Authentication',
+            description: 'Add an extra layer of security to your accounts with 2FA.',
+            category: 'Authentication',
+            priority: 'high'
+        },
+        {
+            id: 3,
+            title: 'Keep Software Updated',
+            description: 'Regularly update your operating system and apps to patch security vulnerabilities.',
+            category: 'Updates',
+            priority: 'high'
+        },
+        {
+            id: 4,
+            title: 'Be Wary of Phishing Emails',
+            description: 'Never click links or download attachments from suspicious emails.',
+            category: 'Phishing',
+            priority: 'medium'
+        },
+        {
+            id: 5,
+            title: 'Use VPN on Public WiFi',
+            description: 'Protect your data when using public WiFi networks with a VPN.',
+            category: 'Network',
+            priority: 'medium'
         }
     ],
     products: [
@@ -424,13 +734,19 @@ let inMemoryDb = {
         { id: 1, type: 'appointment', vendor_id: 'v_new1', userId: 'usr_u1', userName: 'User One', message: 'booked an appointment at Vendor One Shop', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
         { id: 2, type: 'review', vendor_id: 'v_5', userId: 'usr_rahul', userName: 'Rahul Sharma', message: 'rated Super Market 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
     ],
+    // System Settings
     settings: {
-        enable_queue: true,
-        enable_appointments: true,
-        enable_shopping: true,
-        enable_matchmaking: true,
-        enable_offer: true,
-        enable_trade: true
+        enable_queue: false,
+        enable_appointments: false,
+        enable_shopping: false,
+        enable_matchmaking: false,
+        enable_offer: false,
+        enable_trade: false,
+        enable_qless: false,
+        enable_fleet: true,
+        enable_realestate: false,
+        enable_cyber: true,
+        theme_position: 'auto'
     },
     matchmaking_templates: [
         {
@@ -461,7 +777,19 @@ let inMemoryDb = {
             is_active: true
         }
     ],
-    matchmaking_submissions: []
+    matchmaking_submissions: [],
+    tradingWatchlists: {}, // User watchlists: { userId: [{ symbol, addedAt }] }
+    tradingPortfolios: {}, // User portfolios: { userId: { holdings: [], positions: [], overallReturns: {} } }
+    tradingOrders: {}, // User orders: { userId: [{ id, symbol, type, quantity, price, status, createdAt }] }
+    tradingFunds: {}, // User funds: { userId: { availableBalance, investedAmount, transactions: [] } }
+    tradingData: {
+        marketIndices: [],
+        stockQuotes: [],
+        topGainers: [],
+        topLosers: [],
+        marketHigh: [],
+        mostBought: []
+    }
 };
 
 // --- MYSQL CONNECTION ---
@@ -572,6 +900,172 @@ const ensureMatchmakingTables = async () => {
         )
     `);
     matchmakingTablesReady = true;
+};
+
+let cyberThreatTablesReady = false;
+const ensureCyberThreatTables = async () => {
+    if (!pool || cyberThreatTablesReady) return;
+    
+    try {
+        // Cyber Threats Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS cyber_threats (
+                id VARCHAR(255) PRIMARY KEY,
+                user_id VARCHAR(64) NOT NULL,
+                type ENUM('phone', 'email', 'url', 'upi', 'bank_account', 'other') NOT NULL,
+                value VARCHAR(255) NOT NULL,
+                title VARCHAR(500) NOT NULL,
+                description TEXT,
+                severity ENUM('low', 'medium', 'high', 'critical') DEFAULT 'medium',
+                category ENUM('phishing', 'scam', 'malware', 'fraud', 'spam', 'other') DEFAULT 'other',
+                tags JSON,
+                evidence TEXT,
+                location VARCHAR(255),
+                report_count INT DEFAULT 1,
+                reported_by JSON,
+                status ENUM('active', 'resolved', 'false_positive') DEFAULT 'active',
+                verified BOOLEAN DEFAULT FALSE,
+                verified_by VARCHAR(64),
+                verified_at DATETIME NULL,
+                source VARCHAR(100),
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                INDEX idx_type_value (type, value),
+                INDEX idx_status (status),
+                INDEX idx_severity (severity),
+                INDEX idx_user (user_id),
+                INDEX idx_created (created_at)
+            )
+        `);
+        
+        // Threat Alerts Table
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS threat_alerts (
+                id VARCHAR(255) PRIMARY KEY,
+                threat_id VARCHAR(255) NOT NULL,
+                user_id VARCHAR(64),
+                type VARCHAR(50) DEFAULT 'threat_alert',
+                title VARCHAR(500) NOT NULL,
+                message TEXT,
+                threat_data JSON,
+                read BOOLEAN DEFAULT FALSE,
+                read_at DATETIME NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_user_read (user_id, read),
+                INDEX idx_threat (threat_id),
+                FOREIGN KEY (threat_id) REFERENCES cyber_threats(id) ON DELETE CASCADE
+            )
+        `);
+        
+        cyberThreatTablesReady = true;
+        LOG.success('[Database] Cyber threat tables ensured');
+    } catch (error) {
+        LOG.error('[Database] Error ensuring cyber threat tables:', error);
+    }
+};
+
+/**
+ * Ensure cyber users and vendor exist in MySQL
+ * Syncs cyber users and vendor from in-memory DB to MySQL
+ */
+const ensureCyberUsersAndVendor = async () => {
+    if (!pool) return;
+    
+    try {
+        // Ensure cyber users exist in MySQL
+        const cyberUsers = [
+            { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
+            { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' }
+        ];
+        
+        for (const user of cyberUsers) {
+            const [existing] = await pool.query('SELECT id FROM users WHERE id = ?', [user.id]);
+            if (existing.length === 0) {
+                await pool.query(
+                    `INSERT INTO users (id, name, email, mobile, role, location_name, created_at) 
+                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                    [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
+                );
+                LOG.success(`[Cyber Sync] Created user: ${user.id} (${user.name})`);
+            } else {
+                // Update existing user
+                await pool.query(
+                    `UPDATE users SET name=?, email=?, mobile=?, role=?, location_name=? WHERE id=?`,
+                    [user.name, user.email, user.mobile, user.role, user.location_name, user.id]
+                );
+                LOG.info(`[Cyber Sync] Updated user: ${user.id} (${user.name})`);
+            }
+        }
+        
+        // Ensure cyber vendor exists in MySQL
+        const cyberVendor = {
+            id: 'v_cyber1',
+            owner_id: 'usr_cybervendor1',
+            shop_name: 'Cyber Shop 1',
+            category: 'Cyber',
+            is_active: true,
+            is_promoted: false,
+            latitude: 0,
+            longitude: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false,
+            features_cyber: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        };
+        
+        const [existingVendor] = await pool.query('SELECT id FROM vendors WHERE id = ?', [cyberVendor.id]);
+        if (existingVendor.length === 0) {
+            await pool.query(
+                `INSERT INTO vendors (
+                    id, owner_id, shop_name, category, is_active, is_promoted, 
+                    latitude, longitude, google_link, instagram_handle, facebook_link,
+                    features_products, features_payments, features_appointments, features_queue,
+                    features_matchmaking, features_cyber, visibility_top_rated, visibility_list, visibility_feed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    cyberVendor.id, cyberVendor.owner_id, cyberVendor.shop_name, cyberVendor.category,
+                    cyberVendor.is_active, cyberVendor.is_promoted, cyberVendor.latitude, cyberVendor.longitude,
+                    cyberVendor.google_link, cyberVendor.instagram_handle, cyberVendor.facebook_link,
+                    cyberVendor.features_products, cyberVendor.features_payments, cyberVendor.features_appointments,
+                    cyberVendor.features_queue, cyberVendor.features_matchmaking, cyberVendor.features_cyber,
+                    cyberVendor.visibility_top_rated, cyberVendor.visibility_list, cyberVendor.visibility_feed
+                ]
+            );
+            LOG.success(`[Cyber Sync] Created vendor: ${cyberVendor.id} (${cyberVendor.shop_name})`);
+        } else {
+            // Update existing vendor, ensure features_cyber is enabled
+            await pool.query(
+                `UPDATE vendors SET 
+                    owner_id=?, shop_name=?, category=?, is_active=?, is_promoted=?,
+                    latitude=?, longitude=?, google_link=?, instagram_handle=?, facebook_link=?,
+                    features_products=?, features_payments=?, features_appointments=?, features_queue=?,
+                    features_matchmaking=?, features_cyber=?, visibility_top_rated=?, visibility_list=?, visibility_feed=?
+                WHERE id=?`,
+                [
+                    cyberVendor.owner_id, cyberVendor.shop_name, cyberVendor.category,
+                    cyberVendor.is_active, cyberVendor.is_promoted, cyberVendor.latitude, cyberVendor.longitude,
+                    cyberVendor.google_link, cyberVendor.instagram_handle, cyberVendor.facebook_link,
+                    cyberVendor.features_products, cyberVendor.features_payments, cyberVendor.features_appointments,
+                    cyberVendor.features_queue, cyberVendor.features_matchmaking, cyberVendor.features_cyber,
+                    cyberVendor.visibility_top_rated, cyberVendor.visibility_list, cyberVendor.visibility_feed,
+                    cyberVendor.id
+                ]
+            );
+            LOG.info(`[Cyber Sync] Updated vendor: ${cyberVendor.id} (${cyberVendor.shop_name})`);
+        }
+        
+        LOG.success('[Cyber Sync] Cyber users and vendor synced to MySQL');
+    } catch (error) {
+        LOG.error('[Cyber Sync] Error syncing cyber users and vendor:', error.message);
+    }
 };
 
 let fleetTablesReady = false;
@@ -783,6 +1277,66 @@ const db = {
                 }
             }
         });
+        return Array.from(affectedVendorIds);
+    },
+
+    /**
+     * Auto-complete queue items from previous days
+     * Marks all "waiting" queue items from previous days as "done"
+     */
+    autoCompleteQueues: async () => {
+        const now = new Date();
+        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const todayStr = toMysqlDateTime(today).split(' ')[0]; // YYYY-MM-DD
+        
+        const affectedVendorIds = new Set();
+
+        try {
+            if (pool) {
+                // Find queue items that are "waiting" and joined_at date is before today
+                const [rows] = await pool.query(
+                    `SELECT * FROM queues 
+                     WHERE status = 'waiting' 
+                     AND DATE(joined_at) < ?`,
+                    [todayStr]
+                );
+
+                if (rows.length > 0) {
+                    const ids = rows.map(r => r.id);
+                    await pool.query(
+                        `UPDATE queues SET status = 'done' WHERE id IN (?)`,
+                        [ids]
+                    );
+                    
+                    // Collect affected vendor IDs for socket updates
+                    for (const queue of rows) {
+                        affectedVendorIds.add(queue.vendor_id);
+                        LOG.info(`[AUTO-COMPLETE] Queue ${queue.id} from ${queue.joined_at} marked as done`);
+                    }
+                    
+                    return Array.from(affectedVendorIds);
+                }
+                return [];
+            }
+        } catch (err) {
+            LOG.error("MySQL autoCompleteQueues failed, falling back to local", err.message);
+        }
+
+        // In-memory implementation
+        inMemoryDb.queues.forEach(queue => {
+            if (queue.status === 'waiting') {
+                const queueDate = new Date(queue.joined_at);
+                const queueDateStr = new Date(queueDate.getFullYear(), queueDate.getMonth(), queueDate.getDate());
+                
+                // If queue was created before today, mark as done
+                if (queueDateStr < today) {
+                    queue.status = 'done';
+                    affectedVendorIds.add(queue.vendor_id);
+                    LOG.info(`[AUTO-COMPLETE] Queue ${queue.id} from ${queue.joined_at} marked as done`);
+                }
+            }
+        });
+        
         return Array.from(affectedVendorIds);
     },
 
@@ -1052,10 +1606,12 @@ const db = {
 
                 // Build WHERE clause properly
                 const baseWhere = activeOnly ? 'v.is_active = TRUE' : '1=1';
-                const excludeTradeOffer = includeTradeOffer ? '' : 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false)';
+                // Exclude service-specific vendors (Trade, Offer, QLess, Fleet, Realestate, Cyber, Trust Score) unless includeTradeOffer is true
+                // Note: includeTradeOffer is used as a catch-all for including service vendors (including cyber and trust score)
+                const excludeServiceVendors = includeTradeOffer ? '' : 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)';
                 // Build WHERE clause parts
                 const whereParts = [baseWhere];
-                if (excludeTradeOffer) whereParts.push(excludeTradeOffer);
+                if (excludeServiceVendors) whereParts.push(excludeServiceVendors);
                 if (searchClause) whereParts.push(searchClause);
                 const whereClause = 'WHERE ' + whereParts.join(' ');
 
@@ -1085,13 +1641,24 @@ const db = {
                 const [rows] = await pool.query(query, params);
                 LOG.info(`[getVendors] MySQL returned ${rows.length} vendors`);
                 
-                // Debug: Log offer/trade vendors if any
+                // Debug: Log service vendors if any
                 if (includeTradeOffer) {
                     const offerVendors = rows.filter(v => v.features_offer === 1 || v.features_offer === true);
                     const tradeVendors = rows.filter(v => v.features_trade === 1 || v.features_trade === true);
-                    LOG.info(`[getVendors] Found ${offerVendors.length} offer vendors, ${tradeVendors.length} trade vendors`);
+                    const qlessVendors = rows.filter(v => v.features_qless === 1 || v.features_qless === true);
+                    const fleetVendors = rows.filter(v => v.features_fleet === 1 || v.features_fleet === true);
+                    const realestateVendors = rows.filter(v => v.features_realestate === 1 || v.features_realestate === true);
+                    const cyberVendors = rows.filter(v => v.features_cyber === 1 || v.features_cyber === true);
+                    const trustScoreVendors = rows.filter(v => v.features_trust_score === 1 || v.features_trust_score === true);
+                    LOG.info(`[getVendors] MySQL: Found ${offerVendors.length} offer, ${tradeVendors.length} trade, ${qlessVendors.length} qless, ${fleetVendors.length} fleet, ${realestateVendors.length} realestate, ${cyberVendors.length} cyber, ${trustScoreVendors.length} trust_score vendors`);
+                    if (cyberVendors.length > 0) {
+                        LOG.info(`[getVendors] MySQL Cyber vendors:`, cyberVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_cyber: v.features_cyber, owner_id: v.owner_id })));
+                    }
                     if (offerVendors.length > 0) {
-                        LOG.info(`[getVendors] Offer vendors:`, offerVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_offer: v.features_offer })));
+                        LOG.info(`[getVendors] MySQL Offer vendors:`, offerVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_offer: v.features_offer })));
+                    }
+                    if (trustScoreVendors.length > 0) {
+                        LOG.info(`[getVendors] MySQL Trust Score vendors:`, trustScoreVendors.map(v => ({ id: v.id, shop_name: v.shop_name, features_trust_score: v.features_trust_score, owner_id: v.owner_id })));
                     }
                 }
                 
@@ -1111,14 +1678,16 @@ const db = {
         let filtered = activeOnly ? inMemoryDb.vendors.filter(v => v.is_active) : inMemoryDb.vendors;
         LOG.info(`[getVendors] In-memory vendors before filtering: ${filtered.length}`);
         
-        // Filter out service-specific vendors (Trade, Offer, QLess, Fleet, Realestate) from main vendor list (unless includeTradeOffer is true)
+        // Filter out service-specific vendors (Trade, Offer, QLess, Fleet, Realestate, Cyber, Trust Score) from main vendor list (unless includeTradeOffer is true)
         if (!includeTradeOffer) {
             filtered = filtered.filter(v => 
                 v.features_trade !== true && 
                 v.features_offer !== true &&
                 v.features_qless !== true &&
                 v.features_fleet !== true &&
-                v.features_realestate !== true
+                v.features_realestate !== true &&
+                v.features_cyber !== true &&
+                v.features_trust_score !== true
             );
             LOG.info(`[getVendors] After excluding service vendors: ${filtered.length}`);
         } else {
@@ -1129,7 +1698,17 @@ const db = {
             const qlessVendors = filtered.filter(v => v.features_qless === true);
             const fleetVendors = filtered.filter(v => v.features_fleet === true);
             const realestateVendors = filtered.filter(v => v.features_realestate === true);
-            LOG.info(`[getVendors] In-memory: Found ${offerVendors.length} offer, ${tradeVendors.length} trade, ${qlessVendors.length} qless, ${fleetVendors.length} fleet, ${realestateVendors.length} realestate vendors`);
+            const cyberVendors = filtered.filter(v => v.features_cyber === true);
+            const trustScoreVendors = filtered.filter(v => v.features_trust_score === true);
+            LOG.info(`[getVendors] In-memory: Found ${offerVendors.length} offer, ${tradeVendors.length} trade, ${qlessVendors.length} qless, ${fleetVendors.length} fleet, ${realestateVendors.length} realestate, ${cyberVendors.length} cyber, ${trustScoreVendors.length} trust_score vendors`);
+            if (trustScoreVendors.length > 0) {
+                LOG.info(`[getVendors] In-memory trust score vendors:`, trustScoreVendors.map(v => ({ 
+                    id: v?.id || 'NO_ID', 
+                    shop_name: v?.shop_name || 'NO_NAME', 
+                    owner_id: v?.owner_id || 'NO_OWNER',
+                    features_trust_score: v?.features_trust_score 
+                })));
+            }
             if (offerVendors.length > 0) {
                 LOG.info(`[getVendors] In-memory offer vendors:`, offerVendors.map(v => ({ 
                     id: v?.id || 'NO_ID', 
@@ -1266,11 +1845,19 @@ const db = {
         } catch (err) {
             LOG.error(`MySQL getQueueByVendor failed for ${vendorId}, falling back to local`, err.message);
         }
+        if (!inMemoryDb.queues || !Array.isArray(inMemoryDb.queues)) {
+            return [];
+        }
         return inMemoryDb.queues.filter(q => q.vendor_id === vendorId && q.status === "waiting")
             .map(q => {
                 const u = inMemoryDb.users.find(u => u.id === q.user_id);
                 return { ...q, userName: u ? u.name : 'Unknown', userMobile: u ? u.mobile : '' };
-            }).sort((a, b) => a.joined_at - b.joined_at);
+            }).sort((a, b) => {
+                // Handle cases where joined_at might be undefined or not a number
+                const aTime = a.joined_at || 0;
+                const bTime = b.joined_at || 0;
+                return aTime - bTime;
+            });
     },
 
     addQueueItem: async (item) => {
@@ -1592,13 +2179,25 @@ const db = {
             LOG.error(`MySQL getAppointmentsByVendor failed for ${vendorId}, falling back to local`, err.message);
         }
         if (!vendorId) return [];
+        if (!inMemoryDb.appointments || !Array.isArray(inMemoryDb.appointments)) {
+            return [];
+        }
         return inMemoryDb.appointments
             .filter(a => a.vendor_id === vendorId)
             .map(a => {
                 const u = inMemoryDb.users.find(u => u.id === a.user_id);
                 return { ...a, userName: u ? u.name : 'Unknown', userMobile: u ? u.mobile : '' };
             })
-            .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
+            .sort((a, b) => {
+                // Handle cases where date/time might be undefined
+                const aDate = a.date || '';
+                const bDate = b.date || '';
+                const dateCompare = aDate.localeCompare(bDate);
+                if (dateCompare !== 0) return dateCompare;
+                const aTime = a.time || '';
+                const bTime = b.time || '';
+                return aTime.localeCompare(bTime);
+            });
     },
 
     // Products
@@ -1792,6 +2391,31 @@ const db = {
                 return v ? v.visibility_feed !== false : true;
             })
             .slice(-limit).reverse();
+    },
+
+    createActivity: async (activityData) => {
+        try {
+            if (pool) {
+                const { type, user_id, user_name, message, metadata } = activityData;
+                const [result] = await pool.query(
+                    `INSERT INTO activities (type, user_id, user_name, message, metadata, timestamp) 
+                     VALUES (?, ?, ?, ?, ?, NOW())`,
+                    [type, user_id, user_name, message, JSON.stringify(metadata || {})]
+                );
+                return { id: result.insertId, ...activityData, timestamp: new Date() };
+            }
+        } catch (err) {
+            LOG.error("MySQL createActivity failed, falling back to local", err.message);
+        }
+        
+        // In-memory implementation
+        const newActivity = {
+            id: inMemoryDb.activities.length + 1,
+            ...activityData,
+            timestamp: new Date()
+        };
+        inMemoryDb.activities.push(newActivity);
+        return newActivity;
     },
 
     // Matchmaking
@@ -2061,28 +2685,120 @@ const db = {
                 try {
                     const [rows] = await pool.query('SELECT * FROM system_settings');
                     const settings = {
-                        enable_queue: true,
-                        enable_appointments: true,
-                        enable_shopping: true,
-                        enable_matchmaking: true,
-                        enable_offer: true,
-                        enable_trade: true
+                        enable_queue: false,
+                        enable_appointments: false,
+                        enable_shopping: false,
+                        enable_matchmaking: false,
+                        enable_offer: false,
+                        enable_trade: false,
+                        enable_qless: false,
+                        enable_fleet: true,
+                        enable_realestate: false,
+                        enable_cyber: true,
+                        enable_trust_score: true,
+                        theme_position: 'auto',
+                        auto_validate_calls: false,
+                        auto_validate_links: false,
+                        auto_validate_sms: false,
+                        auto_validate_emails: false,
+                        threat_scan_interval: 5,
+                        enable_threat_intelligence: true,
+                        enable_notification_validation: true,
+                        enable_mobile_security_scan: true,
+                        enable_subscription_management: true,
+                        enable_auto_validation: true,
+                        enable_suraksha: true,
+                        enable_caller_validation: true,
+                        auto_scan_enabled: false,
+                        auto_scan_time: '09:00',
+                        auto_scan_notify_threats: true,
+                        auto_scan_auto_clean: false
                     };
                     rows.forEach(r => {
                         if (settings.hasOwnProperty(r.key_name)) {
-                            settings[r.key_name] = r.value === 'true' || r.value === 1 || r.value === true;
+                            // Handle boolean values
+                            if (typeof settings[r.key_name] === 'boolean') {
+                                settings[r.key_name] = r.value === 'true' || r.value === 1 || r.value === true;
+                            } else {
+                                // Handle string values (like theme_position)
+                                settings[r.key_name] = r.value;
+                            }
                         }
                     });
                     return settings;
                 } catch (e) {
                     // Table might not exist, return defaults
-                    return { enable_queue: true, enable_appointments: true, enable_shopping: true, enable_matchmaking: true, enable_offer: true, enable_trade: true };
+                    return { 
+                        enable_queue: false, 
+                        enable_appointments: false, 
+                        enable_shopping: false, 
+                        enable_matchmaking: false, 
+                        enable_offer: false, 
+                        enable_trade: false,
+                        enable_qless: false,
+                        enable_fleet: true,
+                        enable_realestate: false,
+                        enable_cyber: true,
+                        enable_trust_score: true,
+                        theme_position: 'auto',
+                        auto_validate_calls: false,
+                        auto_validate_links: false,
+                        auto_validate_sms: false,
+                        auto_validate_emails: false,
+                        threat_scan_interval: 5,
+                        enable_threat_intelligence: true,
+                        enable_notification_validation: true,
+                        enable_mobile_security_scan: true,
+                        enable_subscription_management: true,
+                        enable_auto_validation: true,
+                        enable_suraksha: true,
+                        enable_caller_validation: true,
+                        auto_scan_enabled: false,
+                        auto_scan_time: '09:00',
+                        auto_scan_notify_threats: true,
+                        auto_scan_auto_clean: false
+                    };
                 }
             }
         } catch (err) {
             LOG.error("MySQL getSettings failed", err.message);
         }
-        return inMemoryDb.settings;
+        // Ensure settings object exists with all defaults
+        if (!inMemoryDb.settings) {
+            inMemoryDb.settings = {};
+        }
+        // Merge with defaults to ensure all settings are present
+        const defaultSettings = {
+            enable_queue: false,
+            enable_appointments: false,
+            enable_shopping: false,
+            enable_matchmaking: false,
+            enable_offer: false,
+            enable_trade: false,
+            enable_qless: false,
+            enable_fleet: true,
+            enable_realestate: false,
+            enable_cyber: true,
+            enable_trust_score: true,
+            theme_position: 'auto',
+            auto_validate_calls: false,
+            auto_validate_links: false,
+            auto_validate_sms: false,
+            auto_validate_emails: false,
+            threat_scan_interval: 5,
+            enable_threat_intelligence: true,
+            enable_notification_validation: true,
+            enable_mobile_security_scan: true,
+            enable_subscription_management: true,
+            enable_auto_validation: true,
+            enable_suraksha: true,
+            enable_caller_validation: true,
+            auto_scan_enabled: false,
+            auto_scan_time: '09:00',
+            auto_scan_notify_threats: true,
+            auto_scan_auto_clean: false
+        };
+        return { ...defaultSettings, ...inMemoryDb.settings };
     },
 
     updateSettings: async (newSettings) => {
@@ -2094,7 +2810,7 @@ const db = {
                     await pool.query(`
                         CREATE TABLE IF NOT EXISTS system_settings (
                             key_name VARCHAR(50) PRIMARY KEY, 
-                            value VARCHAR(10)
+                            value VARCHAR(50)
                         )
                     `);
                     
@@ -2120,6 +2836,104 @@ const db = {
 
 // Performance Wrapper
 const measuredDb = { LOG_CONFIG }; // Export config
+
+// Ensure autoValidationDetections is available
+if (!inMemoryDb.autoValidationDetections) {
+    inMemoryDb.autoValidationDetections = [];
+}
+
+// Ensure mobileSecurityScans is available
+if (!inMemoryDb.mobileSecurityScans) {
+    inMemoryDb.mobileSecurityScans = [];
+}
+
+// Export mobileSecurityScans
+if (!measuredDb.mobileSecurityScans) {
+    measuredDb.mobileSecurityScans = inMemoryDb.mobileSecurityScans;
+}
+
+// Ensure autoValidationDetections is exported
+if (!measuredDb.autoValidationDetections) {
+    measuredDb.autoValidationDetections = inMemoryDb.autoValidationDetections;
+}
+
+// Ensure subscriptions is available
+if (!inMemoryDb.subscriptions) {
+    inMemoryDb.subscriptions = [];
+}
+
+// Export subscriptions
+if (!measuredDb.subscriptions) {
+    measuredDb.subscriptions = inMemoryDb.subscriptions;
+}
+
+// Ensure notificationValidations is available
+if (!inMemoryDb.notificationValidations) {
+    inMemoryDb.notificationValidations = [];
+}
+
+// Export notificationValidations
+if (!measuredDb.notificationValidations) {
+    measuredDb.notificationValidations = inMemoryDb.notificationValidations;
+}
+
+// Ensure threatIntelligence is available
+if (!inMemoryDb.threatIntelligence) {
+    inMemoryDb.threatIntelligence = [];
+}
+
+// Export threatIntelligence
+if (!measuredDb.threatIntelligence) {
+    measuredDb.threatIntelligence = inMemoryDb.threatIntelligence;
+}
+
+// Merge test data from data.js into inMemoryDb
+if (testData && typeof testData === 'object') {
+    Object.keys(testData).forEach(key => {
+        if (Array.isArray(testData[key]) && Array.isArray(inMemoryDb[key])) {
+            // Merge arrays: use test data if inMemoryDb array is empty, otherwise merge
+            if (inMemoryDb[key].length === 0) {
+                inMemoryDb[key] = [...testData[key]];
+            } else {
+                // Merge unique items based on id
+                const existingIds = new Set(inMemoryDb[key].map(item => item.id));
+                testData[key].forEach(item => {
+                    if (!existingIds.has(item.id)) {
+                        inMemoryDb[key].push(item);
+                    }
+                });
+            }
+        } else if (testData[key] && !inMemoryDb[key]) {
+            // Copy if inMemoryDb doesn't have this key
+            inMemoryDb[key] = testData[key];
+        }
+    });
+    LOG.info(`Loaded test data: ${Object.keys(testData).filter(k => Array.isArray(testData[k])).map(k => `${k}(${testData[k].length})`).join(', ')}`);
+}
+
+// Copy all inMemoryDb properties directly (for arrays like cyberThreats, threatAlerts, etc.)
+Object.keys(inMemoryDb).forEach(key => {
+    if (!db.hasOwnProperty(key)) {
+        measuredDb[key] = inMemoryDb[key];
+    }
+});
+
+// Explicitly ensure cyberThreats is exported (for analytics)
+if (inMemoryDb.cyberThreats) {
+    measuredDb.cyberThreats = inMemoryDb.cyberThreats;
+    LOG.info(`Exported cyberThreats: ${measuredDb.cyberThreats.length} threats`);
+} else {
+    LOG.warning('cyberThreats not found in inMemoryDb');
+}
+
+// Explicitly ensure threatIntelligence is exported
+if (inMemoryDb.threatIntelligence) {
+    measuredDb.threatIntelligence = inMemoryDb.threatIntelligence;
+    LOG.info(`Exported threatIntelligence: ${measuredDb.threatIntelligence.length} threats`);
+} else {
+    LOG.warning('threatIntelligence not found in inMemoryDb');
+}
+
 for (const key in db) {
     if (typeof db[key] === 'function') {
         if (key === 'getType') {
@@ -2147,6 +2961,9 @@ for (const key in db) {
 // Export pool for use in other modules (like dealsService)
 measuredDb.getPool = () => pool;
 measuredDb.pool = pool; // Direct access
+measuredDb.inMemoryDb = inMemoryDb; // Export in-memory DB for trading data service
 measuredDb.ensureFleetTables = ensureFleetTables; // Export for fleetService
+measuredDb.ensureCyberThreatTables = ensureCyberThreatTables; // Export for cyberThreatService
+measuredDb.ensureCyberUsersAndVendor = ensureCyberUsersAndVendor; // Export for cyber sync
 
 module.exports = measuredDb;

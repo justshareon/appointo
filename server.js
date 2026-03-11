@@ -20,8 +20,17 @@ const matchmakingRoutes = require('./routes/matchmakingRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const historyRoutes = require('./routes/historyRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
+const userRoutes = require('./routes/userRoutes');
+const activityRoutes = require('./routes/activityRoutes');
+const dealsRoutes = require('./routes/dealsRoutes');
 const analyticsRoutes = require('./analyticsRoutes');
 const fleetRoutes = require('./routes/fleetRoutes');
+const surakshaRoutes = require('./routes/surakshaRoutes');
+const cyberToolsRoutes = require('./routes/cyberToolsRoutes');
+const subscriptionRoutes = require('./routes/subscriptionRoutes');
+const trustScoreRoutes = require('./routes/trustScoreRoutes');
+const tradingRoutes = require('./routes/tradingRoutes');
+const tradingDiagnostics = require('./routes/tradingDiagnostics');
 
 // Import services
 const dealsService = require('./dealsService');
@@ -38,9 +47,18 @@ const io = new Server(server, {
     pingInterval: 25000
 });
 
+//app.use(express.json({ limit: '50mb' }));
+//app.use(express.urlencoded({ limit: '50mb', extended: true }));
+
+// In your main server file (likely app.js or server.js)
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
 // Middleware
 app.use(cors());
 app.use(express.json());
+// Disable ETags globally to prevent 304 responses (trading routes need fresh data)
+app.set('etag', false);
 app.use(requestLogger);
 
 // Root route for health check
@@ -50,18 +68,6 @@ app.get('/', (req, res) => {
         mode: db.getType(),
         database: process.env.DB_HOST || 'local'
     });
-});
-
-// DEV: Get all users for testing
-app.get('/api/users', async (req, res) => {
-    try {
-        const users = await db.getUsers();
-        LOG.info(`[API /users] Returning ${users.length} users`);
-        res.json(users);
-    } catch (err) {
-        LOG.error("Failed to fetch users", err.message);
-        res.status(500).json({ error: err.message });
-    }
 });
 
 // Socket.IO connection handling
@@ -75,6 +81,111 @@ io.on('connection', (socket) => {
         LOG.warning(`Client disconnected: ${socket.id}`);
     });
 });
+
+// Setup Suraksha Socket.IO handlers
+const setupSurakshaSocket = require('./sockets/surakshaSocket');
+setupSurakshaSocket(io);
+
+// Setup Threat Intelligence Job (every 5 hours)
+const ThreatIntelligenceJob = require('./jobs/threatIntelligenceJob');
+const threatIntelligenceJob = new ThreatIntelligenceJob(io);
+threatIntelligenceJob.schedule();
+LOG.info('[Server] ✅ Threat Intelligence job scheduled (every 5 hours)');
+
+// Setup Database Sync Service
+const databaseSyncService = require('./services/databaseSyncService');
+databaseSyncService.startPeriodicSync();
+LOG.info('[Server] ✅ Database sync service started (every 30 minutes)');
+
+// Initialize Feature Engineering Service (for stock analytics)
+const featureEngineeringService = require('./services/featureEngineeringService');
+featureEngineeringService.initializeTables().catch(err => {
+    LOG.warning('[Server] Feature engineering tables initialization skipped:', err.message);
+});
+LOG.info('[Server] ✅ Feature engineering service initialized');
+
+// Setup Trading Data Refresh Job (only if Yahoo Finance is enabled)
+const config = require('./config/tradingConfig');
+if (config.dataSources.useYahooFinance) {
+    const TradingDataRefreshJob = require('./jobs/tradingDataRefreshJob');
+    const tradingDataRefreshJob = new TradingDataRefreshJob();
+    tradingDataRefreshJob.start();
+    LOG.info('[Server] ✅ Trading data refresh job started (BOD/EOD + 10min refresh)');
+} else {
+    // Setup Excel File Sync Job (when Yahoo Finance is disabled)
+    try {
+        const ExcelFileSyncJob = require('./jobs/excelFileSyncJob');
+        const excelFileSyncJob = new ExcelFileSyncJob();
+        excelFileSyncJob.start();
+        // Store reference globally for status endpoint
+        global.excelFileSyncJob = excelFileSyncJob;
+        LOG.info('[Server] ✅ Excel file sync job started (every 25 minutes)');
+        LOG.info(`[Server] Data Source: Excel File -> MySQL/In-Memory (Yahoo Finance disabled)`);
+    } catch (error) {
+        LOG.error('[Server] Failed to start Excel file sync job:', error.message);
+        LOG.warning('[Server] Server will continue running without Excel sync');
+    }
+    
+    // Setup Mutual Fund Sync Job
+    try {
+        const MutualFundSyncJob = require('./jobs/mutualFundSyncJob');
+        const mutualFundSyncJob = new MutualFundSyncJob();
+        mutualFundSyncJob.start();
+        // Store reference globally for status endpoint
+        global.mutualFundSyncJob = mutualFundSyncJob;
+        LOG.info('[Server] ✅ Mutual fund sync job started (every 25 minutes)');
+        LOG.info(`[Server] Data Source: Equity & Mutual Fund Investment Tracker.xlsx -> MySQL/In-Memory`);
+    } catch (error) {
+        LOG.error('[Server] Failed to start mutual fund sync job:', error.message);
+        LOG.warning('[Server] Server will continue running without mutual fund sync');
+    }
+    
+    // Setup Corporate Actions Sync Job
+    try {
+        const CorporateActionsSyncJob = require('./jobs/corporateActionsSyncJob');
+        const corporateActionsSyncJob = new CorporateActionsSyncJob();
+        corporateActionsSyncJob.start();
+        // Store reference globally for status endpoint
+        global.corporateActionsSyncJob = corporateActionsSyncJob;
+        LOG.info('[Server] ✅ Corporate actions sync job started (daily at 6 AM)');
+        LOG.info(`[Server] Data Source: CF-CA-equities-*.csv -> MySQL/In-Memory`);
+    } catch (error) {
+        LOG.error('[Server] Failed to start corporate actions sync job:', error.message);
+        LOG.warning('[Server] Server will continue running without corporate actions sync');
+    }
+    
+    // Setup Board Meetings Sync Job
+    try {
+        const BoardMeetingsSyncJob = require('./jobs/boardMeetingsSyncJob');
+        const boardMeetingsSyncJob = new BoardMeetingsSyncJob();
+        boardMeetingsSyncJob.start();
+        // Store reference globally for status endpoint
+        global.boardMeetingsSyncJob = boardMeetingsSyncJob;
+        LOG.info('[Server] ✅ Board meetings sync job started (daily at 6:30 AM)');
+        LOG.info(`[Server] Data Source: CF-BM-equities-*.csv -> MySQL/In-Memory`);
+    } catch (error) {
+        LOG.error('[Server] Failed to start board meetings sync job:', error.message);
+        LOG.warning('[Server] Server will continue running without board meetings sync');
+    }
+    
+    // Check database status (no auto-seeding)
+    setTimeout(async () => {
+        try {
+            const stockDataService = require('./services/stockDataService');
+            const allStocks = await stockDataService.getAllStocks();
+            LOG.info(`[Server] Database has ${allStocks.length} stock records`);
+            if (allStocks.length === 0) {
+                LOG.info('[Server] Database is empty - waiting for Excel file sync or manual data import');
+            }
+            
+            const mutualFundDataService = require('./services/mutualFundDataService');
+            const allFunds = await mutualFundDataService.getAllFunds();
+            LOG.info(`[Server] Database has ${allFunds.length} mutual fund records`);
+        } catch (error) {
+            LOG.warning('[Server] Could not check database:', error.message);
+        }
+    }, 8000); // Wait 8 seconds for database connection
+}
 
 // Periodic task: Auto-expire appointments every minute
 setInterval(async () => {
@@ -94,6 +205,34 @@ setInterval(async () => {
         LOG.error("Auto-expire task failed", e.message);
     }
 }, 60000);
+
+// Periodic task: Auto-complete queues from previous days every hour
+setInterval(async () => {
+    try {
+        const affectedVendorIds = await db.autoCompleteQueues();
+        if (affectedVendorIds.length > 0) {
+            LOG.info(`Auto-completed queues for vendors: ${affectedVendorIds.join(', ')}`);
+            
+            for (const vId of affectedVendorIds) {
+                const updatedQueue = await db.getQueueByVendor(vId);
+                io.to(`vendor_${vId}`).emit('queue_updated', updatedQueue);
+            }
+        }
+    } catch (e) {
+        LOG.error("Auto-complete queues task failed", e.message);
+    }
+}, 3600000); // Run every hour (3600000 ms)
+
+// Periodic task: Sync cyber users and vendor every 5 minutes (ensures both DBs stay in sync)
+setInterval(async () => {
+    try {
+        if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
+            await db.ensureCyberUsersAndVendor();
+        }
+    } catch (e) {
+        LOG.error("Cyber users and vendor sync task failed", e.message);
+    }
+}, 300000); // Run every 5 minutes (300000 ms)
 
 // Periodic task: Update fleet queue positions and wait times every 30 seconds
 setInterval(async () => {
@@ -171,24 +310,23 @@ app.use('/api/orders', orderRoutes);
 // Matchmaking Routes (vendor-specific routes are in vendorRoutes)
 app.use('/api', matchmakingRoutes);
 
-// Admin Routes
-app.use('/api/admin', adminRoutes);
-
 // History Routes
-app.use('/api/history', historyRoutes);
-app.get('/api/activities', async (req, res) => {
-    try {
-        const historyService = require('./services/historyService');
-        const activities = await historyService.getActivities();
-        res.json(activities);
-    } catch (err) {
-        LOG.error("Failed to fetch activities", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+//app.use('/api/history', historyRoutes);
 
-// Settings Routes
-app.use('/api/settings', settingsRoutes);
+// Activity Routes (public activities endpoint)
+app.use('/api', activityRoutes);
+
+// User Routes (for admin/testing - get all users)
+app.use('/api', userRoutes);
+
+// Settings Routes (with socket support)
+settingsRoutes.setIO(io);
+//app.use('/api/settings', settingsRoutes);
+
+// Admin Routes (with socket support)
+adminRoutes.setIO(io);
+app.use('/api/admin', adminRoutes);
+LOG.success('[Server] ✅ Admin routes registered at /api/admin');
 
 // Fleet Routes
 LOG.info('[Server] Registering Fleet routes...');
@@ -199,6 +337,51 @@ LOG.info('[Server] Available Fleet endpoints:');
 LOG.info('[Server]   GET  /api/fleet/operations/stats');
 LOG.info('[Server]   GET  /api/fleet/operations/gates');
 LOG.info('[Server]   GET  /api/fleet/operations/alerts');
+
+// Suraksha Routes (Cyber Safety)
+LOG.info('[Server] Registering Suraksha routes...');
+surakshaRoutes.setIO(io); // Pass Socket.IO instance to Suraksha routes
+app.use('/api/suraksha', surakshaRoutes);
+app.use('/api/trust-score', trustScoreRoutes);
+app.use('/api/trading', tradingRoutes);
+app.use('/api/trading', tradingDiagnostics);
+app.use('/api/trading', require('./routes/tradingDataTrace'));
+
+// Also register data-trace as a standalone route for easier access
+app.use('/api/trading-data-trace', require('./routes/tradingDataTrace'));
+LOG.success('[Server] ✅ Trading routes registered at /api/trading');
+LOG.success('[Server] ✅ Suraksha routes registered at /api/suraksha');
+LOG.info('[Server] Available Suraksha endpoints:');
+LOG.info('[Server]   POST /api/suraksha/validate');
+LOG.info('[Server]   GET  /api/suraksha/history');
+LOG.info('[Server]   POST /api/suraksha/report');
+LOG.info('[Server]   POST /api/suraksha/device/block');
+LOG.info('[Server]   GET  /api/suraksha/auto-validation/detections');
+LOG.info('[Server]   GET  /api/suraksha/auto-validation/stats');
+LOG.info('[Server]   POST /api/suraksha/auto-validation/detection');
+LOG.info('[Server]   GET  /api/suraksha/device/sims');
+LOG.info('[Server]   POST /api/suraksha/caller/validate');
+LOG.info('[Server]   POST /api/suraksha/caller/report');
+LOG.info('[Server]   GET  /api/suraksha/caller/history');
+LOG.info('[Server]   POST /api/suraksha/threats/post');
+LOG.info('[Server]   POST /api/suraksha/threats/search');
+LOG.info('[Server]   GET  /api/suraksha/threats/active');
+LOG.info('[Server]   GET  /api/suraksha/threats/alerts');
+LOG.info('[Server]   POST /api/suraksha/threats/alerts/:alertId/read');
+LOG.info('[Server]   GET  /api/suraksha/analytics/most-active');
+LOG.info('[Server]   GET  /api/suraksha/analytics/culprits');
+LOG.info('[Server]   GET  /api/suraksha/analytics/demographics');
+LOG.info('[Server]   GET  /api/suraksha/analytics/statistics');
+LOG.info('[Server]   GET  /api/suraksha/analytics/threats');
+
+// Cyber Tools Routes
+LOG.info('[Server] Registering Cyber Tools routes...');
+app.use('/api/cyber', cyberToolsRoutes);
+LOG.success('[Server] ✅ Cyber Tools routes registered at /api/cyber');
+LOG.info('[Server] Available Cyber Tools endpoints:');
+LOG.info('[Server]   POST /api/cyber/check-email-breach');
+LOG.info('[Server]   GET  /api/cyber/security-tips');
+
 LOG.info('[Server]   GET  /api/fleet/operations/drivers');
 LOG.info('[Server]   GET  /api/fleet/operations/suspicious-locations');
 LOG.info('[Server]   GET  /api/fleet/queue/active');
@@ -208,50 +391,11 @@ LOG.info('[Server]   GET  /api/fleet/gates');
 LOG.info('[Server]   GET  /api/fleet/drivers/:driverId/stats');
 LOG.info('[Server]   GET  /api/fleet/drivers/:driverId/trips/active');
 
-// Admin Settings Update (with socket broadcast)
-app.post('/api/admin/settings', require('./middleware/auth').authenticateToken, async (req, res) => {
-    if (req.user.role !== 'super_admin') return res.sendStatus(403);
-    try {
-        const settingsService = require('./services/settingsService');
-        const updated = await settingsService.updateSettings(req.body);
-        io.emit('settings_updated', updated);
-        res.json(updated);
-    } catch (err) {
-        LOG.error("Failed to update settings", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
 // Analytics Routes
 app.use('/api/analytics', analyticsRoutes);
 
 // Deals Routes
-app.get('/api/deals', async (req, res) => {
-    try {
-        const filters = {
-            company_id: req.query.company_id ? parseInt(req.query.company_id) : null,
-            category_id: req.query.category_id ? parseInt(req.query.category_id) : null,
-            min_discount_percentage: req.query.min_discount ? parseFloat(req.query.min_discount) : null,
-            limit: req.query.limit ? parseInt(req.query.limit) : 100
-        };
-        const deals = await dealsService.getDealsFromDB(filters);
-        res.json(deals);
-    } catch (err) {
-        LOG.error("Failed to fetch deals", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-app.post('/api/deals/sync/:companyId', require('./middleware/auth').authenticateToken, async (req, res) => {
-    if (req.user.role !== 'super_admin') return res.sendStatus(403);
-    try {
-        await dealsService.syncCompanyDeals(parseInt(req.params.companyId));
-        res.json({ success: true, message: 'Deals synced successfully' });
-    } catch (err) {
-        LOG.error("Failed to sync deals", err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
+app.use('/api', dealsRoutes);
 
 // Auto-sync deals every 30 minutes
 const SYNC_INTERVAL_MS = (process.env.DEALS_SYNC_INTERVAL_MINUTES || 30) * 60 * 1000;
@@ -275,6 +419,17 @@ if (db.getType() === 'mysql' && db.ensureFleetTables) {
             LOG.warning("Fleet tables initialization on startup failed", e.message);
         }
     }, 2000); // Wait 2 seconds for DB connection to be ready
+}
+
+// Initialize cyber users and vendor on server start (if MySQL)
+if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
+    setTimeout(async () => {
+        try {
+            await db.ensureCyberUsersAndVendor();
+        } catch (e) {
+            LOG.warning("Cyber users and vendor initialization on startup failed", e.message);
+        }
+    }, 3000); // Wait 3 seconds for DB connection to be ready
 }
 
 const PORT = process.env.PORT || 5000;

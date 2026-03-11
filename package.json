@@ -12,7 +12,8 @@
     "test:fleet": "node test_fleet_realtime.js",
     "seed:fleet": "node seed_fleet_test_data.js",
     "verify:gates": "node verify_fleet_gates.js",
-    "check:data": "node check_fleet_data.js"
+    "check:data": "node check_fleet_data.js",
+    "setup:db": "node setup_trading_realestate_db.js"
   },
   "keywords": [
     "node",
@@ -24,13 +25,19 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@ixjb94/indicators": "^1.2.4",
     "axios": "^1.6.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.3.1",
     "express": "^4.18.2",
+    "googleapis": "^128.0.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.6.2",
-    "socket.io": "^4.7.2"
+    "node-cron": "^3.0.3",
+    "socket.io": "^4.7.2",
+    "xlsx": "^0.18.5",
+    "xml2js": "^0.6.2",
+    "yahoo-finance2": "^2.4.0"
   }
 }

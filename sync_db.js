@@ -397,9 +397,9 @@ const inMemoryDb = {
         { id: 2, type: 'review', vendor_id: 'v_5', userId: 'usr_rahul', userName: 'Rahul Sharma', message: 'rated Super Market 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
     ],
     settings: {
-        enable_queue: true,
-        enable_appointments: true,
-        enable_shopping: true
+        enable_queue: false,
+        enable_appointments: false,
+        enable_shopping: false
     },
     matchmaking_templates: [
         {
