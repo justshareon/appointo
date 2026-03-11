@@ -2745,7 +2745,8 @@ const db = {
                         auto_scan_enabled: false,
                         auto_scan_time: '09:00',
                         auto_scan_notify_threats: true,
-                        auto_scan_auto_clean: false
+                        auto_scan_auto_clean: false,
+                        enable_lazy_loading: false // Default: false (eager loading for better performance)
                     };
                     rows.forEach(r => {
                         if (settings.hasOwnProperty(r.key_name)) {

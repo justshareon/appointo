@@ -161,6 +161,16 @@ class ExcelFileSyncJob {
                 return;
             }
 
+            // Step 3.5: Ensure tables are initialized
+            LOG.info('[Excel File Sync] Step 3.5: Ensuring database tables are initialized...');
+            try {
+                await stockDataService.initializeTables();
+                LOG.success('[Excel File Sync] Database tables initialized/verified');
+            } catch (initError) {
+                LOG.error('[Excel File Sync] Failed to initialize tables:', initError.message);
+                throw new Error(`Database initialization failed: ${initError.message}`);
+            }
+
             // Step 4: Begin database transaction
             LOG.info('[Excel File Sync] Step 4: Starting database transaction...');
 
@@ -298,6 +308,19 @@ class ExcelFileSyncJob {
      */
     async archiveWithConnection(connection) {
         try {
+            // Check if table exists first
+            const [tables] = await connection.query(`
+                SELECT COUNT(*) as count 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE() 
+                AND table_name = 'live_stock_data'
+            `);
+            
+            if (tables[0].count === 0) {
+                LOG.warning('[Excel File Sync] live_stock_data table does not exist, nothing to archive');
+                return 0;
+            }
+
             const [liveData] = await connection.query('SELECT * FROM live_stock_data');
             
             if (liveData.length === 0) {

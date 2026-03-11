@@ -324,7 +324,8 @@ app.use('/api', userRoutes);
 
 // Settings Routes (with socket support)
 settingsRoutes.setIO(io);
-//app.use('/api/settings', settingsRoutes);
+app.use('/api/settings', settingsRoutes);
+LOG.success('[Server] ✅ Settings routes registered at /api/settings');
 
 // Admin Routes (with socket support)
 adminRoutes.setIO(io);

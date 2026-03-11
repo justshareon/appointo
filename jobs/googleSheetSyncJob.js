@@ -112,6 +112,16 @@ class GoogleSheetSyncJob {
                 throw new Error('MySQL connection not available');
             }
 
+            // Step 3.5: Ensure tables are initialized
+            LOG.info('[Google Sheets Sync] Step 3.5: Ensuring database tables are initialized...');
+            try {
+                await stockDataService.initializeTables();
+                LOG.success('[Google Sheets Sync] Database tables initialized/verified');
+            } catch (initError) {
+                LOG.error('[Google Sheets Sync] Failed to initialize tables:', initError.message);
+                throw new Error(`Database initialization failed: ${initError.message}`);
+            }
+
             const connection = await pool.getConnection();
             await connection.beginTransaction();
 
@@ -175,6 +185,19 @@ class GoogleSheetSyncJob {
      */
     async archiveWithConnection(connection) {
         try {
+            // Check if table exists first
+            const [tables] = await connection.query(`
+                SELECT COUNT(*) as count 
+                FROM information_schema.tables 
+                WHERE table_schema = DATABASE() 
+                AND table_name = 'live_stock_data'
+            `);
+            
+            if (tables[0].count === 0) {
+                LOG.warning('[Google Sheets Sync] live_stock_data table does not exist, nothing to archive');
+                return 0;
+            }
+
             const [liveData] = await connection.query('SELECT * FROM live_stock_data');
             
             if (liveData.length === 0) {
