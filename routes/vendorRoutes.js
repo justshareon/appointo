@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const vendorService = require('../services/vendorService');
+const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const LOG = require('../utils/logger');
@@ -46,6 +47,10 @@ router.get('/me', authenticateToken, async (req, res) => {
 router.post('/create-my-shop', authenticateToken, async (req, res) => {
     try {
         const result = await vendorService.createMyShop(req.user.id, req.body);
+            notificationService.notify('vendor_created', {
+                userId: req.user.id,
+                vendorId: result?.vendor_id || result?.id
+            }).catch(err => LOG.error('Vendor create notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error('Failed to create vendor profile', err.message);
@@ -61,6 +66,10 @@ router.post('/create-my-shop', authenticateToken, async (req, res) => {
 router.post('/update-my-profile', authenticateToken, async (req, res) => {
     try {
         const result = await vendorService.updateMyProfile(req.user.id, req.body);
+            notificationService.notify('vendor_updated', {
+                userId: req.user.id,
+                vendorId: result?.vendor_id || result?.id
+            }).catch(err => LOG.error('Vendor update notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error('Failed to update vendor profile', err.message);
@@ -167,6 +176,10 @@ router.post('/me/products/add', authenticateToken, async (req, res) => {
     try {
         const productService = require('../services/productService');
         const result = await productService.addProduct(req.user.id, req.body);
+            notificationService.notify('product_added', {
+                userId: req.user.id,
+                productId: result?.product_id || result?.id
+            }).catch(err => LOG.error('Product add notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to add product", err.message);
@@ -183,6 +196,10 @@ router.post('/me/products/:id/update', authenticateToken, async (req, res) => {
     try {
         const productService = require('../services/productService');
         const result = await productService.updateProduct(req.user.id, req.params.id, req.body);
+            notificationService.notify('product_updated', {
+                userId: req.user.id,
+                productId: req.params.id
+            }).catch(err => LOG.error('Product update notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to update product", err.message);

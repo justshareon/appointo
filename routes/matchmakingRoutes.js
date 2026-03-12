@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const matchmakingService = require('../services/matchmakingService');
+const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
@@ -99,6 +100,10 @@ router.get('/vendors/me/matchmaking/results', authenticateToken, async (req, res
 router.post('/matchmaking/submit', authenticateToken, async (req, res) => {
     try {
         const result = await matchmakingService.submitAnswers(req.user.id, req.body);
+            notificationService.notify('matchmaking_submitted', {
+                userId: req.user.id,
+                vendorId: req.body.vendor_id
+            }).catch(err => LOG.error('Matchmaking notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to submit matchmaking answers", err.message);

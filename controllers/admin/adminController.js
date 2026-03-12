@@ -4,6 +4,7 @@
  */
 const adminService = require('../../services/adminService');
 const LOG = require('../../utils/logger');
+const notificationService = require('../../services/notificationService');
 
 class AdminController {
     /**
@@ -50,6 +51,10 @@ class AdminController {
             }
 
             const result = await adminService.updateVendor(vendorId, field, value);
+            notificationService.notify('vendor_updated', {
+                userId: req.user?.id || req.user?.email,
+                vendorId
+            }).catch(err => LOG.error('Admin vendor update notification failed', err.message));
             res.json(result);
         } catch (err) {
             LOG.error("Admin update vendor failed", err.message);
@@ -68,6 +73,10 @@ class AdminController {
             }
 
             const result = await adminService.addVendor(req.body);
+            notificationService.notify('vendor_created', {
+                userId: req.user?.id || req.user?.email,
+                vendorId: result?.vendor_id || result?.id
+            }).catch(err => LOG.error('Admin vendor create notification failed', err.message));
             res.json(result);
         } catch (err) {
             LOG.error("Admin add vendor failed", err.message);

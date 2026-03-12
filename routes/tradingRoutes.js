@@ -15,6 +15,9 @@ const mutualFundDataService = require('../services/mutualFundDataService');
 const corporateActionsDataService = require('../services/corporateActionsDataService');
 const boardMeetingsDataService = require('../services/boardMeetingsDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
+const settingsService = require('../services/settingsService');
+const newsCacheService = require('../services/newsCacheService');
+const rssNewsService = require('../services/rssNewsService');
 const LOG = require('../utils/logger');
 
 /**
@@ -966,19 +969,69 @@ router.get('/most-bought', async (req, res) => {
 
 /**
  * GET /api/trading/news
- * Get stock news (mock for now, can integrate with news API later)
- * Query params: limit (default: 10)
+ * Get trading news (category-wise)
+ * Query params: limit (default: 50)
  */
 router.get('/news', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 10;
-        
-        // For now, return empty array (can integrate with news API later)
-        // This prevents showing wrong/mock data
-        res.json({ success: true, data: [] });
+        const limit = parseInt(req.query.limit) || 50;
+        const refresh = String(req.query.refresh || '') === '1';
+        const settings = await settingsService.getSettings();
+        if (!settings.enable_news) {
+            return res.json({ success: true, data: { categories: [] }, disabled: true });
+        }
+        const ttlHours = Number(settings.news_cache_ttl_hours || 24);
+        const lastUpdated = settings.news_cache_last_updated ? new Date(settings.news_cache_last_updated).getTime() : 0;
+        const isExpired = !lastUpdated || (Date.now() - lastUpdated) > ttlHours * 60 * 60 * 1000;
+
+        if (!refresh && !isExpired) {
+            const grouped = await newsCacheService.getCachedGrouped(limit * 5, settings);
+            if (grouped?.categories?.length) {
+                return res.json({ success: true, data: grouped, cached: true });
+            }
+        }
+
+        const result = await newsCacheService.refreshNews(limit, settings);
+        return res.json({ success: true, data: result, cached: false });
     } catch (error) {
         LOG.error('[Trading Routes] Error fetching news:', error);
         res.status(500).json({ error: error.message || 'Failed to fetch news' });
+    }
+});
+
+/**
+ * GET /api/trading/youtube
+ * Get latest YouTube videos (RSS)
+ */
+router.get('/youtube', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 8;
+        const settings = await settingsService.getSettings();
+        const url = settings.youtube_latest_rss || 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en';
+        const result = await rssNewsService.fetchNews({ url, name: 'YouTube' }, settings, limit);
+        res.json({ success: true, data: result.items || [] });
+    } catch (error) {
+        LOG.error('[Trading Routes] Error fetching YouTube RSS:', error);
+        res.status(500).json({ error: error.message || 'Failed to fetch YouTube RSS' });
+    }
+});
+
+/**
+ * GET /api/trading/trends
+ * Get Google Trends RSS (by geo)
+ */
+router.get('/trends', async (req, res) => {
+    try {
+        const limit = parseInt(req.query.limit) || 10;
+        const settings = await settingsService.getSettings();
+        const geo = String(req.query.geo || settings.trends_geo || 'IN').toUpperCase();
+        const template = settings.trends_rss_template || 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}';
+        const url = template.replace('{geo}', geo);
+        const result = await rssNewsService.fetchNews({ url, name: `Google Trends ${geo}` }, settings, limit);
+        res.json({ success: true, data: result.items || [], geo });
+    } catch (error) {
+        LOG.error('[Trading Routes] Error fetching Google Trends RSS:', error);
+        res.status(500).json({ error: error.message || 'Failed to fetch Google Trends RSS' });
     }
 });
 

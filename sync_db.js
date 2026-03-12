@@ -399,7 +399,10 @@ const inMemoryDb = {
     settings: {
         enable_queue: false,
         enable_appointments: false,
-        enable_shopping: false
+        enable_shopping: false,
+        enable_news: true,
+        news_user_emails: 'newsuser1',
+        news_vendor_emails: 'newsvendor1'
     },
     matchmaking_templates: [
         {

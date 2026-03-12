@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const appointmentService = require('../services/appointmentService');
+const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
@@ -25,6 +26,12 @@ router.get('/me', authenticateToken, async (req, res) => {
 router.post('/book', authenticateToken, async (req, res) => {
     try {
         const result = await appointmentService.bookAppointment(req.user.id, req.body);
+        notificationService.notify('appointment_booked', {
+            userId: req.user.id,
+            vendorId: req.body.vendor_id,
+            date: req.body.date,
+            time: req.body.time
+        }).catch(err => LOG.error('Appointment notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to book appointment", err.message);
@@ -40,6 +47,10 @@ router.post('/book', authenticateToken, async (req, res) => {
 router.post('/delete', authenticateToken, async (req, res) => {
     try {
         const result = await appointmentService.deleteAppointment(req.body.appointment_id);
+            notificationService.notify('appointment_deleted', {
+                appointmentId: req.body.appointment_id,
+                userId: req.user.id
+            }).catch(err => LOG.error('Appointment delete notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to delete appointment", err.message);
@@ -54,6 +65,11 @@ router.post('/delete', authenticateToken, async (req, res) => {
 router.post('/update-status', authenticateToken, async (req, res) => {
     try {
         const result = await appointmentService.updateStatus(req.body.appointment_id, req.body.status);
+            notificationService.notify('appointment_status_updated', {
+                appointmentId: req.body.appointment_id,
+                status: req.body.status,
+                userId: req.user.id
+            }).catch(err => LOG.error('Appointment status notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to update appointment status", err.message);

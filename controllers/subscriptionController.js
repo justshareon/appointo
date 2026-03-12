@@ -3,6 +3,7 @@
  * Handles subscription management requests
  */
 const subscriptionService = require('../services/subscriptionService');
+const notificationService = require('../services/notificationService');
 const LOG = require('../utils/logger');
 
 class SubscriptionController {
@@ -44,6 +45,11 @@ class SubscriptionController {
             }
 
             const subscription = await subscriptionService.createOrUpdateSubscription(userId, req.body);
+            notificationService.notify('subscription_updated', {
+                userId,
+                plan: req.body?.plan || req.body?.provider || '',
+                status: subscription?.status || req.body?.status
+            }).catch(err => LOG.error('Subscription notification failed', err.message));
             res.json({
                 success: true,
                 subscription
@@ -71,6 +77,10 @@ class SubscriptionController {
             }
 
             const subscription = await subscriptionService.cancelSubscription(userId, subscriptionId);
+            notificationService.notify('subscription_canceled', {
+                userId,
+                subscriptionId
+            }).catch(err => LOG.error('Subscription cancel notification failed', err.message));
             res.json({
                 success: true,
                 subscription
@@ -99,6 +109,11 @@ class SubscriptionController {
             }
 
             const subscription = await subscriptionService.setAutoRenew(userId, subscriptionId, autoRenew);
+            notificationService.notify('subscription_auto_renew', {
+                userId,
+                subscriptionId,
+                autoRenew
+            }).catch(err => LOG.error('Subscription auto-renew notification failed', err.message));
             res.json({
                 success: true,
                 subscription

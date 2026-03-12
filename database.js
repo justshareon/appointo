@@ -746,7 +746,10 @@ let inMemoryDb = {
         enable_fleet: true,
         enable_realestate: false,
         enable_cyber: true,
-        theme_position: 'auto'
+        theme_position: 'auto',
+        enable_news: true,
+        news_user_emails: 'newsuser1',
+        news_vendor_emails: 'newsvendor1'
     },
     matchmaking_templates: [
         {
@@ -2345,6 +2348,90 @@ const db = {
         return item;
     },
 
+    // Notifications (in-app)
+    addNotification: async (notification) => {
+        const payload = {
+            user_id: notification.user_id,
+            title: notification.title || 'Notification',
+            message: notification.message || '',
+            type: notification.type || 'system',
+            data_json: JSON.stringify(notification.data || {}),
+            is_read: 0,
+            created_at: notification.created_at || new Date()
+        };
+        try {
+            if (pool) {
+                await pool.query(`
+                    CREATE TABLE IF NOT EXISTS notifications (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id VARCHAR(64),
+                        title VARCHAR(255),
+                        message TEXT,
+                        type VARCHAR(50),
+                        data_json TEXT,
+                        is_read TINYINT DEFAULT 0,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                `);
+                const [res] = await pool.query('INSERT INTO notifications SET ?', [payload]);
+                return { id: res.insertId, ...payload };
+            }
+        } catch (err) {
+            LOG.error("MySQL addNotification failed, falling back to local", err.message);
+        }
+        const newId = (inMemoryDb.notifications[inMemoryDb.notifications.length - 1]?.id || 0) + 1;
+        const item = { id: newId, ...payload };
+        inMemoryDb.notifications.push(item);
+        return item;
+    },
+
+    getNotificationsByUser: async (userId, limit = 50) => {
+        try {
+            if (pool) {
+                const [rows] = await pool.query(
+                    'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+                    [userId, Number(limit) || 50]
+                );
+                return rows || [];
+            }
+        } catch (err) {
+            LOG.error("MySQL getNotificationsByUser failed, falling back to local", err.message);
+        }
+        return inMemoryDb.notifications
+            .filter(n => String(n.user_id) === String(userId))
+            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .slice(0, Number(limit) || 50);
+    },
+
+    markNotificationRead: async (notificationId, userId) => {
+        try {
+            if (pool) {
+                await pool.query('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?', [notificationId, userId]);
+                return { success: true };
+            }
+        } catch (err) {
+            LOG.error("MySQL markNotificationRead failed, falling back to local", err.message);
+        }
+        const item = inMemoryDb.notifications.find(n => String(n.id) === String(notificationId) && String(n.user_id) === String(userId));
+        if (item) item.is_read = 1;
+        return { success: true };
+    },
+
+    deleteNotification: async (notificationId, userId) => {
+        try {
+            if (pool) {
+                await pool.query('DELETE FROM notifications WHERE id = ? AND user_id = ?', [notificationId, userId]);
+                return { success: true };
+            }
+        } catch (err) {
+            LOG.error("MySQL deleteNotification failed, falling back to local", err.message);
+        }
+        inMemoryDb.notifications = inMemoryDb.notifications.filter(
+            n => !(String(n.id) === String(notificationId) && String(n.user_id) === String(userId))
+        );
+        return { success: true };
+    },
+
     getOrdersByVendorOwner: async (ownerId) => {
         try {
             if (pool) {
@@ -2742,12 +2829,77 @@ const db = {
                         enable_auto_validation: true,
                         enable_suraksha: true,
                         enable_caller_validation: true,
+                        enable_email_notifications: true,
+                        enable_sms_notifications: true,
+                        enable_in_app_notifications: true,
+                        enable_pdf_reports: true,
+                        enable_news: true,
+                        news_user_emails: 'newsuser1',
+                        news_vendor_emails: 'newsvendor1',
+                        trade_news_source: 'telegram',
+                        trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+                        news_grouping_mode: 'category',
+                        news_subscribers: '',
+                        news_cache_last_updated: '',
+                        news_cache_ttl_hours: 24,
+                        news_cache_auto_refresh: true,
+                        news_cache_cron: '0 */3 * * *',
+                        news_default_country: 'IN',
+                        news_default_city: 'Delhi',
+                        news_default_locality: 'Delhi',
+                        news_default_lat: '28.6139',
+                        news_default_lng: '77.2090',
+                        news_preset_country: 'IN',
+                        youtube_latest_rss: 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en',
+                        enable_trends_for_flash_sale: true,
+                        trends_geo: 'IN',
+                        trends_rss_template: 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}',
+                        newsapi_api_key: '',
+                        newsapi_language: 'en',
+                        gnews_api_key: '',
+                        gnews_language: 'en',
+                        gnews_country: '',
+                        gdelt_query: 'stock market OR nifty OR sensex OR trading',
+                        gdelt_timespan: '1d',
+                        gdelt_languages: 'eng',
+                        telegram_bot_token: '',
+                        telegram_channel: '',
+                        telegram_news_categories: 'cyber_threat,entertainment,sports,global_news,new_technology,new_offer,trending_offer,trending_deals,food_coupons,travel,flight,country_visit,other',
+                        telegram_news_filters: '{"cyber_threat":["cyber","malware","ransomware","phishing","breach","hack","vulnerability","zero-day","ddos","data leak"],"entertainment":["movie","film","trailer","celebrity","music","tv","series","award","entertainment"],"sports":["sports","match","tournament","league","cricket","football","soccer","tennis","olympic"],"global_news":["global","world","international","geopolitical","diplomatic","united nations","war","summit"],"new_technology":["technology","tech","ai","artificial intelligence","robot","startup","innovation","chip","semiconductor","gadget"],"new_offer":["offer","discount","sale","deal","coupon","cashback"],"trending_offer":["hot deal","limited offer","best offer","flash sale","trending offer"],"trending_deals":["deal of the day","trending deal","mega sale","daily deal"],"food_coupons":["food coupon","food offer","restaurant offer","swiggy","zomato","ubereats","dominos","pizza"],"travel":["travel","tour","holiday","vacation","trip","package","hotel","resort"],"flight":["flight","airline","airfare","ticket","airport","aviation"],"country_visit":["visit","visa","tourist","immigration","country visit","travel advisory"]}',
+                        telegram_news_global_filters: '',
+                        telegram_news_filter_mode: 'include',
+                        telegram_news_per_category_limit: 20,
+                        telegram_news_since_hours: 48,
+                        telegram_news_limit: 50,
+                        notify_on_orders: true,
+                        notify_on_appointments: true,
+                        notify_on_queue: true,
+                        notify_on_queue_status: true,
+                        notify_on_queue_leave: true,
+                        notify_on_queue_delete: true,
+                        notify_on_appointment_status: true,
+                        notify_on_appointment_delete: true,
+                        notify_on_matchmaking: true,
+                        notify_on_subscriptions: true,
+                        notify_on_subscription_cancel: true,
+                        notify_on_subscription_auto_renew: true,
+                        notify_on_vendor_profile: true,
+                        notify_on_product_updates: true,
+                        notify_email_provider: 'resend',
+                        notify_email_from: '',
+                        notify_email_recipients: '',
+                        notify_email_webhook_url: '',
+                        notify_sms_provider: 'textbelt',
+                        notify_sms_from: '',
+                        notify_sms_recipients: '',
+                        notify_sms_webhook_url: '',
                         auto_scan_enabled: false,
                         auto_scan_time: '09:00',
                         auto_scan_notify_threats: true,
                         auto_scan_auto_clean: false,
                         enable_lazy_loading: false // Default: false (eager loading for better performance)
                     };
+                    const hasEnableNewsRow = rows.some(r => r.key_name === 'enable_news');
                     rows.forEach(r => {
                         if (settings.hasOwnProperty(r.key_name)) {
                             // Handle boolean values
@@ -2757,6 +2909,10 @@ const db = {
                                 // Handle string values (like theme_position)
                                 settings[r.key_name] = r.value;
                             }
+                            return;
+                        }
+                        if (r.key_name === 'enable_trade_news' && !hasEnableNewsRow) {
+                            settings.enable_news = r.value === 'true' || r.value === 1 || r.value === true;
                         }
                     });
                     return settings;
@@ -2787,6 +2943,70 @@ const db = {
                         enable_auto_validation: true,
                         enable_suraksha: true,
                         enable_caller_validation: true,
+                        enable_email_notifications: true,
+                        enable_sms_notifications: true,
+                        enable_in_app_notifications: true,
+                        enable_pdf_reports: true,
+                        enable_news: true,
+                        news_user_emails: 'newsuser1',
+                        news_vendor_emails: 'newsvendor1',
+                        trade_news_source: 'telegram',
+                        trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+                        news_grouping_mode: 'category',
+                        news_subscribers: '',
+                        news_cache_last_updated: '',
+                        news_cache_ttl_hours: 24,
+                        news_cache_auto_refresh: true,
+                        news_cache_cron: '0 */3 * * *',
+                        news_default_country: 'IN',
+                        news_default_city: 'Delhi',
+                        news_default_locality: 'Delhi',
+                        news_default_lat: '28.6139',
+                        news_default_lng: '77.2090',
+                        news_preset_country: 'IN',
+                        youtube_latest_rss: 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en',
+                        enable_trends_for_flash_sale: true,
+                        trends_geo: 'IN',
+                        trends_rss_template: 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}',
+                        newsapi_api_key: '',
+                        newsapi_language: 'en',
+                        gnews_api_key: '',
+                        gnews_language: 'en',
+                        gnews_country: '',
+                        gdelt_query: 'stock market OR nifty OR sensex OR trading',
+                        gdelt_timespan: '1d',
+                        gdelt_languages: 'eng',
+                        telegram_bot_token: '',
+                        telegram_channel: '',
+                        telegram_news_categories: 'cyber_threat,entertainment,sports,global_news,new_technology,new_offer,trending_offer,trending_deals,food_coupons,travel,flight,country_visit,other',
+                        telegram_news_filters: '{"cyber_threat":["cyber","malware","ransomware","phishing","breach","hack","vulnerability","zero-day","ddos","data leak"],"entertainment":["movie","film","trailer","celebrity","music","tv","series","award","entertainment"],"sports":["sports","match","tournament","league","cricket","football","soccer","tennis","olympic"],"global_news":["global","world","international","geopolitical","diplomatic","united nations","war","summit"],"new_technology":["technology","tech","ai","artificial intelligence","robot","startup","innovation","chip","semiconductor","gadget"],"new_offer":["offer","discount","sale","deal","coupon","cashback"],"trending_offer":["hot deal","limited offer","best offer","flash sale","trending offer"],"trending_deals":["deal of the day","trending deal","mega sale","daily deal"],"food_coupons":["food coupon","food offer","restaurant offer","swiggy","zomato","ubereats","dominos","pizza"],"travel":["travel","tour","holiday","vacation","trip","package","hotel","resort"],"flight":["flight","airline","airfare","ticket","airport","aviation"],"country_visit":["visit","visa","tourist","immigration","country visit","travel advisory"]}',
+                        telegram_news_global_filters: '',
+                        telegram_news_filter_mode: 'include',
+                        telegram_news_per_category_limit: 20,
+                        telegram_news_since_hours: 48,
+                        telegram_news_limit: 50,
+                        notify_on_orders: true,
+                        notify_on_appointments: true,
+                        notify_on_queue: true,
+                        notify_on_queue_status: true,
+                        notify_on_queue_leave: true,
+                        notify_on_queue_delete: true,
+                        notify_on_appointment_status: true,
+                        notify_on_appointment_delete: true,
+                        notify_on_matchmaking: true,
+                        notify_on_subscriptions: true,
+                        notify_on_subscription_cancel: true,
+                        notify_on_subscription_auto_renew: true,
+                        notify_on_vendor_profile: true,
+                        notify_on_product_updates: true,
+                        notify_email_provider: 'resend',
+                        notify_email_from: '',
+                        notify_email_recipients: '',
+                        notify_email_webhook_url: '',
+                        notify_sms_provider: 'textbelt',
+                        notify_sms_from: '',
+                        notify_sms_recipients: '',
+                        notify_sms_webhook_url: '',
                         auto_scan_enabled: false,
                         auto_scan_time: '09:00',
                         auto_scan_notify_threats: true,
@@ -2827,6 +3047,132 @@ const db = {
             enable_auto_validation: true,
             enable_suraksha: true,
             enable_caller_validation: true,
+            enable_email_notifications: true,
+            enable_sms_notifications: true,
+            enable_in_app_notifications: true,
+            enable_pdf_reports: true,
+            enable_news: true,
+            news_user_emails: 'newsuser1',
+            news_vendor_emails: 'newsvendor1',
+            trade_news_source: 'telegram',
+            trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+            news_grouping_mode: 'category',
+            news_subscribers: '',
+            news_cache_last_updated: '',
+            news_cache_ttl_hours: 24,
+            news_cache_auto_refresh: true,
+            news_cache_cron: '0 */3 * * *',
+            news_default_country: 'IN',
+            news_default_city: 'Delhi',
+            news_default_locality: 'Delhi',
+            news_default_lat: '28.6139',
+            news_default_lng: '77.2090',
+            news_preset_country: 'IN',
+            youtube_latest_rss: 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en',
+            enable_trends_for_flash_sale: true,
+            trends_geo: 'IN',
+            trends_rss_template: 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}',
+            newsapi_api_key: '',
+            newsapi_language: 'en',
+            gnews_api_key: '',
+            gnews_language: 'en',
+            gnews_country: '',
+            gdelt_query: 'stock market OR nifty OR sensex OR trading',
+            gdelt_timespan: '1d',
+            gdelt_languages: 'eng',
+            telegram_bot_token: '',
+            telegram_channel: '',
+            telegram_news_categories: 'cyber_threat,entertainment,sports,global_news,new_technology,new_offer,trending_offer,trending_deals,food_coupons,travel,flight,country_visit,other',
+            telegram_news_filters: '{"cyber_threat":["cyber","malware","ransomware","phishing","breach","hack","vulnerability","zero-day","ddos","data leak"],"entertainment":["movie","film","trailer","celebrity","music","tv","series","award","entertainment"],"sports":["sports","match","tournament","league","cricket","football","soccer","tennis","olympic"],"global_news":["global","world","international","geopolitical","diplomatic","united nations","war","summit"],"new_technology":["technology","tech","ai","artificial intelligence","robot","startup","innovation","chip","semiconductor","gadget"],"new_offer":["offer","discount","sale","deal","coupon","cashback"],"trending_offer":["hot deal","limited offer","best offer","flash sale","trending offer"],"trending_deals":["deal of the day","trending deal","mega sale","daily deal"],"food_coupons":["food coupon","food offer","restaurant offer","swiggy","zomato","ubereats","dominos","pizza"],"travel":["travel","tour","holiday","vacation","trip","package","hotel","resort"],"flight":["flight","airline","airfare","ticket","airport","aviation"],"country_visit":["visit","visa","tourist","immigration","country visit","travel advisory"]}',
+            telegram_news_global_filters: '',
+            telegram_news_filter_mode: 'include',
+            telegram_news_per_category_limit: 20,
+            telegram_news_since_hours: 48,
+            telegram_news_limit: 50,
+            notify_on_orders: true,
+            notify_on_appointments: true,
+            notify_on_queue: true,
+            notify_on_queue_status: true,
+            notify_on_queue_leave: true,
+            notify_on_queue_delete: true,
+            notify_on_appointment_status: true,
+            notify_on_appointment_delete: true,
+            notify_on_matchmaking: true,
+            notify_on_subscriptions: true,
+            notify_on_subscription_cancel: true,
+            notify_on_subscription_auto_renew: true,
+            notify_on_vendor_profile: true,
+            notify_on_product_updates: true,
+            notify_email_provider: 'resend',
+            notify_email_from: '',
+            notify_email_recipients: '',
+            notify_email_webhook_url: '',
+            notify_sms_provider: 'textbelt',
+            notify_sms_from: '',
+            notify_sms_recipients: '',
+            notify_sms_webhook_url: '',
+            enable_email_notifications: true,
+            enable_sms_notifications: true,
+            enable_in_app_notifications: true,
+            enable_pdf_reports: true,
+            enable_news: true,
+            trade_news_source: 'telegram',
+            trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+            news_grouping_mode: 'category',
+            news_subscribers: '',
+            news_cache_last_updated: '',
+            news_cache_ttl_hours: 24,
+            news_cache_auto_refresh: true,
+            news_cache_cron: '0 */3 * * *',
+            news_default_country: 'IN',
+            news_default_city: 'Delhi',
+            news_default_locality: 'Delhi',
+            news_default_lat: '28.6139',
+            news_default_lng: '77.2090',
+            news_preset_country: 'IN',
+            youtube_latest_rss: 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en',
+            enable_trends_for_flash_sale: true,
+            trends_geo: 'IN',
+            trends_rss_template: 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}',
+            newsapi_api_key: '',
+            newsapi_language: 'en',
+            gnews_api_key: '',
+            gnews_language: 'en',
+            gnews_country: '',
+            gdelt_query: 'stock market OR nifty OR sensex OR trading',
+            gdelt_timespan: '1d',
+            gdelt_languages: 'eng',
+            telegram_bot_token: '',
+            telegram_channel: '',
+            telegram_news_categories: 'cyber_threat,entertainment,sports,global_news,new_technology,new_offer,trending_offer,trending_deals,food_coupons,travel,flight,country_visit,other',
+            telegram_news_filters: '{"cyber_threat":["cyber","malware","ransomware","phishing","breach","hack","vulnerability","zero-day","ddos","data leak"],"entertainment":["movie","film","trailer","celebrity","music","tv","series","award","entertainment"],"sports":["sports","match","tournament","league","cricket","football","soccer","tennis","olympic"],"global_news":["global","world","international","geopolitical","diplomatic","united nations","war","summit"],"new_technology":["technology","tech","ai","artificial intelligence","robot","startup","innovation","chip","semiconductor","gadget"],"new_offer":["offer","discount","sale","deal","coupon","cashback"],"trending_offer":["hot deal","limited offer","best offer","flash sale","trending offer"],"trending_deals":["deal of the day","trending deal","mega sale","daily deal"],"food_coupons":["food coupon","food offer","restaurant offer","swiggy","zomato","ubereats","dominos","pizza"],"travel":["travel","tour","holiday","vacation","trip","package","hotel","resort"],"flight":["flight","airline","airfare","ticket","airport","aviation"],"country_visit":["visit","visa","tourist","immigration","country visit","travel advisory"]}',
+            telegram_news_global_filters: '',
+            telegram_news_filter_mode: 'include',
+            telegram_news_per_category_limit: 20,
+            telegram_news_since_hours: 48,
+            telegram_news_limit: 50,
+            notify_on_orders: true,
+            notify_on_appointments: true,
+            notify_on_queue: true,
+            notify_on_queue_status: true,
+            notify_on_queue_leave: true,
+            notify_on_queue_delete: true,
+            notify_on_appointment_status: true,
+            notify_on_appointment_delete: true,
+            notify_on_matchmaking: true,
+            notify_on_subscriptions: true,
+            notify_on_subscription_cancel: true,
+            notify_on_subscription_auto_renew: true,
+            notify_on_vendor_profile: true,
+            notify_on_product_updates: true,
+            notify_email_provider: 'resend',
+            notify_email_from: '',
+            notify_email_recipients: '',
+            notify_email_webhook_url: '',
+            notify_sms_provider: 'textbelt',
+            notify_sms_from: '',
+            notify_sms_recipients: '',
+            notify_sms_webhook_url: '',
             auto_scan_enabled: false,
             auto_scan_time: '09:00',
             auto_scan_notify_threats: true,
@@ -2844,9 +3190,14 @@ const db = {
                     await pool.query(`
                         CREATE TABLE IF NOT EXISTS system_settings (
                             key_name VARCHAR(50) PRIMARY KEY, 
-                            value VARCHAR(50)
+                            value TEXT
                         )
                     `);
+                    try {
+                        await pool.query('ALTER TABLE system_settings MODIFY value TEXT');
+                    } catch (e) {
+                        LOG.warning('system_settings ALTER value TEXT skipped', e.message);
+                    }
                     
                     for (const [key, val] of Object.entries(newSettings)) {
                         await pool.query(
@@ -2865,6 +3216,129 @@ const db = {
         
         Object.assign(inMemoryDb.settings, newSettings);
         return inMemoryDb.settings;
+    }
+    ,
+    ensureNewsCacheTable: async () => {
+        if (!pool) return;
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS news_cache (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                unique_key VARCHAR(255) UNIQUE,
+                text TEXT,
+                link TEXT,
+                source VARCHAR(255),
+                category VARCHAR(255),
+                country VARCHAR(255),
+                city VARCHAR(255),
+                locality VARCHAR(255),
+                image TEXT,
+                published_at DATETIME NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        `);
+    },
+    saveNewsItems: async (items) => {
+        if (!Array.isArray(items) || items.length === 0) return { saved: 0 };
+        if (pool) {
+            try {
+                await db.ensureNewsCacheTable();
+                for (const item of items) {
+                    await pool.query(
+                        `INSERT INTO news_cache 
+                        (unique_key, text, link, source, category, country, city, locality, image, published_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        ON DUPLICATE KEY UPDATE 
+                            text=VALUES(text),
+                            link=VALUES(link),
+                            source=VALUES(source),
+                            category=VALUES(category),
+                            country=VALUES(country),
+                            city=VALUES(city),
+                            locality=VALUES(locality),
+                            image=VALUES(image),
+                            published_at=VALUES(published_at)`,
+                        [
+                            item.unique_key,
+                            item.text || '',
+                            item.link || '',
+                            item.source || '',
+                            item.category || '',
+                            item.country || '',
+                            item.city || '',
+                            item.locality || '',
+                            item.image || '',
+                            item.date ? new Date(item.date) : null
+                        ]
+                    );
+                }
+                return { saved: items.length };
+            } catch (err) {
+                LOG.error('MySQL saveNewsItems failed', err.message);
+            }
+        }
+
+        if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
+        const existing = new Map(inMemoryDb.news_cache.map(i => [i.unique_key, i]));
+        items.forEach(item => {
+            if (existing.has(item.unique_key)) {
+                existing.set(item.unique_key, { ...existing.get(item.unique_key), ...item });
+            } else {
+                existing.set(item.unique_key, item);
+            }
+        });
+        inMemoryDb.news_cache = Array.from(existing.values());
+        return { saved: items.length };
+    },
+    getNewsItems: async (limit = 100) => {
+        if (pool) {
+            try {
+                await db.ensureNewsCacheTable();
+                const [rows] = await pool.query(
+                    `SELECT unique_key, text, link, source, category, country, city, locality, image, published_at 
+                     FROM news_cache 
+                     ORDER BY published_at DESC 
+                     LIMIT ?`,
+                    [limit]
+                );
+                return rows.map(r => ({
+                    unique_key: r.unique_key,
+                    text: r.text,
+                    link: r.link,
+                    source: r.source,
+                    category: r.category,
+                    country: r.country,
+                    city: r.city,
+                    locality: r.locality,
+                    image: r.image,
+                    date: r.published_at ? new Date(r.published_at).toISOString() : new Date().toISOString()
+                }));
+            } catch (err) {
+                LOG.error('MySQL getNewsItems failed', err.message);
+            }
+        }
+
+        if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
+        const sorted = [...inMemoryDb.news_cache].sort((a, b) => {
+            const ta = new Date(a.date || 0).getTime();
+            const tb = new Date(b.date || 0).getTime();
+            return tb - ta;
+        });
+        return sorted.slice(0, limit);
+    }
+    ,
+    clearNewsCache: async () => {
+        if (pool) {
+            try {
+                await db.ensureNewsCacheTable();
+                await pool.query('TRUNCATE TABLE news_cache');
+                return { success: true };
+            } catch (err) {
+                LOG.error('MySQL clearNewsCache failed', err.message);
+            }
+        }
+        inMemoryDb.news_cache = [];
+        return { success: true };
     }
 };
 
@@ -2896,6 +3370,11 @@ if (!inMemoryDb.subscriptions) {
     inMemoryDb.subscriptions = [];
 }
 
+// Ensure news cache is available
+if (!inMemoryDb.news_cache) {
+    inMemoryDb.news_cache = [];
+}
+
 // Export subscriptions
 if (!measuredDb.subscriptions) {
     measuredDb.subscriptions = inMemoryDb.subscriptions;
@@ -2906,9 +3385,18 @@ if (!inMemoryDb.notificationValidations) {
     inMemoryDb.notificationValidations = [];
 }
 
+// Ensure notifications is available
+if (!inMemoryDb.notifications) {
+    inMemoryDb.notifications = [];
+}
+
 // Export notificationValidations
 if (!measuredDb.notificationValidations) {
     measuredDb.notificationValidations = inMemoryDb.notificationValidations;
+}
+
+if (!measuredDb.notifications) {
+    measuredDb.notifications = inMemoryDb.notifications;
 }
 
 // Ensure threatIntelligence is available

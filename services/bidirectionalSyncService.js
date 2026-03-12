@@ -538,7 +538,14 @@ class BidirectionalSyncService {
                     const [settingsRows] = await connection.query('SELECT * FROM system_settings');
                     inMemoryDb.settings = {};
                     for (const row of settingsRows) {
-                        inMemoryDb.settings[row.key_name] = row.value === 'true' || row.value === '1';
+                        const raw = row.value;
+                        if (raw === 'true' || raw === '1') {
+                            inMemoryDb.settings[row.key_name] = true;
+                        } else if (raw === 'false' || raw === '0') {
+                            inMemoryDb.settings[row.key_name] = false;
+                        } else {
+                            inMemoryDb.settings[row.key_name] = raw;
+                        }
                     }
                     syncResult.settings = settingsRows.length;
                     LOG.success(`[Bidirectional Sync] Loaded ${syncResult.settings} settings from MySQL`);
@@ -547,7 +554,71 @@ class BidirectionalSyncService {
                     inMemoryDb.settings = {
                         enable_queue: false,
                         enable_appointments: false,
-                        enable_shopping: false
+                        enable_shopping: false,
+                        enable_email_notifications: true,
+                        enable_sms_notifications: true,
+                        enable_in_app_notifications: true,
+                        enable_pdf_reports: true,
+                        enable_news: true,
+                        news_user_emails: 'newsuser1',
+                        news_vendor_emails: 'newsvendor1',
+                        trade_news_source: 'telegram',
+                        trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+                        news_grouping_mode: 'category',
+                        news_subscribers: '',
+                        news_cache_last_updated: '',
+                        news_cache_ttl_hours: 24,
+                        news_cache_auto_refresh: true,
+                        news_cache_cron: '0 */3 * * *',
+                        news_default_country: 'IN',
+                        news_default_city: 'Delhi',
+                        news_default_locality: 'Delhi',
+                        news_default_lat: '28.6139',
+                        news_default_lng: '77.2090',
+                        news_preset_country: 'IN',
+                        youtube_latest_rss: 'https://www.youtube.com/feeds/videos.xml?chart=mostPopular&hl=en',
+                        enable_trends_for_flash_sale: true,
+                        trends_geo: 'IN',
+                        trends_rss_template: 'https://trends.google.com/trends/trendingsearches/daily/rss?geo={geo}',
+                        newsapi_api_key: '',
+                        newsapi_language: 'en',
+                        gnews_api_key: '',
+                        gnews_language: 'en',
+                        gnews_country: '',
+                        gdelt_query: 'stock market OR nifty OR sensex OR trading',
+                        gdelt_timespan: '1d',
+                        gdelt_languages: 'eng',
+                        telegram_bot_token: '',
+                        telegram_channel: '',
+                        telegram_news_categories: 'cyber_threat,entertainment,sports,global_news,new_technology,new_offer,trending_offer,trending_deals,food_coupons,travel,flight,country_visit,other',
+                        telegram_news_filters: '{"cyber_threat":["cyber","malware","ransomware","phishing","breach","hack","vulnerability","zero-day","ddos","data leak"],"entertainment":["movie","film","trailer","celebrity","music","tv","series","award","entertainment"],"sports":["sports","match","tournament","league","cricket","football","soccer","tennis","olympic"],"global_news":["global","world","international","geopolitical","diplomatic","united nations","war","summit"],"new_technology":["technology","tech","ai","artificial intelligence","robot","startup","innovation","chip","semiconductor","gadget"],"new_offer":["offer","discount","sale","deal","coupon","cashback"],"trending_offer":["hot deal","limited offer","best offer","flash sale","trending offer"],"trending_deals":["deal of the day","trending deal","mega sale","daily deal"],"food_coupons":["food coupon","food offer","restaurant offer","swiggy","zomato","ubereats","dominos","pizza"],"travel":["travel","tour","holiday","vacation","trip","package","hotel","resort"],"flight":["flight","airline","airfare","ticket","airport","aviation"],"country_visit":["visit","visa","tourist","immigration","country visit","travel advisory"]}',
+                        telegram_news_global_filters: '',
+                        telegram_news_filter_mode: 'include',
+                        telegram_news_per_category_limit: 20,
+                        telegram_news_since_hours: 48,
+                        telegram_news_limit: 50,
+                        notify_on_orders: true,
+                        notify_on_appointments: true,
+                        notify_on_queue: true,
+                        notify_on_queue_status: true,
+                        notify_on_queue_leave: true,
+                        notify_on_queue_delete: true,
+                        notify_on_appointment_status: true,
+                        notify_on_appointment_delete: true,
+                        notify_on_matchmaking: true,
+                        notify_on_subscriptions: true,
+                        notify_on_subscription_cancel: true,
+                        notify_on_subscription_auto_renew: true,
+                        notify_on_vendor_profile: true,
+                        notify_on_product_updates: true,
+                        notify_email_provider: 'resend',
+                        notify_email_from: '',
+                        notify_email_recipients: '',
+                        notify_email_webhook_url: '',
+                        notify_sms_provider: 'textbelt',
+                        notify_sms_from: '',
+                        notify_sms_recipients: '',
+                        notify_sms_webhook_url: ''
                     };
                 }
 

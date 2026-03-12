@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const orderService = require('../services/orderService');
+const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
@@ -11,6 +12,13 @@ const LOG = require('../utils/logger');
 router.post('/create', authenticateToken, async (req, res) => {
     try {
         const result = await orderService.createOrder(req.user.id, req.body);
+        notificationService.notify('order_created', {
+            userId: req.user.id,
+            vendorId: req.body.vendor_id,
+            totalAmount: req.body.total_amount,
+            itemsCount: Array.isArray(req.body.items) ? req.body.items.length : 0,
+            paymentGateway: req.body.payment_gateway
+        }).catch(err => LOG.error('Order notification failed', err.message));
         res.json(result);
     } catch (err) {
         LOG.error("Failed to create order", err.message);

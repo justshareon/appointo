@@ -468,6 +468,9 @@ let inMemoryDb = {
         enable_cyber: true,
         enable_trust_score: true,
         theme_position: 'auto',
+        enable_news: true,
+        news_user_emails: 'newsuser1',
+        news_vendor_emails: 'newsvendor1',
         // Auto-validation settings
         auto_validate_calls: false,
         auto_validate_links: false,

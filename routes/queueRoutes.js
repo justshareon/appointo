@@ -1,5 +1,6 @@
 const express = require('express');
 const queueService = require('../services/queueService');
+const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
@@ -16,6 +17,12 @@ const createQueueRoutes = (io) => {
     router.post('/join', authenticateToken, async (req, res) => {
         try {
             const result = await queueService.joinQueue(req.user.id, req.body.vendor_id, io);
+            if (!result?.alreadyIn) {
+                notificationService.notify('queue_joined', {
+                    userId: req.user.id,
+                    vendorId: req.body.vendor_id
+                }).catch(err => LOG.error('Queue notification failed', err.message));
+            }
             res.json(result);
         } catch (err) {
             LOG.error("Failed to join queue", err.message);
@@ -31,6 +38,12 @@ const createQueueRoutes = (io) => {
     router.post('/leave', authenticateToken, async (req, res) => {
         try {
             const result = await queueService.leaveQueue(req.user.id, req.body.vendor_id, io);
+            if (result?.removed) {
+                notificationService.notify('queue_left', {
+                    userId: req.user.id,
+                    vendorId: req.body.vendor_id
+                }).catch(err => LOG.error('Queue leave notification failed', err.message));
+            }
             res.json(result);
         } catch (err) {
             LOG.error("Failed to leave queue", err.message);
@@ -45,6 +58,11 @@ const createQueueRoutes = (io) => {
     router.post('/delete', authenticateToken, async (req, res) => {
         try {
             const result = await queueService.deleteQueueItem(req.body.queue_id, req.body.vendor_id, io);
+            notificationService.notify('queue_deleted', {
+                queueId: req.body.queue_id,
+                userId: req.user.id,
+                vendorId: req.body.vendor_id
+            }).catch(err => LOG.error('Queue delete notification failed', err.message));
             res.json(result);
         } catch (err) {
             LOG.error("Failed to delete queue item", err.message);
@@ -59,6 +77,12 @@ const createQueueRoutes = (io) => {
     router.post('/update-status', authenticateToken, async (req, res) => {
         try {
             const result = await queueService.updateStatus(req.body.queue_id, req.body.status, io);
+            notificationService.notify('queue_status_updated', {
+                queueId: req.body.queue_id,
+                status: req.body.status,
+                userId: req.user.id,
+                vendorId: result?.vendorId || req.body.vendor_id
+            }).catch(err => LOG.error('Queue status notification failed', err.message));
             res.json(result);
         } catch (err) {
             LOG.error("Failed to update status", err.message);

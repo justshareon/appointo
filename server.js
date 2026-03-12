@@ -34,6 +34,12 @@ const subscriptionRoutes = require('./routes/subscriptionRoutes');
 const trustScoreRoutes = require('./routes/trustScoreRoutes');
 const tradingRoutes = require('./routes/tradingRoutes');
 const tradingDiagnostics = require('./routes/tradingDiagnostics');
+const notificationRoutes = require('./routes/notificationRoutes');
+const cron = require('node-cron');
+const newsCacheService = require('./services/newsCacheService');
+const settingsService = require('./services/settingsService');
+const newsRoutes = require('./routes/newsRoutes');
+const notificationService = require('./services/notificationService');
 
 // Import services
 const dealsService = require('./dealsService');
@@ -49,6 +55,9 @@ const io = new Server(server, {
     pingTimeout: 60000,
     pingInterval: 25000
 });
+
+// Attach Socket.IO to notification service for in-app notifications
+notificationService.setIO(io);
 
 //app.use(express.json({ limit: '50mb' }));
 //app.use(express.urlencoded({ limit: '50mb', extended: true }));
@@ -80,6 +89,10 @@ io.on('connection', (socket) => {
         socket.join(`vendor_${vendorId}`);
         LOG.success(`Socket joined vendor room: ${vendorId}`);
     });
+    socket.on('join_user_room', (userId) => {
+        socket.join(`user_${userId}`);
+        LOG.success(`Socket joined user room: ${userId}`);
+    });
     socket.on('disconnect', () => {
         LOG.warning(`Client disconnected: ${socket.id}`);
     });
@@ -99,6 +112,34 @@ LOG.info('[Server] ✅ Threat Intelligence job scheduled (every 5 hours)');
 const databaseSyncService = require('./services/databaseSyncService');
 databaseSyncService.startPeriodicSync();
 LOG.info('[Server] ✅ Database sync service started (every 30 minutes)');
+
+// Daily news cache refresh (configurable via settings)
+const scheduleNewsRefresh = async () => {
+    try {
+        const settings = await settingsService.getSettings();
+        const enabled = settings.news_cache_auto_refresh !== false;
+        const cronExpr = settings.news_cache_cron || '0 */3 * * *';
+        if (!enabled) {
+            LOG.info('[Server] News cache auto-refresh disabled');
+            return;
+        }
+        if (!cron.validate(cronExpr)) {
+            LOG.warning(`[Server] Invalid news cache cron: ${cronExpr}, using default 0 */3 * * *`);
+        }
+        cron.schedule(cron.validate(cronExpr) ? cronExpr : '0 */3 * * *', async () => {
+            try {
+                await newsCacheService.refreshNews(50, settings);
+                LOG.success('[Server] News cache refreshed by cron');
+            } catch (e) {
+                LOG.warning('[Server] News cache cron refresh failed', e.message);
+            }
+        });
+        LOG.info(`[Server] News cache auto-refresh scheduled: ${cronExpr}`);
+    } catch (e) {
+        LOG.warning('[Server] Failed to schedule news cache refresh', e.message);
+    }
+};
+scheduleNewsRefresh();
 
 // Initialize Feature Engineering Service (for stock analytics)
 const featureEngineeringService = require('./services/featureEngineeringService');
@@ -310,11 +351,15 @@ app.use('/api/appointments', appointmentRoutes);
 // Order Routes
 app.use('/api/orders', orderRoutes);
 
+// Subscription Routes
+app.use('/api/subscriptions', subscriptionRoutes);
+LOG.success('[Server] ✅ Subscription routes registered at /api/subscriptions');
+
 // Matchmaking Routes (vendor-specific routes are in vendorRoutes)
 app.use('/api', matchmakingRoutes);
 
 // History Routes
-//app.use('/api/history', historyRoutes);
+app.use('/api/history', historyRoutes);
 
 // Activity Routes (public activities endpoint)
 app.use('/api', activityRoutes);
@@ -326,6 +371,11 @@ app.use('/api', userRoutes);
 settingsRoutes.setIO(io);
 app.use('/api/settings', settingsRoutes);
 LOG.success('[Server] ✅ Settings routes registered at /api/settings');
+
+// Notification Routes
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/news', newsRoutes);
+LOG.success('[Server] ✅ Notification routes registered at /api/notifications');
 
 // Admin Routes (with socket support)
 adminRoutes.setIO(io);
