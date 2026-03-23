@@ -448,6 +448,8 @@ class StockDataService {
      */
     async getAllStocks() {
         if (!this.isMySQLAvailable()) {
+            LOG.info(`[Stock Data] getAllStocks in memory anuj`);
+
             // Use in-memory storage
             const inMemoryDb = this.getInMemoryDb();
             const stocks = inMemoryDb.live_stock_data
@@ -479,13 +481,13 @@ class StockDataService {
         const pool = db.getPool();
         try {
             const [rows] = await pool.query('SELECT * FROM live_stock_data ORDER BY symbol');
-            LOG.info(`[Stock Data] getAllStocks: Found ${rows.length} rows from database`);
+            LOG.info(`[Stock Data] getAllStocksanuj: Found ${rows.length} rows from database`);
             
             // Fetch volumes in batch
             const volumeMap = new Map();
             if (rows.length > 0) {
                 const symbols = rows.map(r => r.symbol).filter(Boolean);
-                LOG.info(`[Stock Data] getAllStocks: Fetching volumes for ${symbols.length} symbols`);
+                LOG.info(`[Stock Data] getAllStocksanuj1: Fetching volumes for ${symbols.length} symbols`);
                 const volumePromises = symbols.map(async (symbol) => {
                     const vol = await this.getLastWeekVolume(symbol);
                     return [symbol.toUpperCase(), vol];
@@ -504,7 +506,7 @@ class StockDataService {
             // Filter out null values and log sample
             const validStocks = formatted.filter(stock => stock !== null);
             if (validStocks.length > 0) {
-                LOG.info(`[Stock Data] getAllStocks: Sample stock (first):`, {
+                LOG.info(`[Stock Data] getAllStocksanuj2: Sample stock (first):`, {
                     symbol: validStocks[0].symbol,
                     name: validStocks[0].name,
                     price: validStocks[0].price,

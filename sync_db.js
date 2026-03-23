@@ -401,7 +401,7 @@ const inMemoryDb = {
         enable_appointments: false,
         enable_shopping: false,
         enable_news: true,
-        news_user_emails: 'newsuser1',
+        news_user_emails: 'newsuser11',
         news_vendor_emails: 'newsvendor1'
     },
     matchmaking_templates: [
