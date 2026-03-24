@@ -274,16 +274,23 @@ router.get('/top-gainers', async (req, res) => {
                 });
             }
             
+            // Fallback to Yahoo Finance if no local data
             if (!gainers || gainers.length === 0) {
-                LOG.warning('[Trading Routes] No gainers found in database');
-                LOG.warning('[Trading Routes] Possible reasons:');
-                LOG.warning('[Trading Routes]   1. Excel file sync has not run yet');
-                LOG.warning('[Trading Routes]   2. Excel file is empty or has no data');
-                LOG.warning('[Trading Routes]   3. No stocks with positive percent_change');
-                LOG.warning('[Trading Routes]   4. Database connection issue');
-                LOG.warning(`[Trading Routes]   5. Total stocks in DB: ${totalStocks}`);
-                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-                LOG.warning('[Trading Routes] Run diagnostics at /api/trading/diagnostics');
+                LOG.warning('[Trading Routes] No gainers found in database, attempting fallback to Yahoo Finance API...');
+                try {
+                    gainers = await yahooFinanceService.getTopGainers(limit);
+                    LOG.info(`[Trading Routes] Retrieved ${gainers?.length || 0} gainers from Yahoo Finance API`);
+                } catch (yahooErr) {
+                    LOG.warning('[Trading Routes] Yahoo Finance fallback also failed:', yahooErr.message);
+                    LOG.warning('[Trading Routes] Possible reasons:');
+                    LOG.warning('[Trading Routes]   1. Excel file sync has not run yet');
+                    LOG.warning('[Trading Routes]   2. Excel file is empty or has no data');
+                    LOG.warning('[Trading Routes]   3. No stocks with positive percent_change');
+                    LOG.warning('[Trading Routes]   4. Database connection issue');
+                    LOG.warning(`[Trading Routes]   5. Total stocks in DB: ${totalStocks}`);
+                    LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
+                    LOG.warning('[Trading Routes] Run diagnostics at /api/trading/diagnostics');
+                }
             } else {
                 LOG.info(`[Trading Routes] Found ${gainers.length} gainers in database`);
             }
@@ -647,7 +654,7 @@ router.post('/generate-analytics', async (req, res) => {
 
 /**
  * GET /api/trading/market-indices
- * Get market indices (NIFTY, SENSEX) from local DB
+ * Get market indices (NIFTY, SENSEX) from local DB or Yahoo Finance API
  */
 router.get('/market-indices', async (req, res) => {
     try {
@@ -665,9 +672,15 @@ router.get('/market-indices', async (req, res) => {
             }
         } else {
             // Market indices not available from Google Sheets by default
-            // Return empty array or fetch from Yahoo Finance if needed
-            LOG.warning('[Trading Routes] Market indices not available from Google Sheets source');
-            indices = [];
+            // Fallback to Yahoo Finance API to get indices
+            LOG.info('[Trading Routes] Market indices not in Google Sheets source, fetching from Yahoo Finance API...');
+            try {
+                indices = await yahooFinanceService.getMarketIndices();
+                LOG.info(`[Trading Routes] Retrieved ${indices?.length || 0} indices from Yahoo Finance`);
+            } catch (err) {
+                LOG.warning('[Trading Routes] Yahoo Finance API also unavailable:', err.message);
+                indices = [];
+            }
         }
         
         res.json({ success: true, data: indices });

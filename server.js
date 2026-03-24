@@ -267,14 +267,14 @@ setInterval(async () => {
     }
 }, 3600000); // Run every hour (3600000 ms)
 
-// Periodic task: Sync cyber users and vendor every 5 minutes (ensures both DBs stay in sync)
+// Periodic task: Sync ALL users and vendors every 5 minutes (ensures MySQL stays in sync with in-memory DB)
 setInterval(async () => {
     try {
-        if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
-            await db.ensureCyberUsersAndVendor();
+        if (db.getType() === 'mysql' && db.ensureAllUsersAndVendors) {
+            await db.ensureAllUsersAndVendors();
         }
     } catch (e) {
-        LOG.error("Cyber users and vendor sync task failed", e.message);
+        LOG.error("All users and vendors sync task failed", e.message);
     }
 }, 300000); // Run every 5 minutes (300000 ms)
 
@@ -475,13 +475,15 @@ if (db.getType() === 'mysql' && db.ensureFleetTables) {
     }, 2000); // Wait 2 seconds for DB connection to be ready
 }
 
-// Initialize cyber users and vendor on server start (if MySQL)
-if (db.getType() === 'mysql' && db.ensureCyberUsersAndVendor) {
+// Initialize ALL users and vendors on server start (if MySQL) - comprehensive sync
+if (db.getType() === 'mysql' && db.ensureAllUsersAndVendors) {
     setTimeout(async () => {
         try {
-            await db.ensureCyberUsersAndVendor();
+            LOG.info('[Server] Starting comprehensive users and vendors sync...');
+            await db.ensureAllUsersAndVendors();
+            LOG.success('[Server] ✅ All users and vendors synced to MySQL');
         } catch (e) {
-            LOG.warning("Cyber users and vendor initialization on startup failed", e.message);
+            LOG.warning("Users and vendors initialization on startup failed", e.message);
         }
     }, 3000); // Wait 3 seconds for DB connection to be ready
 }

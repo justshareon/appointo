@@ -15,8 +15,14 @@ class RssNewsService {
         }
         try {
             const res = await axios.get(source.url, { timeout: 15000 });
-            const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true });
-            const parsed = await parser.parseStringPromise(res.data);
+            // Sanitize XML before parsing - fix unencoded characters in CDATA sections
+            let xmlData = res.data || '';
+            // Replace unencoded < characters in text nodes with &lt;
+            xmlData = xmlData.replace(/<!\\[CDATA\\[([^\]]*)<([^\]]*)]\\]>/g, (match, p1, p2) => {
+                return `<![CDATA[${p1}&lt;${p2}]]>`;
+            });
+            const parser = new xml2js.Parser({ explicitArray: false, mergeAttrs: true, strict: false });
+            const parsed = await parser.parseStringPromise(xmlData);
             const channel = parsed?.rss?.channel || parsed?.feed || {};
             const rawItems = channel.item || channel.entry || [];
             const items = Array.isArray(rawItems) ? rawItems : [rawItems];
@@ -60,8 +66,16 @@ class RssNewsService {
 
             return { items: filtered.slice(0, limit) };
         } catch (err) {
-            LOG.error('[RSS News] Fetch failed', err.message);
-            return { items: [], error: err.message };
+            // Detailed error logging for RSS parsing failures
+            const errorMsg = err.message || String(err);
+            if (errorMsg.includes('Unencoded') || errorMsg.includes('syntax')) {
+                LOG.warning('[RSS News] XML parsing error (malformed feed):', errorMsg.substring(0, 100));
+                LOG.warning('[RSS News] Feed URL:', source.url);
+                LOG.warning('[RSS News] Returning empty results for malformed feed');
+            } else {
+                LOG.error('[RSS News] Fetch failed', errorMsg);
+            }
+            return { items: [], error: errorMsg };
         }
     }
 }

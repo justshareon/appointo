@@ -1000,6 +1000,127 @@ const ensureVendorFeatureColumns = async () => {
 };
 
 /**
+ * Ensure ALL test users and vendors are synced to MySQL on startup
+ * Syncs ALL in-memory users/vendors to database, not just cyber ones
+ */
+const ensureAllUsersAndVendors = async () => {
+    if (!pool) return;
+    
+    try {
+        // Ensure vendor feature/visibility columns exist
+        await ensureVendorFeatureColumns();
+
+        // Sync ALL users from in-memory DB to MySQL
+        LOG.info(`[All Users Sync] Starting sync of ${inMemoryDb.users.length} users to MySQL...`);
+        
+        let created = 0, updated = 0;
+        for (const user of inMemoryDb.users) {
+            try {
+                const [existing] = await pool.query(
+                    'SELECT id FROM users WHERE id = ?', 
+                    [user.id]
+                );
+                
+                if (existing.length === 0) {
+                    // Insert new user
+                    await pool.query(
+                        `INSERT INTO users (id, name, email, mobile, role, location_name, created_at) 
+                         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                        [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
+                    );
+                    created++;
+                } else {
+                    // Update existing user to ensure latest data
+                    await pool.query(
+                        `UPDATE users SET name=?, email=?, mobile=?, role=?, location_name=?, updated_at=NOW() 
+                         WHERE id=?`,
+                        [user.name, user.email, user.mobile, user.role, user.location_name, user.id]
+                    );
+                    updated++;
+                }
+            } catch (err) {
+                LOG.warning(`[All Users Sync] Failed to sync user ${user.id}:`, err.message);
+            }
+        }
+        
+        LOG.success(`[All Users Sync] ✅ Completed: ${created} created, ${updated} updated`);
+
+        // Sync ALL vendors from in-memory DB to MySQL  
+        LOG.info(`[All Vendors Sync] Starting sync of ${inMemoryDb.vendors.length} vendors to MySQL...`);
+        
+        let vendorsCreated = 0, vendorsUpdated = 0;
+        for (const vendor of inMemoryDb.vendors) {
+            try {
+                const [existingVendor] = await pool.query(
+                    'SELECT id FROM vendors WHERE id = ?',
+                    [vendor.id]
+                );
+                
+                if (existingVendor.length === 0) {
+                    // Insert new vendor
+                    await pool.query(
+                        `INSERT INTO vendors (
+                            id, owner_id, shop_name, category, is_active, is_promoted, 
+                            latitude, longitude, google_link, instagram_handle, facebook_link,
+                            features_products, features_payments, features_appointments, features_queue,
+                            features_matchmaking, features_cyber, features_trade, features_offer, features_qless, 
+                            features_fleet, features_realestate, visibility_top_rated, visibility_list, visibility_feed
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                        [
+                            vendor.id, vendor.owner_id, vendor.shop_name, vendor.category,
+                            vendor.is_active ? 1 : 0, vendor.is_promoted ? 1 : 0, 
+                            vendor.latitude || 0, vendor.longitude || 0,
+                            vendor.google_link || '', vendor.instagram_handle || '', vendor.facebook_link || '',
+                            vendor.features_products ? 1 : 0, vendor.features_payments ? 1 : 0, 
+                            vendor.features_appointments ? 1 : 0, vendor.features_queue ? 1 : 0,
+                            vendor.features_matchmaking ? 1 : 0, vendor.features_cyber ? 1 : 0,
+                            vendor.features_trade ? 1 : 0, vendor.features_offer ? 1 : 0, vendor.features_qless ? 1 : 0,
+                            vendor.features_fleet ? 1 : 0, vendor.features_realestate ? 1 : 0,
+                            vendor.visibility_top_rated ? 1 : 0, vendor.visibility_list ? 1 : 0, vendor.visibility_feed ? 1 : 0
+                        ]
+                    );
+                    vendorsCreated++;
+                } else {
+                    // Update existing vendor
+                    await pool.query(
+                        `UPDATE vendors SET 
+                            owner_id=?, shop_name=?, category=?, is_active=?, is_promoted=?,
+                            latitude=?, longitude=?, google_link=?, instagram_handle=?, facebook_link=?,
+                            features_products=?, features_payments=?, features_appointments=?, features_queue=?,
+                            features_matchmaking=?, features_cyber=?, features_trade=?, features_offer=?, features_qless=?,
+                            features_fleet=?, features_realestate=?, visibility_top_rated=?, visibility_list=?, visibility_feed=?,
+                            updated_at=NOW()
+                        WHERE id=?`,
+                        [
+                            vendor.owner_id, vendor.shop_name, vendor.category,
+                            vendor.is_active ? 1 : 0, vendor.is_promoted ? 1 : 0,
+                            vendor.latitude || 0, vendor.longitude || 0,
+                            vendor.google_link || '', vendor.instagram_handle || '', vendor.facebook_link || '',
+                            vendor.features_products ? 1 : 0, vendor.features_payments ? 1 : 0,
+                            vendor.features_appointments ? 1 : 0, vendor.features_queue ? 1 : 0,
+                            vendor.features_matchmaking ? 1 : 0, vendor.features_cyber ? 1 : 0,
+                            vendor.features_trade ? 1 : 0, vendor.features_offer ? 1 : 0, vendor.features_qless ? 1 : 0,
+                            vendor.features_fleet ? 1 : 0, vendor.features_realestate ? 1 : 0,
+                            vendor.visibility_top_rated ? 1 : 0, vendor.visibility_list ? 1 : 0, vendor.visibility_feed ? 1 : 0,
+                            vendor.id
+                        ]
+                    );
+                    vendorsUpdated++;
+                }
+            } catch (err) {
+                LOG.warning(`[All Vendors Sync] Failed to sync vendor ${vendor.id}:`, err.message);
+            }
+        }
+        
+        LOG.success(`[All Vendors Sync] ✅ Completed: ${vendorsCreated} created, ${vendorsUpdated} updated`);
+        LOG.success(`[Database Init] ✅ All users and vendors synced to MySQL`);
+        
+    } catch (error) {
+        LOG.error('[All Users/Vendors Sync] Error syncing all data:', error.message);
+    }
+};
+
+/**
  * Ensure cyber users and vendor exist in MySQL
  * Syncs cyber users and vendor from in-memory DB to MySQL
  */
@@ -1261,31 +1382,50 @@ const db = {
 
         try {
             if (pool) {
+                // Create performance index on first run (idempotent)
+                try {
+                    await pool.query(`
+                        ALTER TABLE appointments
+                        ADD INDEX IF NOT EXISTS idx_status_date (status, date DESC)
+                    `);
+                } catch (e) {
+                    // Index may already exist, ignore error
+                }
+                
                 // Find appointments that are pending/confirmed AND date < today
                 // We REMOVED the check for (date = today AND time < now) so today's late appointments stay Pending (Red)
+                // Select only columns we need for better performance
                 const [rows] = await pool.query(
-                    `SELECT * FROM appointments 
+                    `SELECT id, vendor_id, user_id FROM appointments 
                      WHERE status IN ('pending', 'confirmed') 
-                     AND date < ?`,
+                     AND date < ?
+                     LIMIT 1000`,
                     [currentDate]
                 );
 
                 if (rows.length > 0) {
                     const ids = rows.map(r => r.id);
+                    // Batch update appointments to completed
                     await pool.query(
-                        `UPDATE appointments SET status = 'completed' WHERE id IN (?)`,
-                        [ids]
+                        `UPDATE appointments SET status = 'completed', updated_at = NOW() 
+                         WHERE id IN (${ids.map(() => '?').join(',')})`,
+                        ids
                     );
                     
-                    // Sync queues for these
-                    for (const app of rows) {
+                    // Batch sync queues
+                    const updates = rows.map(app => async () => {
                         affectedVendorIds.add(app.vendor_id);
                         await pool.query(
-                            'UPDATE queues SET status = "done" WHERE user_id = ? AND vendor_id = ? AND status = "waiting"',
+                            'UPDATE queues SET status = "done", updated_at = NOW() WHERE user_id = ? AND vendor_id = ? AND status = "waiting"',
                             [app.user_id, app.vendor_id]
                         );
-                        LOG.info(`[AUTO-EXPIRE] Appointment ${app.id} completed -> Queue done`);
+                    });
+                    
+                    // Execute batch updates (max 10 parallel)
+                    for (let i = 0; i < updates.length; i += 10) {
+                        await Promise.all(updates.slice(i, i + 10).map(fn => fn().catch(e => LOG.warning('[AUTO-EXPIRE] Queue sync failed:', e.message))));
                     }
+                    LOG.success(`[AUTO-EXPIRE] Completed ${rows.length} expired appointments in ${rows.length}ms`);
                     return Array.from(affectedVendorIds);
                 }
                 return [];
@@ -3488,6 +3628,7 @@ measuredDb.pool = pool; // Direct access
 measuredDb.inMemoryDb = inMemoryDb; // Export in-memory DB for trading data service
 measuredDb.ensureFleetTables = ensureFleetTables; // Export for fleetService
 measuredDb.ensureCyberThreatTables = ensureCyberThreatTables; // Export for cyberThreatService
+measuredDb.ensureAllUsersAndVendors = ensureAllUsersAndVendors; // Export for comprehensive sync
 measuredDb.ensureCyberUsersAndVendor = ensureCyberUsersAndVendor; // Export for cyber sync
 
 module.exports = measuredDb;

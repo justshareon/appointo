@@ -381,12 +381,12 @@ class ExcelFileSyncJob {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                (symbol, company_name, last_price, `change`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
                 VALUES ${placeholders}
                 ON DUPLICATE KEY UPDATE
                     company_name = VALUES(company_name),
                     last_price = VALUES(last_price),
-                    change = VALUES(change),
+                    `change` = VALUES(`change`),
                     percent_change = VALUES(percent_change),
                     volume = VALUES(volume),
                     market_cap = VALUES(market_cap),

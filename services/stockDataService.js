@@ -57,7 +57,7 @@ class StockDataService {
                     symbol VARCHAR(20) NOT NULL,
                     company_name VARCHAR(255),
                     last_price DECIMAL(10, 2),
-                    change DECIMAL(10, 2),
+                    `change` DECIMAL(10, 2),
                     percent_change DECIMAL(5, 2),
                     volume BIGINT,
                     market_cap BIGINT,
@@ -116,7 +116,7 @@ class StockDataService {
                     symbol VARCHAR(20) NOT NULL,
                     company_name VARCHAR(255),
                     last_price DECIMAL(10, 2),
-                    change DECIMAL(10, 2),
+                    `change` DECIMAL(10, 2),
                     percent_change DECIMAL(5, 2),
                     volume BIGINT,
                     market_cap BIGINT,
@@ -235,7 +235,7 @@ class StockDataService {
             const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO stock_data_history 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                (symbol, company_name, last_price, `change`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
                 VALUES ${placeholders}
             `;
 
@@ -317,12 +317,12 @@ class StockDataService {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
+                (symbol, company_name, last_price, `change`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
                 VALUES ${placeholders}
                 ON DUPLICATE KEY UPDATE
                     company_name = VALUES(company_name),
                     last_price = VALUES(last_price),
-                    change = VALUES(change),
+                    `change` = VALUES(`change`),
                     percent_change = VALUES(percent_change),
                     volume = VALUES(volume),
                     market_cap = VALUES(market_cap),
