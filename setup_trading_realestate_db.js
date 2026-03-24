@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS live_stock_data (
     symbol VARCHAR(20) NOT NULL,
     company_name VARCHAR(255),
     last_price DECIMAL(10, 2),
-    `change` DECIMAL(10, 2),
+    \`change\` DECIMAL(10, 2),
     percent_change DECIMAL(5, 2),
     volume BIGINT,
     market_cap BIGINT,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS stock_data_history (
     symbol VARCHAR(20) NOT NULL,
     company_name VARCHAR(255),
     last_price DECIMAL(10, 2),
-    `change` DECIMAL(10, 2),
+    \`change\` DECIMAL(10, 2),
     percent_change DECIMAL(5, 2),
     volume BIGINT,
     market_cap BIGINT,
@@ -202,7 +202,7 @@ CREATE TABLE IF NOT EXISTS mutual_funds (
     scheme_code VARCHAR(50),
     scheme_name VARCHAR(255) NOT NULL,
     nav DECIMAL(10, 4),
-    `change` DECIMAL(10, 4),
+    \`change\` DECIMAL(10, 4),
     change_percent DECIMAL(5, 2),
     category VARCHAR(100),
     fund_house VARCHAR(255),
@@ -268,8 +268,7 @@ CREATE TABLE IF NOT EXISTS trading_orders (
     INDEX idx_status (status),
     INDEX idx_order_id (order_id),
     INDEX idx_created_at (created_at),
-    INDEX idx_side (side),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    INDEX idx_side (side)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Trading Fund Transactions Table
@@ -286,8 +285,7 @@ CREATE TABLE IF NOT EXISTS trading_fund_transactions (
     INDEX idx_user_id (user_id),
     INDEX idx_type (type),
     INDEX idx_status (status),
-    INDEX idx_created_at (created_at),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    INDEX idx_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `;
 
@@ -343,8 +341,7 @@ CREATE TABLE IF NOT EXISTS real_estate_properties (
     INDEX idx_price (price),
     INDEX idx_availability (availability_status),
     INDEX idx_active (is_active),
-    INDEX idx_location (latitude, longitude),
-    FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
+    INDEX idx_location (latitude, longitude)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Property Enquiries Table
@@ -363,8 +360,7 @@ CREATE TABLE IF NOT EXISTS real_estate_enquiries (
     INDEX idx_property (property_id),
     INDEX idx_user (user_id),
     INDEX idx_status (status),
-    FOREIGN KEY (property_id) REFERENCES real_estate_properties(id) ON DELETE CASCADE,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+    FOREIGN KEY (property_id) REFERENCES real_estate_properties(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- Property Favorites/Wishlist Table
@@ -376,7 +372,6 @@ CREATE TABLE IF NOT EXISTS real_estate_favorites (
     UNIQUE KEY unique_user_property (user_id, property_id),
     INDEX idx_user (user_id),
     INDEX idx_property (property_id),
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (property_id) REFERENCES real_estate_properties(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 `;
@@ -473,4 +468,3 @@ if (require.main === module) {
 }
 
 module.exports = { setupDatabase };
-
