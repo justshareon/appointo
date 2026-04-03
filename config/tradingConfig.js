@@ -24,9 +24,9 @@ module.exports = {
         database: process.env.DB_NAME || 'qr_queue',
     },
     schedule: {
-        // Run every 25 minutes
-        // Cron expression: */25 * * * * (every 25 minutes)
-        cronExpression: process.env.EXCEL_SYNC_CRON || '*/25 * * * *',
+        // Run every 33 minutes
+        // Cron expression: */33 * * * * (every 33 minutes)
+        cronExpression: process.env.EXCEL_SYNC_CRON || '*/33 * * * *',
         enabled: process.env.EXCEL_SYNC_ENABLED !== 'false', // Enabled by default
     },
     // Column mapping from Excel to database

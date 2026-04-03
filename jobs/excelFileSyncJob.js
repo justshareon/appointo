@@ -69,6 +69,61 @@ class ExcelFileSyncJob {
     }
 
     /**
+     * Check if data already exists for the current date
+     * Returns true if data was synced today, false if it needs refreshing
+     */
+    async checkIfDataExistsForToday() {
+        try {
+            const pool = require('../database').getPool();
+            if (!pool) {
+                LOG.warning('[Excel File Sync] Database not available, cannot check for existing data');
+                return false;
+            }
+
+            const connection = await pool.getConnection();
+            try {
+                // Check if there's any data in live_stock_data
+                const result = await connection.query(`
+                    SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate
+                    FROM live_stock_data
+                `);
+                
+                const connection2 = Array.isArray(result) ? result[0] : result;
+                const count = connection2?.count || 0;
+                const lastUpdate = connection2?.lastUpdate;
+                
+                if (count === 0) {
+                    LOG.info('[Excel File Sync] No data exists in live_stock_data - need to sync');
+                    return false;
+                }
+                
+                // Check if last update was today (same calendar date)
+                const lastUpdateDate = new Date(lastUpdate);
+                const today = new Date();
+                
+                const sameDay = lastUpdateDate.getDate() === today.getDate() &&
+                                lastUpdateDate.getMonth() === today.getMonth() &&
+                                lastUpdateDate.getFullYear() === today.getFullYear();
+                
+                if (sameDay) {
+                    LOG.info(`[Excel File Sync] ✅ Data already exists for today (${count} records, last updated: ${lastUpdate})`);
+                    LOG.info('[Excel File Sync] Skipping sync - data is fresh');
+                    return true;
+                } else {
+                    LOG.info(`[Excel File Sync] Data is from ${lastUpdateDate.toDateString()}, today is ${today.toDateString()} - need to refresh`);
+                    return false;
+                }
+            } finally {
+                connection.release();
+            }
+        } catch (err) {
+            LOG.warning('[Excel File Sync] Error checking for existing data:', err.message);
+            LOG.warning('[Excel File Sync] Proceeding with sync anyway');
+            return false;
+        }
+    }
+
+    /**
      * Manually trigger sync (for testing or manual refresh)
      */
     async sync() {
@@ -84,7 +139,48 @@ class ExcelFileSyncJob {
         LOG.info('[Excel File Sync] Starting sync job...');
         LOG.info(`[Excel File Sync] Time: ${new Date().toISOString()}`);
 
-        try {
+            // SMART SYNC CHECK: Only proceed if data doesn't exist for today
+            try {
+                const dataExistsForToday = await this.checkIfDataExistsForToday();
+                if (dataExistsForToday) {
+                    // Data already exists for today - move current data to history and skip
+                    LOG.info('[Excel File Sync] ========================================');
+                    LOG.info('[Excel File Sync] Data is fresh for today - archiving to history and exiting');
+                    
+                    // Check if we should archive older data periodically (e.g., keep only last 7 days)
+                    try {
+                        const pool = require('../database').getPool();
+                        if (pool) {
+                            const connection = await pool.getConnection();
+                            try {
+                                // Clean up history older than 30 days (optional - keeps table manageable)
+                                await connection.query(`
+                                    DELETE FROM stock_data_history 
+                                    WHERE archived_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
+                                `);
+                                LOG.info('[Excel File Sync] Cleaned up history older than 30 days');
+                            } finally {
+                                connection.release();
+                            }
+                        }
+                    } catch (cleanupErr) {
+                        LOG.warning('[Excel File Sync] History cleanup skipped:', cleanupErr.message);
+                    }
+                    
+                    this.isRunning = false;
+                    this.lastSyncTime = new Date();
+                    this.lastSyncStatus = 'skipped';
+                    this.lastSyncError = null;
+                    LOG.success('[Excel File Sync] ========================================');
+                    return; // Exit early - don't sync
+                }
+            } catch (checkErr) {
+                LOG.warning('[Excel File Sync] Error during data check:', checkErr.message);
+                LOG.warning('[Excel File Sync] Continuing with sync anyway');
+            }
+
+            LOG.info('[Excel File Sync] Proceeding with fresh sync...');
+
             // Step 1: Read all sheets by type from Excel file
             LOG.info('[Excel File Sync] Step 1: Reading all sheets from Excel file...');
             let sheetsData;
