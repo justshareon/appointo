@@ -341,7 +341,7 @@ class ExcelFileSyncJob {
 
             return result.affectedRows || stockData.length;
         } catch (error) {
-            LOG.error(`[Excel File Sync] Insert failed: ${error.message} | Code: ${error.code || 'N/A'} | First record: ${JSON.stringify(stockData[0])}`);
+            LOG.error(`[Excel File Sync] Insert failedddd: ${error.message} | Code: ${error.code || 'N/A'} | First record: ${JSON.stringify(stockData[0])}`);
             throw error;
         }
     }
