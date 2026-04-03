@@ -23,7 +23,7 @@ class ExcelFileSyncJob {
         this.lastSyncError = null;
         this.cronJob = null;
         
-        // Google Sheets configuration from .env
+        // Google Sheets configuration from .env 
         this.SPREADSHEET_ID = process.env.GOOGLE_SHEETS_ID;
         this.SHEET_NAMES = (process.env.GOOGLE_SHEET_NAMES || 'Gainers,Decliners,Actives,Data').split(',');
         this.CRON_EXPRESSION = process.env.SYNC_CRON || '*/35 * * * *';
