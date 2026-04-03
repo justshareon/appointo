@@ -12,6 +12,7 @@ const excelFileService = require('../services/excelFileService');
 const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
 const LOG = require('../utils/logger');
+const fs = require('fs');
 
 class ExcelFileSyncJob {
     constructor() {
@@ -26,9 +27,31 @@ class ExcelFileSyncJob {
      * Start the scheduled job
      */
     start() {
+        LOG.info('[Excel File Sync] Job starting...');
+        
         if (!config.schedule.enabled) {
             LOG.warning('[Excel File Sync] Job is disabled in configuration');
             return;
+        }
+
+        // Log configuration on startup
+        LOG.info('[Excel File Sync] Config:', {
+            cron: config.schedule.cronExpression,
+            enabled: config.schedule.enabled,
+            excelPath: excelFileService.getExcelFilePath ? excelFileService.getExcelFilePath() : 'unknown'
+        });
+
+        // Check if Excel file exists on startup
+        try {
+            const excelPath = excelFileService.getExcelFilePath ? excelFileService.getExcelFilePath() : null;
+            if (excelPath && fs.existsSync(excelPath)) {
+                const stats = fs.statSync(excelPath);
+                LOG.success(`[Excel File Sync] Excel file found: ${excelPath} (${(stats.size/1024).toFixed(2)} KB)`);
+            } else {
+                LOG.error(`[Excel File Sync] Excel file NOT FOUND at: ${excelPath || 'path not configured'}`);
+            }
+        } catch (err) {
+            LOG.error('[Excel File Sync] Error checking Excel file:', err.message);
         }
 
         // Initialize database tables first
@@ -41,17 +64,18 @@ class ExcelFileSyncJob {
         LOG.info(`[Excel File Sync] Scheduling job with cron: ${cronExpression}`);
 
         this.cronJob = cron.schedule(cronExpression, async () => {
+            LOG.info(`[Excel File Sync] Cron triggered at ${new Date().toISOString()}`);
             await this.sync();
         }, {
             scheduled: true,
-            timezone: "Asia/Kolkata" // Adjust to your timezone
+            timezone: "Asia/Kolkata"
         });
 
         LOG.success('[Excel File Sync] Job scheduled successfully');
 
-        // Run initial sync after 5 seconds (to allow server to start)
+        // Run initial sync after 5 seconds
         setTimeout(() => {
-            LOG.info('[Excel File Sync] Running initial sync...');
+            LOG.info('[Excel File Sync] Running initial sync (first-time load check)...');
             this.sync().catch(err => {
                 LOG.error('[Excel File Sync] Initial sync failed:', err.message);
             });
@@ -70,7 +94,6 @@ class ExcelFileSyncJob {
 
     /**
      * Check if data already exists for the current date
-     * Returns true if data was synced today, false if it needs refreshing
      */
     async checkIfDataExistsForToday() {
         try {
@@ -82,7 +105,6 @@ class ExcelFileSyncJob {
 
             const connection = await pool.getConnection();
             try {
-                // Check if there's any data in live_stock_data
                 const result = await connection.query(`
                     SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate
                     FROM live_stock_data
@@ -93,11 +115,10 @@ class ExcelFileSyncJob {
                 const lastUpdate = connection2?.lastUpdate;
                 
                 if (count === 0) {
-                    LOG.info('[Excel File Sync] No data exists in live_stock_data - need to sync');
+                    LOG.info('[Excel File Sync] No data exists in live_stock_data - first time sync needed');
                     return false;
                 }
                 
-                // Check if last update was today (same calendar date)
                 const lastUpdateDate = new Date(lastUpdate);
                 const today = new Date();
                 
@@ -106,11 +127,10 @@ class ExcelFileSyncJob {
                                 lastUpdateDate.getFullYear() === today.getFullYear();
                 
                 if (sameDay) {
-                    LOG.info(`[Excel File Sync] ✅ Data already exists for today (${count} records, last updated: ${lastUpdate})`);
-                    LOG.info('[Excel File Sync] Skipping sync - data is fresh');
+                    LOG.info(`[Excel File Sync] Data already exists for today (${count} records from ${lastUpdate}) - skipping sync`);
                     return true;
                 } else {
-                    LOG.info(`[Excel File Sync] Data is from ${lastUpdateDate.toDateString()}, today is ${today.toDateString()} - need to refresh`);
+                    LOG.info(`[Excel File Sync] Data needs refresh (last sync: ${lastUpdateDate.toDateString()}, today: ${today.toDateString()})`);
                     return false;
                 }
             } finally {
@@ -124,7 +144,7 @@ class ExcelFileSyncJob {
     }
 
     /**
-     * Manually trigger sync (for testing or manual refresh)
+     * Manually trigger sync
      */
     async sync() {
         if (this.isRunning) {
@@ -139,63 +159,57 @@ class ExcelFileSyncJob {
         LOG.info('[Excel File Sync] Starting sync job...');
         LOG.info(`[Excel File Sync] Time: ${new Date().toISOString()}`);
 
-            // SMART SYNC CHECK: Only proceed if data doesn't exist for today
-            try {
-                const dataExistsForToday = await this.checkIfDataExistsForToday();
-                if (dataExistsForToday) {
-                    // Data already exists for today - move current data to history and skip
-                    LOG.info('[Excel File Sync] ========================================');
-                    LOG.info('[Excel File Sync] Data is fresh for today - archiving to history and exiting');
-                    
-                    // Check if we should archive older data periodically (e.g., keep only last 7 days)
-                    try {
-                        const pool = require('../database').getPool();
-                        if (pool) {
-                            const connection = await pool.getConnection();
-                            try {
-                                // Clean up history older than 30 days (optional - keeps table manageable)
-                                await connection.query(`
-                                    DELETE FROM stock_data_history 
-                                    WHERE archived_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
-                                `);
-                                LOG.info('[Excel File Sync] Cleaned up history older than 30 days');
-                            } finally {
-                                connection.release();
+        try {
+            // SMART SYNC CHECK
+            const dataExistsForToday = await this.checkIfDataExistsForToday();
+            if (dataExistsForToday) {
+                LOG.info('[Excel File Sync] Data is fresh for today - archiving and exiting');
+                
+                try {
+                    const pool = require('../database').getPool();
+                    if (pool) {
+                        const connection = await pool.getConnection();
+                        try {
+                            const [result] = await connection.query(`
+                                DELETE FROM stock_data_history 
+                                WHERE archived_at < DATE_SUB(NOW(), INTERVAL 30 DAY)
+                            `);
+                            if (result.affectedRows > 0) {
+                                LOG.info(`[Excel File Sync] Cleaned up ${result.affectedRows} old history records`);
                             }
+                        } finally {
+                            connection.release();
                         }
-                    } catch (cleanupErr) {
-                        LOG.warning('[Excel File Sync] History cleanup skipped:', cleanupErr.message);
                     }
-                    
-                    this.isRunning = false;
-                    this.lastSyncTime = new Date();
-                    this.lastSyncStatus = 'skipped';
-                    this.lastSyncError = null;
-                    LOG.success('[Excel File Sync] ========================================');
-                    return; // Exit early - don't sync
+                } catch (cleanupErr) {
+                    LOG.warning('[Excel File Sync] History cleanup skipped:', cleanupErr.message);
                 }
-            } catch (checkErr) {
-                LOG.warning('[Excel File Sync] Error during data check:', checkErr.message);
-                LOG.warning('[Excel File Sync] Continuing with sync anyway');
+                
+                this.isRunning = false;
+                this.lastSyncTime = new Date();
+                this.lastSyncStatus = 'skipped';
+                this.lastSyncError = null;
+                LOG.success('[Excel File Sync] Sync skipped - data is up to date');
+                LOG.info('[Excel File Sync] ========================================');
+                return;
             }
 
             LOG.info('[Excel File Sync] Proceeding with fresh sync...');
 
-            // Step 1: Read all sheets by type from Excel file
-            LOG.info('[Excel File Sync] Step 1: Reading all sheets from Excel file...');
+            // Step 1: Read Excel file
+            LOG.info('[Excel File Sync] Step 1: Reading Excel file...');
             let sheetsData;
             try {
                 sheetsData = await excelFileService.readAllSheetsByType();
+                LOG.success('[Excel File Sync] Excel file read successfully');
             } catch (fileError) {
-                // File doesn't exist or can't be read - log error but don't crash
                 LOG.error(`[Excel File Sync] Cannot read Excel file: ${fileError.message}`);
-                LOG.warning('[Excel File Sync] Sync skipped - Excel file not available');
+                LOG.error(`[Excel File Sync] Make sure file exists at: ${excelFileService.getExcelFilePath ? excelFileService.getExcelFilePath() : 'unknown path'}`);
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = fileError.message;
-                return; // Exit gracefully
+                return;
             }
             
-            // Combine all data types
             const allStockData = [
                 ...sheetsData.gainers,
                 ...sheetsData.decliners,
@@ -203,48 +217,27 @@ class ExcelFileSyncJob {
                 ...sheetsData.data
             ];
             
+            LOG.info(`[Excel File Sync] Excel data summary: Gainers:${sheetsData.gainers.length} Decliners:${sheetsData.decliners.length} Actives:${sheetsData.actives.length} Data:${sheetsData.data.length} Total:${allStockData.length}`);
+            
             if (allStockData.length === 0) {
                 LOG.warning('[Excel File Sync] No data found in Excel file - sync skipped');
-                LOG.warning(`[Excel File Sync] Gainers: ${sheetsData.gainers.length}, Decliners: ${sheetsData.decliners.length}, Actives: ${sheetsData.actives.length}, Data: ${sheetsData.data.length}`);
+                LOG.warning(`[Excel File Sync] Breakdown: Gainers: ${sheetsData.gainers.length}, Decliners: ${sheetsData.decliners.length}, Actives: ${sheetsData.actives.length}, Data: ${sheetsData.data.length}`);
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = 'No data found in Excel file';
-                return; // Exit gracefully
+                return;
             }
-
-            LOG.success(`[Excel File Sync] Read data from Excel:`);
-            LOG.info(`[Excel File Sync]   - Gainers: ${sheetsData.gainers.length} records`);
-            LOG.info(`[Excel File Sync]   - Decliners: ${sheetsData.decliners.length} records`);
-            LOG.info(`[Excel File Sync]   - Actives: ${sheetsData.actives.length} records`);
-            LOG.info(`[Excel File Sync]   - Data: ${sheetsData.data.length} records`);
-            LOG.info(`[Excel File Sync]   - Total: ${allStockData.length} records`);
             
-            // Log sample data for validation
-            if (sheetsData.gainers.length > 0) {
-                LOG.info(`[Excel File Sync] Sample gainer:`, {
-                    symbol: sheetsData.gainers[0].symbol,
-                    company_name: sheetsData.gainers[0].company_name,
-                    last_price: sheetsData.gainers[0].last_price,
-                    percent_change: sheetsData.gainers[0].percent_change,
-                    data_type: sheetsData.gainers[0].data_type
-                });
-            }
-            if (sheetsData.decliners.length > 0) {
-                LOG.info(`[Excel File Sync] Sample decliner:`, {
-                    symbol: sheetsData.decliners[0].symbol,
-                    company_name: sheetsData.decliners[0].company_name,
-                    last_price: sheetsData.decliners[0].last_price,
-                    percent_change: sheetsData.decliners[0].percent_change,
-                    data_type: sheetsData.decliners[0].data_type
-                });
+            // Log sample for debugging
+            if (allStockData.length > 0) {
+                LOG.info(`[Excel File Sync] Sample record: ${allStockData[0].symbol} | ${allStockData[0].company_name} | ${allStockData[0].last_price} | ${allStockData[0].percent_change}%`);
             }
 
-            // Step 3: Check database availability
+            // Step 3: Check database
             LOG.info('[Excel File Sync] Step 3: Checking database availability...');
             const pool = require('../database').getPool();
             
             if (!pool) {
                 LOG.warning('[Excel File Sync] MySQL not available, using in-memory storage');
-                // Use in-memory storage instead
                 await stockDataService.archiveCurrentData();
                 await stockDataService.truncateLiveData();
                 const inserted = await stockDataService.insertLiveData(allStockData);
@@ -254,114 +247,64 @@ class ExcelFileSyncJob {
                 this.lastSyncError = null;
                 
                 LOG.success(`[Excel File Sync] Sync completed using in-memory storage: ${inserted} records`);
+                LOG.info('[Excel File Sync] ========================================');
                 return;
             }
 
-            // Step 3.5: Ensure tables are initialized
-            LOG.info('[Excel File Sync] Step 3.5: Ensuring database tables are initialized...');
+            // Step 3.5: Ensure tables
+            LOG.info('[Excel File Sync] Step 3.5: Ensuring database tables...');
             try {
                 await stockDataService.initializeTables();
-                LOG.success('[Excel File Sync] Database tables initialized/verified');
+                LOG.success('[Excel File Sync] Database tables verified');
             } catch (initError) {
                 LOG.error('[Excel File Sync] Failed to initialize tables:', initError.message);
                 throw new Error(`Database initialization failed: ${initError.message}`);
             }
 
-            // Step 4: Begin database transaction
+            // Step 4: Begin transaction
             LOG.info('[Excel File Sync] Step 4: Starting database transaction...');
-
             const connection = await pool.getConnection();
             await connection.beginTransaction();
 
             try {
-                // Step 5: Archive current live data
-                LOG.info('[Excel File Sync] Step 5: Archiving current live data...');
+                // Step 5: Archive
+                LOG.info('[Excel File Sync] Step 5: Archiving current data...');
                 const archivedCount = await this.archiveWithConnection(connection);
                 LOG.success(`[Excel File Sync] Archived ${archivedCount} records`);
 
-                // Step 6: Truncate live table
-                LOG.info('[Excel File Sync] Step 6: Truncating live_stock_data table...');
+                // Step 6: Truncate
+                LOG.info('[Excel File Sync] Step 6: Truncating live_stock_data...');
                 await connection.query('TRUNCATE TABLE live_stock_data');
                 LOG.success('[Excel File Sync] Live table truncated');
 
-                // Step 7: Insert new data
-                LOG.info('[Excel File Sync] Step 7: Inserting new data...');
-                LOG.info(`[Excel File Sync] Preparing to insert ${allStockData.length} records`);
-                
-                // Log data type distribution
-                const typeDistribution = {};
-                allStockData.forEach(stock => {
-                    const type = stock.data_type || 'unknown';
-                    typeDistribution[type] = (typeDistribution[type] || 0) + 1;
-                });
-                LOG.info(`[Excel File Sync] Data type distribution:`, typeDistribution);
-                
-                // Log sample data before insertion
-                if (allStockData.length > 0) {
-                    LOG.info(`[Excel File Sync] Sample data to insert (first 3):`);
-                    allStockData.slice(0, 3).forEach((stock, idx) => {
-                        LOG.info(`[Excel File Sync]   Stock ${idx + 1}:`, {
-                            symbol: stock.symbol,
-                            company_name: stock.company_name,
-                            last_price: stock.last_price,
-                            percent_change: stock.percent_change,
-                            data_type: stock.data_type,
-                            volume: stock.volume,
-                            market_cap: stock.market_cap
-                        });
-                    });
-                }
-                
+                // Step 7: Insert
+                LOG.info(`[Excel File Sync] Step 7: Inserting ${allStockData.length} records...`);
                 const insertedCount = await this.insertWithConnection(connection, allStockData);
                 LOG.success(`[Excel File Sync] Inserted ${insertedCount} records`);
                 
-                // Verify insertion
+                // Verify
                 const [verifyResult] = await connection.query('SELECT COUNT(*) as count FROM live_stock_data');
-                LOG.info(`[Excel File Sync] Verification: ${verifyResult[0].count} total records in database`);
+                LOG.info(`[Excel File Sync] Verification: ${verifyResult[0].count} total records in database (expected: ${allStockData.length})`);
                 
-                // Verify by type and show sample
-                for (const [type, count] of Object.entries(typeDistribution)) {
-                    const [typeResult] = await connection.query(
-                        'SELECT COUNT(*) as count FROM live_stock_data WHERE data_type = ?',
-                        [type]
-                    );
-                    LOG.info(`[Excel File Sync] Verification: ${typeResult[0].count} records with data_type='${type}' (expected: ${count})`);
-                    
-                    // Show sample from database
-                    const [sampleRows] = await connection.query(
-                        'SELECT * FROM live_stock_data WHERE data_type = ? LIMIT 3',
-                        [type]
-                    );
-                    if (sampleRows.length > 0) {
-                        LOG.info(`[Excel File Sync] Sample from database (type: ${type}):`);
-                        sampleRows.forEach((row, idx) => {
-                            LOG.info(`[Excel File Sync]   DB Row ${idx + 1}:`, {
-                                symbol: row.symbol,
-                                company_name: row.company_name,
-                                last_price: row.last_price,
-                                percent_change: row.percent_change,
-                                data_type: row.data_type
-                            });
-                        });
-                    }
+                if (verifyResult[0].count !== allStockData.length) {
+                    LOG.warning(`[Excel File Sync] Record count mismatch! Expected: ${allStockData.length}, Got: ${verifyResult[0].count}`);
                 }
 
-                // Step 8: Commit transaction
+                // Step 8: Commit
                 await connection.commit();
                 LOG.success('[Excel File Sync] Transaction committed successfully');
 
-                // Step 9: Generate features for ML (after successful sync)
+                // Step 9: Generate features
                 LOG.info('[Excel File Sync] Step 9: Generating technical indicators...');
                 try {
                     const featureResult = await featureEngineeringService.generateFeaturesForML();
                     if (featureResult.success) {
-                        LOG.success(`[Excel File Sync] Feature engineering completed: ${featureResult.success} stocks processed`);
+                        LOG.success(`[Excel File Sync] Feature engineering completed: ${featureResult.success} stocks`);
                     } else {
-                        LOG.warning('[Excel File Sync] Feature engineering had issues:', featureResult.message || featureResult.error);
+                        LOG.warning('[Excel File Sync] Feature engineering issues:', featureResult.message);
                     }
                 } catch (featureError) {
                     LOG.error('[Excel File Sync] Feature engineering failed (non-critical):', featureError.message);
-                    // Don't fail the sync if feature engineering fails
                 }
 
                 const syncDuration = Date.now() - syncStartTime;
@@ -370,13 +313,12 @@ class ExcelFileSyncJob {
                 this.lastSyncError = null;
 
                 LOG.success(`[Excel File Sync] Sync completed successfully in ${syncDuration}ms`);
-                LOG.info(`[Excel File Sync] - Archived: ${archivedCount} records`);
-                LOG.info(`[Excel File Sync] - Inserted: ${insertedCount} records`);
+                LOG.info(`[Excel File Sync] Summary: Archived ${archivedCount}, Inserted ${insertedCount}`);
                 LOG.info('[Excel File Sync] ========================================');
 
             } catch (transactionError) {
-                // Rollback on error
                 await connection.rollback();
+                LOG.error('[Excel File Sync] Transaction failed, rolling back:', transactionError.message);
                 throw transactionError;
             } finally {
                 connection.release();
@@ -390,10 +332,18 @@ class ExcelFileSyncJob {
             LOG.error('[Excel File Sync] ========================================');
             LOG.error(`[Excel File Sync] Sync failed after ${syncDuration}ms`);
             LOG.error(`[Excel File Sync] Error: ${error.message}`);
-            LOG.error(`[Excel File Sync] Stack: ${error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : 'No stack'}`);
-            LOG.error('[Excel File Sync] ========================================');
+            LOG.error(`[Excel File Sync] Error type: ${error.code || 'unknown'}`);
             
-            // Don't throw - allow job to continue running
+            // Special error logging for common issues
+            if (error.code === 'ENOENT') {
+                LOG.error('[Excel File Sync] File not found error - check Excel file path');
+            } else if (error.code === 'ECONNREFUSED') {
+                LOG.error('[Excel File Sync] Database connection refused - check MySQL is running');
+            } else if (error.message.includes('Duplicate entry')) {
+                LOG.error('[Excel File Sync] Duplicate key error - check primary key constraints');
+            }
+            
+            LOG.error('[Excel File Sync] ========================================');
         } finally {
             this.isRunning = false;
         }
@@ -404,7 +354,6 @@ class ExcelFileSyncJob {
      */
     async archiveWithConnection(connection) {
         try {
-            // Check if table exists first
             const [tables] = await connection.query(`
                 SELECT COUNT(*) as count 
                 FROM information_schema.tables 
@@ -477,12 +426,12 @@ class ExcelFileSyncJob {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, `change`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                (symbol, company_name, last_price, \`change\`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
                 VALUES ${placeholders}
                 ON DUPLICATE KEY UPDATE
                     company_name = VALUES(company_name),
                     last_price = VALUES(last_price),
-                    `change` = VALUES(`change`),
+                    \`change\` = VALUES(\`change\`),
                     percent_change = VALUES(percent_change),
                     volume = VALUES(volume),
                     market_cap = VALUES(market_cap),
@@ -521,4 +470,3 @@ class ExcelFileSyncJob {
 }
 
 module.exports = ExcelFileSyncJob;
-
