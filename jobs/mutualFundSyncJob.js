@@ -20,25 +20,20 @@ class MutualFundSyncJob {
         this.cronJob = null;
     }
 
-    /**
-     * Start the scheduled job
-     */
     start() {
         const cronExpression = process.env.MUTUAL_FUND_SYNC_CRON || '*/25 * * * *';
         const enabled = process.env.MUTUAL_FUND_SYNC_ENABLED !== 'false';
         
         if (!enabled) {
-            LOG.warning('[Mutual Fund Sync] Job is disabled in configuration');
+            LOG.warning('[Mutual Fund Sync] Job is disabled');
             return;
         }
 
-        // Initialize database tables first
         mutualFundDataService.initializeTables().catch(err => {
-            LOG.error('[Mutual Fund Sync] Failed to initialize tables:', err.message);
+            LOG.error('[Mutual Fund Sync] DB init failed:', err.message);
         });
 
-        // Schedule the job
-        LOG.info(`[Mutual Fund Sync] Scheduling job with cron: ${cronExpression}`);
+        LOG.info(`[Mutual Fund Sync] Scheduling with cron: ${cronExpression}`);
 
         this.cronJob = cron.schedule(cronExpression, async () => {
             await this.sync();
@@ -47,33 +42,26 @@ class MutualFundSyncJob {
             timezone: "Asia/Kolkata"
         });
 
-        LOG.success('[Mutual Fund Sync] Job scheduled successfully');
+        LOG.success('[Mutual Fund Sync] Scheduled successfully');
 
-        // Run initial sync after 5 seconds
         setTimeout(() => {
             LOG.info('[Mutual Fund Sync] Running initial sync...');
-            this.sync().catch(err => {
+            this.sync(true).catch(err => {
                 LOG.error('[Mutual Fund Sync] Initial sync failed:', err.message);
             });
         }, 5000);
     }
 
-    /**
-     * Stop the scheduled job
-     */
     stop() {
         if (this.cronJob) {
             this.cronJob.stop();
-            LOG.info('[Mutual Fund Sync] Job stopped');
+            LOG.info('[Mutual Fund Sync] Stopped');
         }
     }
 
-    /**
-     * Manually trigger sync
-     */
-    async sync() {
+    async sync(forceSync = false) {
         if (this.isRunning) {
-            LOG.warning('[Mutual Fund Sync] Sync already in progress, skipping...');
+            LOG.warning('[Mutual Fund Sync] Already running, skipping...');
             return;
         }
 
@@ -81,18 +69,16 @@ class MutualFundSyncJob {
         const syncStartTime = Date.now();
 
         LOG.info('[Mutual Fund Sync] ========================================');
-        LOG.info('[Mutual Fund Sync] Starting sync job...');
+        LOG.info(`[Mutual Fund Sync] Starting sync (force: ${forceSync})...`);
         LOG.info(`[Mutual Fund Sync] Time: ${new Date().toISOString()}`);
 
         try {
-            // Step 1: Read all sheets from Excel file
-            LOG.info('[Mutual Fund Sync] Step 1: Reading all sheets from Excel file...');
+            // Read Excel file
             let sheetsData;
             try {
                 sheetsData = await mutualFundExcelService.readAllSheets();
             } catch (fileError) {
-                LOG.error(`[Mutual Fund Sync] Cannot read Excel file: ${fileError.message}`);
-                LOG.warning('[Mutual Fund Sync] Sync skipped - Excel file not available');
+                LOG.error(`[Mutual Fund Sync] Excel read failed: ${fileError.message}`);
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = fileError.message;
                 return;
@@ -103,73 +89,59 @@ class MutualFundSyncJob {
             for (const [sheetName, fundData] of Object.entries(sheetsData)) {
                 if (Array.isArray(fundData) && fundData.length > 0) {
                     allFundData.push(...fundData);
-                    LOG.info(`[Mutual Fund Sync]   - ${sheetName}: ${fundData.length} funds`);
                 }
             }
             
             if (allFundData.length === 0) {
-                LOG.warning('[Mutual Fund Sync] No data found in Excel file - sync skipped');
-                LOG.warning(`[Mutual Fund Sync] Sheets processed: ${Object.keys(sheetsData).join(', ')}`);
+                LOG.warning('[Mutual Fund Sync] No data found in Excel file');
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = 'No data found in Excel file';
                 return;
             }
 
-            LOG.success(`[Mutual Fund Sync] Read ${allFundData.length} total funds from ${Object.keys(sheetsData).length} sheets`);
+            LOG.success(`[Mutual Fund Sync] Read ${allFundData.length} records`);
 
-            // Step 2: Check database availability
-            LOG.info('[Mutual Fund Sync] Step 2: Checking database availability...');
+            // Clean data to prevent database errors
+            const cleanedFundData = allFundData.map(fund => ({
+                fund_name: (fund.fund_name || '').substring(0, 255),
+                category: (fund.category || '').substring(0, 100),
+                nav: parseFloat(fund.nav) || 0,
+                returns: parseFloat(fund.returns) || 0,
+                aum: parseFloat(fund.aum) || 0,
+                expense_ratio: parseFloat(fund.expense_ratio) || 0,
+                rating: this.cleanRating(fund.rating), // Fix for rating column
+                risk: (fund.risk || '').substring(0, 50),
+                sheet_name: (fund.sheet_name || '').substring(0, 100)
+            }));
+
             const pool = require('../database').getPool();
             
             if (!pool) {
-                LOG.warning('[Mutual Fund Sync] MySQL not available, using in-memory storage');
+                LOG.warning('[Mutual Fund Sync] Using in-memory storage');
                 await mutualFundDataService.archiveCurrentData();
                 await mutualFundDataService.truncateLiveData();
-                const inserted = await mutualFundDataService.insertLiveData(allFundData);
-                
+                const inserted = await mutualFundDataService.insertLiveData(cleanedFundData);
                 this.lastSyncTime = new Date();
                 this.lastSyncStatus = 'success';
-                this.lastSyncError = null;
-                
-                LOG.success(`[Mutual Fund Sync] Sync completed using in-memory storage: ${inserted} records`);
+                LOG.success(`[Mutual Fund Sync] In-memory sync: ${inserted} records`);
                 return;
             }
-
-            // Step 3: Begin database transaction
-            LOG.info('[Mutual Fund Sync] Step 3: Starting database transaction...');
 
             const connection = await pool.getConnection();
             await connection.beginTransaction();
 
             try {
-                // Step 4: Archive current live data
-                LOG.info('[Mutual Fund Sync] Step 4: Archiving current live data...');
                 const archivedCount = await this.archiveWithConnection(connection);
-                LOG.success(`[Mutual Fund Sync] Archived ${archivedCount} records`);
-
-                // Step 5: Truncate live table
-                LOG.info('[Mutual Fund Sync] Step 5: Truncating mutual_funds table...');
                 await connection.query('TRUNCATE TABLE mutual_funds');
-                LOG.success('[Mutual Fund Sync] Live table truncated');
-
-                // Step 6: Insert new data
-                LOG.info('[Mutual Fund Sync] Step 6: Inserting new data...');
-                const insertedCount = await this.insertWithConnection(connection, allFundData);
-                LOG.success(`[Mutual Fund Sync] Inserted ${insertedCount} records`);
-
-                // Step 7: Commit transaction
+                const insertedCount = await this.insertWithConnection(connection, cleanedFundData);
+                const [verifyResult] = await connection.query('SELECT COUNT(*) as count FROM mutual_funds');
                 await connection.commit();
-                LOG.success('[Mutual Fund Sync] Transaction committed successfully');
 
                 const syncDuration = Date.now() - syncStartTime;
                 this.lastSyncTime = new Date();
                 this.lastSyncStatus = 'success';
-                this.lastSyncError = null;
 
-                LOG.success(`[Mutual Fund Sync] Sync completed successfully in ${syncDuration}ms`);
-                LOG.info(`[Mutual Fund Sync] - Archived: ${archivedCount} records`);
-                LOG.info(`[Mutual Fund Sync] - Inserted: ${insertedCount} records`);
-                LOG.info(`[Mutual Fund Sync] - Sheets: ${Object.keys(sheetsData).join(', ')}`);
+                LOG.success(`[Mutual Fund Sync] Done in ${syncDuration}ms | Archived: ${archivedCount} | Inserted: ${insertedCount} | DB: ${verifyResult[0].count}`);
                 LOG.info('[Mutual Fund Sync] ========================================');
 
             } catch (transactionError) {
@@ -183,20 +155,47 @@ class MutualFundSyncJob {
             const syncDuration = Date.now() - syncStartTime;
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
-
-            LOG.error('[Mutual Fund Sync] ========================================');
-            LOG.error(`[Mutual Fund Sync] Sync failed after ${syncDuration}ms`);
-            LOG.error(`[Mutual Fund Sync] Error: ${error.message}`);
-            LOG.error(`[Mutual Fund Sync] Stack: ${error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : 'No stack'}`);
-            LOG.error('[Mutual Fund Sync] ========================================');
+            LOG.error(`[Mutual Fund Sync] Failed after ${syncDuration}ms: ${error.message}`);
+            LOG.info('[Mutual Fund Sync] ========================================');
         } finally {
             this.isRunning = false;
         }
     }
 
     /**
-     * Archive current data using a database connection
+     * Clean rating value to prevent "Out of range" error
+     * Rating should be integer between 1-5 or NULL
      */
+    cleanRating(rating) {
+        if (!rating) return null;
+        
+        // Try to extract number from rating (e.g., "4 Stars" -> 4)
+        const match = String(rating).match(/(\d+)/);
+        if (match) {
+            let num = parseInt(match[1]);
+            // Ensure rating is between 1-5
+            if (num >= 1 && num <= 5) {
+                return num;
+            }
+        }
+        
+        // Handle text ratings
+        const ratingMap = {
+            'one': 1, 'two': 2, 'three': 3, 'four': 4, 'five': 5,
+            '1 star': 1, '2 star': 2, '3 star': 3, '4 star': 4, '5 star': 5,
+            '★': 1, '★★': 2, '★★★': 3, '★★★★': 4, '★★★★★': 5
+        };
+        
+        const lowerRating = String(rating).toLowerCase();
+        for (const [key, value] of Object.entries(ratingMap)) {
+            if (lowerRating.includes(key)) {
+                return value;
+            }
+        }
+        
+        return null;
+    }
+
     async archiveWithConnection(connection) {
         try {
             const [liveData] = await connection.query('SELECT * FROM mutual_funds');
@@ -226,17 +225,13 @@ class MutualFundSyncJob {
 
             const flatValues = archiveValues.flat();
             await connection.query(query, flatValues);
-
             return liveData.length;
         } catch (error) {
-            LOG.error('[Mutual Fund Sync] Error archiving:', error.message);
+            LOG.error('[Mutual Fund Sync] Archive error:', error.message);
             throw error;
         }
     }
 
-    /**
-     * Insert mutual fund data using a database connection
-     */
     async insertWithConnection(connection, fundData) {
         try {
             const values = fundData.map(fund => [
@@ -260,17 +255,13 @@ class MutualFundSyncJob {
 
             const flatValues = values.flat();
             const [result] = await connection.query(query, flatValues);
-
             return result.affectedRows || fundData.length;
         } catch (error) {
-            LOG.error('[Mutual Fund Sync] Error inserting data:', error.message);
+            LOG.error(`[Mutual Fund Sync] Insert error: ${error.message}`);
             throw error;
         }
     }
 
-    /**
-     * Get sync status
-     */
     getStatus() {
         return {
             isRunning: this.isRunning,
@@ -285,4 +276,3 @@ class MutualFundSyncJob {
 }
 
 module.exports = MutualFundSyncJob;
-

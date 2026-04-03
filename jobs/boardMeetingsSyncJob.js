@@ -20,23 +20,18 @@ class BoardMeetingsSyncJob {
         this.cronJob = null;
     }
 
-    /**
-     * Start the scheduled job
-     */
     start() {
         if (!config.schedule?.enabled) {
-            LOG.warning('[Board Meetings Sync] Job is disabled in configuration');
+            LOG.warning('[Board Meetings Sync] Job is disabled');
             return;
         }
 
-        // Initialize database tables first
         boardMeetingsDataService.initializeTables().catch(err => {
-            LOG.error('[Board Meetings Sync] Failed to initialize tables:', err.message);
+            LOG.error('[Board Meetings Sync] DB init failed:', err.message);
         });
 
-        // Schedule the job - run daily at 6:30 AM IST (30 min after corporate actions)
         const cronExpression = config.schedule?.boardMeetingsCron || '30 6 * * *';
-        LOG.info(`[Board Meetings Sync] Scheduling job with cron: ${cronExpression}`);
+        LOG.info(`[Board Meetings Sync] Scheduling with cron: ${cronExpression}`);
 
         this.cronJob = cron.schedule(cronExpression, async () => {
             await this.sync();
@@ -45,33 +40,26 @@ class BoardMeetingsSyncJob {
             timezone: "Asia/Kolkata"
         });
 
-        LOG.success('[Board Meetings Sync] Job scheduled successfully');
+        LOG.success('[Board Meetings Sync] Scheduled successfully');
 
-        // Run initial sync after 5 seconds
         setTimeout(() => {
             LOG.info('[Board Meetings Sync] Running initial sync...');
-            this.sync().catch(err => {
+            this.sync(true).catch(err => {
                 LOG.error('[Board Meetings Sync] Initial sync failed:', err.message);
             });
         }, 5000);
     }
 
-    /**
-     * Stop the scheduled job
-     */
     stop() {
         if (this.cronJob) {
             this.cronJob.stop();
-            LOG.info('[Board Meetings Sync] Job stopped');
+            LOG.info('[Board Meetings Sync] Stopped');
         }
     }
 
-    /**
-     * Manually trigger sync
-     */
-    async sync() {
+    async sync(forceSync = false) {
         if (this.isRunning) {
-            LOG.warning('[Board Meetings Sync] Sync already in progress, skipping...');
+            LOG.warning('[Board Meetings Sync] Already running, skipping...');
             return;
         }
 
@@ -79,18 +67,15 @@ class BoardMeetingsSyncJob {
         const syncStartTime = Date.now();
 
         LOG.info('[Board Meetings Sync] ========================================');
-        LOG.info('[Board Meetings Sync] Starting sync job...');
+        LOG.info(`[Board Meetings Sync] Starting sync (force: ${forceSync})...`);
         LOG.info(`[Board Meetings Sync] Time: ${new Date().toISOString()}`);
 
         try {
-            // Step 1: Read CSV file
-            LOG.info('[Board Meetings Sync] Step 1: Reading CSV file...');
             let meetingsData;
             try {
                 meetingsData = await boardMeetingsCsvService.readCsvFile();
             } catch (fileError) {
-                LOG.error(`[Board Meetings Sync] Cannot read CSV file: ${fileError.message}`);
-                LOG.warning('[Board Meetings Sync] Sync skipped - CSV file not available');
+                LOG.error(`[Board Meetings Sync] CSV read failed: ${fileError.message}`);
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = fileError.message;
                 this.lastSyncTime = new Date();
@@ -99,7 +84,7 @@ class BoardMeetingsSyncJob {
             }
 
             if (meetingsData.length === 0) {
-                LOG.warning('[Board Meetings Sync] No data found in CSV file - sync skipped');
+                LOG.warning('[Board Meetings Sync] No data found in CSV file');
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = 'No data found in CSV file';
                 this.lastSyncTime = new Date();
@@ -107,29 +92,32 @@ class BoardMeetingsSyncJob {
                 return;
             }
 
-            LOG.info(`[Board Meetings Sync] Step 2: Processing ${meetingsData.length} board meetings...`);
+            LOG.success(`[Board Meetings Sync] Read ${meetingsData.length} records from CSV`);
 
-            // Step 2: Initialize tables if needed
+            // Clean data to prevent database errors
+            const cleanedMeetingsData = meetingsData.map(meeting => ({
+                company_name: (meeting.company_name || '').substring(0, 255),
+                symbol: (meeting.symbol || '').substring(0, 20),
+                meeting_date: this.cleanDate(meeting.meeting_date),
+                meeting_time: (meeting.meeting_time || '').substring(0, 50),
+                meeting_type: (meeting.meeting_type || '').substring(0, 100),
+                purpose: (meeting.purpose || '').substring(0, 500),
+                venue: (meeting.venue || '').substring(0, 500),
+                outcome: (meeting.outcome || '').substring(0, 500),
+                source_file: (meeting.source_file || '').substring(0, 255)
+            }));
+
             await boardMeetingsDataService.initializeTables();
-
-            // Step 3: Truncate existing data
-            LOG.info('[Board Meetings Sync] Step 3: Truncating existing data...');
             await boardMeetingsDataService.truncateData();
-
-            // Step 4: Insert new data
-            LOG.info('[Board Meetings Sync] Step 4: Inserting new data...');
-            const inserted = await boardMeetingsDataService.insertData(meetingsData);
+            const inserted = await boardMeetingsDataService.insertData(cleanedMeetingsData);
 
             const syncDuration = Date.now() - syncStartTime;
             this.lastSyncTime = new Date();
             this.lastSyncStatus = 'success';
             this.lastSyncError = null;
 
-            LOG.success(`[Board Meetings Sync] ========================================`);
-            LOG.success(`[Board Meetings Sync] Sync completed successfully!`);
-            LOG.success(`[Board Meetings Sync] Duration: ${(syncDuration / 1000).toFixed(2)}s`);
-            LOG.success(`[Board Meetings Sync] Records inserted: ${inserted}`);
-            LOG.success(`[Board Meetings Sync] ========================================`);
+            LOG.success(`[Board Meetings Sync] Done in ${(syncDuration / 1000).toFixed(2)}s | Inserted: ${inserted}`);
+            LOG.info('[Board Meetings Sync] ========================================');
 
         } catch (error) {
             const syncDuration = Date.now() - syncStartTime;
@@ -137,22 +125,60 @@ class BoardMeetingsSyncJob {
             this.lastSyncError = error.message;
             this.lastSyncTime = new Date();
 
-            LOG.error(`[Board Meetings Sync] ========================================`);
-            LOG.error(`[Board Meetings Sync] Sync failed after ${(syncDuration / 1000).toFixed(2)}s`);
-            LOG.error(`[Board Meetings Sync] Error: ${error.message}`);
-            LOG.error(`[Board Meetings Sync] Stack: ${error.stack}`);
-            LOG.error(`[Board Meetings Sync] ========================================`);
-
-            throw error;
+            LOG.error(`[Board Meetings Sync] Failed after ${(syncDuration / 1000).toFixed(2)}s: ${error.message}`);
+            LOG.info('[Board Meetings Sync] ========================================');
         } finally {
             this.isRunning = false;
         }
     }
 
     /**
-     * Get sync job status
-     * @returns {Object}
+     * Clean date to ensure valid MySQL date format
      */
+    cleanDate(date) {
+        if (!date) return null;
+        
+        try {
+            // If already a Date object
+            if (date instanceof Date) {
+                return date.toISOString().split('T')[0];
+            }
+            
+            // Try to parse string date
+            const parsedDate = new Date(date);
+            if (!isNaN(parsedDate.getTime())) {
+                return parsedDate.toISOString().split('T')[0];
+            }
+            
+            // Try common Indian date formats (DD/MM/YYYY)
+            const parts = String(date).split(/[/-]/);
+            if (parts.length === 3) {
+                let day, month, year;
+                
+                // Check if first part is day (DD/MM/YYYY)
+                if (parts[0].length <= 2 && parts[1].length <= 2) {
+                    day = parseInt(parts[0]);
+                    month = parseInt(parts[1]) - 1;
+                    year = parseInt(parts[2]);
+                } else {
+                    // Assume YYYY-MM-DD
+                    year = parseInt(parts[0]);
+                    month = parseInt(parts[1]) - 1;
+                    day = parseInt(parts[2]);
+                }
+                
+                const formattedDate = new Date(year, month, day);
+                if (!isNaN(formattedDate.getTime())) {
+                    return formattedDate.toISOString().split('T')[0];
+                }
+            }
+            
+            return null;
+        } catch (err) {
+            return null;
+        }
+    }
+
     getStatus() {
         return {
             isRunning: this.isRunning,
@@ -165,4 +191,3 @@ class BoardMeetingsSyncJob {
 }
 
 module.exports = BoardMeetingsSyncJob;
-
