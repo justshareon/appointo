@@ -44,7 +44,6 @@ class ExcelFileSyncJob {
 
         LOG.success('[Excel File Sync] Job scheduled');
 
-        // Run initial sync immediately (force first load)
         setTimeout(() => {
             this.sync(true).catch(err => {
                 LOG.error('[Excel File Sync] Initial sync failed:', err.message);
@@ -59,6 +58,44 @@ class ExcelFileSyncJob {
         }
     }
 
+    /**
+     * Check if data was synced in current minute using database last_updated
+     */
+    async wasSyncedInCurrentMinute() {
+        try {
+            const pool = require('../database').getPool();
+            if (!pool) return false;
+
+            const connection = await pool.getConnection();
+            try {
+                const [result] = await connection.query(`
+                    SELECT MAX(last_updated) as lastSyncTime 
+                    FROM live_stock_data
+                `);
+                
+                const lastSyncTime = result[0]?.lastSyncTime;
+                if (!lastSyncTime) return false;
+                
+                const lastSyncDate = new Date(lastSyncTime);
+                const now = new Date();
+                
+                // Compare year, month, day, hour, minute
+                const sameMinute = lastSyncDate.getFullYear() === now.getFullYear() &&
+                                   lastSyncDate.getMonth() === now.getMonth() &&
+                                   lastSyncDate.getDate() === now.getDate() &&
+                                   lastSyncDate.getHours() === now.getHours() &&
+                                   lastSyncDate.getMinutes() === now.getMinutes();
+                
+                return sameMinute;
+            } finally {
+                connection.release();
+            }
+        } catch (err) {
+            LOG.warning('[Excel File Sync] Check failed:', err.message);
+            return false;
+        }
+    }
+
     async checkIfDataExistsForToday() {
         try {
             const pool = require('../database').getPool();
@@ -66,14 +103,13 @@ class ExcelFileSyncJob {
 
             const connection = await pool.getConnection();
             try {
-                const result = await connection.query(`
+                const [result] = await connection.query(`
                     SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate
                     FROM live_stock_data
                 `);
                 
-                const connection2 = Array.isArray(result) ? result[0] : result;
-                const count = connection2?.count || 0;
-                const lastUpdate = connection2?.lastUpdate;
+                const count = result?.count || 0;
+                const lastUpdate = result?.lastUpdate;
                 
                 if (count === 0) return false;
                 
@@ -103,17 +139,25 @@ class ExcelFileSyncJob {
         const syncStartTime = Date.now();
 
         try {
-            // Skip check if forced (first time)
+            // Check if already synced in current minute (from database)
             if (!forceSync) {
-                const dataExists = await this.checkIfDataExistsForToday();
-                if (dataExists) {
-                    LOG.info('[Excel File Sync] Data exists - skipping');
+                const syncedInCurrentMinute = await this.wasSyncedInCurrentMinute();
+                if (syncedInCurrentMinute) {
+                    LOG.info('[Excel File Sync] Skipped - already synced in current minute');
                     this.isRunning = false;
                     return;
                 }
             }
 
-            // Read Excel
+            if (!forceSync) {
+                const dataExists = await this.checkIfDataExistsForToday();
+                if (dataExists) {
+                    LOG.info('[Excel File Sync] Skipped - data exists for today');
+                    this.isRunning = false;
+                    return;
+                }
+            }
+
             let sheetsData;
             try {
                 sheetsData = await excelFileService.readAllSheetsByType();
@@ -155,7 +199,7 @@ class ExcelFileSyncJob {
                 const inserted = await stockDataService.insertLiveData(cleanedData);
                 this.lastSyncTime = new Date();
                 this.lastSyncStatus = 'success';
-                LOG.success(`[Excel File Sync] In-memory: ${inserted} records in ${Date.now() - syncStartTime}ms`);
+                LOG.success(`[Excel File Sync] Done: ${inserted} records in ${Date.now() - syncStartTime}ms`);
                 this.isRunning = false;
                 return;
             }
@@ -173,10 +217,8 @@ class ExcelFileSyncJob {
                 this.lastSyncTime = new Date();
                 this.lastSyncStatus = 'success';
 
-                // SINGLE LINE LOG - All info in one line
-                LOG.success(`[Excel File Sync] Completed in ${syncDuration}ms | Archived: ${archivedCount} | Inserted: ${insertedCount}`);
+                LOG.success(`[Excel File Sync] Done: ${insertedCount} records | ${syncDuration}ms | Archived: ${archivedCount}`);
 
-                // Generate features (non-critical)
                 try {
                     await featureEngineeringService.generateFeaturesForML();
                 } catch (featureError) {
@@ -193,7 +235,7 @@ class ExcelFileSyncJob {
         } catch (error) {
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
-            LOG.error(`[Excel File Sync] Failed after ${Date.now() - syncStartTime}ms: ${error.message}`);
+            LOG.error(`[Excel File Sync] Failed: ${error.message}`);
         } finally {
             this.isRunning = false;
         }
