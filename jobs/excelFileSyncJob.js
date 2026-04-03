@@ -60,7 +60,7 @@ class ExcelFileSyncJob {
             await this.forceSync(req, res);
         });
         
-        LOG.success('[Excel File Sync] ✅ Endpoints registered: /trading/refresh, /trading/sync-status, /trading/force-sync');
+        LOG.success('[Excel File Syncm] ✅ Endpoints registered: /g/refresh, /g/sync-status, /g/force-sync');
     }
 
     /**
