@@ -160,11 +160,16 @@ if (config.dataSources.useYahooFinance) {
     try {
         const ExcelFileSyncJob = require('./jobs/excelFileSyncJob');
         const excelFileSyncJob = new ExcelFileSyncJob();
+        
+        // ✅ ADD THIS LINE - Register endpoints with Express app
+        excelFileSyncJob.registerEndpoints(app);
+        
         excelFileSyncJob.start();
         // Store reference globally for status endpoint
         global.excelFileSyncJob = excelFileSyncJob;
-        LOG.info('[Server] ✅ Excel file sync job started (every 25 minutes)');
-        LOG.info(`[Server] Data Source: Excel File -> MySQL/In-Memory (Yahoo Finance disabled)`);
+        LOG.info('[Server] ✅ Excel file sync job started (every 35 minutes)');
+        LOG.info('[Server] ✅ Excel sync endpoints registered: /g/refresh, /g/sync-status, /g/force-sync');
+        LOG.info(`[Server] Data Source: Google Sheets -> MySQL/In-Memory (Yahoo Finance disabled)`);
     } catch (error) {
         LOG.error('[Server] Failed to start Excel file sync job:', error.message);
         LOG.warning('[Server] Server will continue running without Excel sync');
