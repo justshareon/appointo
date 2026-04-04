@@ -1,17 +1,10 @@
 /**
  * Excel File Sync Job
- * Scheduled job that runs every 35 minutes to:
- * 1. Read data directly from 4 Google Drive CSV files
- * 2. Archive current live_stock_data to stock_data_history
- * 3. Truncate live_stock_data
- * 4. Insert fresh data from CSV files into live_stock_data
+ * Reads 4 Google Drive CSV files and syncs to live_stock_data
  */
 const config = require('../config/tradingConfig');
-const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
 const LOG = require('../utils/logger');
-const fs = require('fs');
-const path = require('path');
 require('dotenv').config();
 
 class ExcelFileSyncJob {
@@ -22,28 +15,28 @@ class ExcelFileSyncJob {
         this.lastSyncError = null;
         this.cronJob = null;
         this.initialized = false;
-        this.app = null;
         
-        // 4 Google Drive public CSV files
-        this.csvFiles = [
-            { id: '1pAUr1ipvh78rzkJlbi9KW7ZaJTimDAeg', type: 'data', name: 'DATA' },
-            { id: '1q7aT9YET-QdaZZjQ6DSJe8scVZaD0WiE', type: 'actives', name: 'ACTIVES' },
-            { id: '12v7T5qEbAO98TJQV8qV-C0oRrBOlav4k', type: 'gainers', name: 'GAINERS' },
-            { id: '1vRj6ms73Qnc1sFgnNcdldW3YXBkNkgJz', type: 'decliners', name: 'DECLINERS' }
-        ];
+        // Your 4 public Google Drive file IDs
+        this.fileIds = {
+            data: '1pAUr1ipvh78rzkJlbi9KW7ZaJTimDAeg',
+            actives: '1q7aT9YET-QdaZZjQ6DSJe8scVZaD0WiE',
+            gainers: '12v7T5qEbAO98TJQV8qV-C0oRrBOlav4k',
+            decliners: '1vRj6ms73Qnc1sFgnNcdldW3YXBkNkgJz'
+        };
         
         this.CRON_EXPRESSION = process.env.SYNC_CRON || '*/35 * * * *';
         this.ENABLE_LOCAL_FALLBACK = process.env.ENABLE_LOCAL_FALLBACK === 'true';
-        this.LOCAL_EXCEL_PATH = process.env.LOCAL_EXCEL_PATH || path.join(__dirname, '../data/stock_data.xlsx');
         
-        LOG.info('[Excel File Sync] Initialized with 4 CSV files');
+        LOG.info('[Excel File Sync] Initialized with 4 Google Drive files');
     }
 
     registerEndpoints(app) {
-        this.app = app;
-        
         app.get('/g/refresh', async (req, res) => {
-            await this.manualTrigger(req, res);
+            if (this.isRunning) {
+                return res.status(409).json({ success: false, message: 'Sync in progress' });
+            }
+            await this.sync(true);
+            res.json({ success: true, status: this.getStatus() });
         });
 
         app.get('/g/sync-status', (req, res) => {
@@ -51,10 +44,14 @@ class ExcelFileSyncJob {
         });
         
         app.get('/g/force-sync', async (req, res) => {
-            await this.forceSync(req, res);
+            if (this.isRunning) {
+                return res.status(409).json({ success: false, message: 'Sync in progress' });
+            }
+            await this.sync(true);
+            res.json({ success: true, status: this.getStatus() });
         });
         
-        LOG.success('[Excel File Sync] Endpoints registered: /g/refresh, /g/sync-status, /g/force-sync');
+        LOG.success('[Excel File Sync] Endpoints registered');
     }
 
     start() {
@@ -69,11 +66,6 @@ class ExcelFileSyncJob {
             LOG.warning('[Excel File Sync] Job is disabled');
             return;
         }
-
-        // Initialize database tables
-        stockDataService.initializeTables()
-            .then(() => LOG.success('[Excel File Sync] Database tables initialized'))
-            .catch(err => LOG.error('[Excel File Sync] DB init failed:', err.message));
 
         // Schedule cron job
         const cron = require('node-cron');
@@ -103,50 +95,192 @@ class ExcelFileSyncJob {
         this.initialized = false;
     }
 
-    async manualTrigger(req, res) {
-        if (this.isRunning) {
-            return res.status(409).json({ success: false, message: 'Sync already in progress' });
-        }
-        await this.sync(true);
-        res.json({ success: true, status: this.getStatus() });
-    }
-
-    async forceSync(req, res) {
-        if (this.isRunning) {
-            return res.status(409).json({ success: false, message: 'Sync already in progress' });
-        }
-        await this.sync(true);
-        res.json({ success: true, status: this.getStatus() });
-    }
-
     /**
-     * Fetch CSV from Google Drive using direct download URL
+     * Fetch raw CSV content from Google Drive
      */
     async fetchCSV(fileId) {
         const url = `https://drive.google.com/uc?export=download&id=${fileId}`;
         
         const response = await fetch(url, {
             timeout: 30000,
-            headers: {
-                'Accept': 'text/csv,text/plain,*/*',
-                'Cache-Control': 'no-cache'
-            }
+            headers: { 'Accept': 'text/csv,text/plain,*/*' }
         });
         
         if (!response.ok) {
             throw new Error(`HTTP ${response.status}: ${response.statusText}`);
         }
         
-        const csvText = await response.text();
-        if (!csvText.trim() || csvText.length < 50) {
-            throw new Error('CSV file is empty or too small');
+        const text = await response.text();
+        if (!text || text.length < 50) {
+            throw new Error('File empty or too small');
         }
         
-        return csvText;
+        return text;
     }
 
     /**
-     * Parse CSV line handling quotes
+     * Parse DATA.csv format (has SYMBOL, Name, Price, Volume, Change, etc.)
+     */
+    parseDataCSV(csvText, fileType) {
+        const lines = csvText.split('\n').filter(line => line.trim() && !line.includes('ENTER SYMBOL'));
+        if (lines.length < 2) return [];
+        
+        // Find header row (contains SYMBOL)
+        let headerLine = null;
+        let startRow = 0;
+        for (let i = 0; i < Math.min(5, lines.length); i++) {
+            if (lines[i].toUpperCase().includes('SYMBOL') && lines[i].includes('NAME')) {
+                headerLine = lines[i];
+                startRow = i + 1;
+                break;
+            }
+        }
+        
+        if (!headerLine) {
+            headerLine = lines[0];
+            startRow = 1;
+        }
+        
+        const headers = this.parseCSVLine(headerLine);
+        const stocks = [];
+        
+        for (let i = startRow; i < lines.length; i++) {
+            const values = this.parseCSVLine(lines[i]);
+            if (values.length < 3) continue;
+            
+            const row = {};
+            headers.forEach((h, idx) => {
+                if (idx < values.length) {
+                    row[h.toLowerCase().replace(/\s+/g, '_')] = values[idx];
+                }
+            });
+            
+            let symbol = row.symbol || '';
+            if (symbol.startsWith('NSE:')) symbol = symbol.substring(4);
+            if (symbol.startsWith('BOM:')) symbol = symbol.substring(4);
+            if (!symbol || symbol === '%' || symbol === 'SYMBOL') continue;
+            
+            // Parse values
+            const price = parseFloat(String(row.price || row.last_price || 0).replace(/,/g, ''));
+            const change = parseFloat(row.change || 0);
+            const changePercent = parseFloat(row.change_ || row.change_percent || 0);
+            const volume = parseInt(String(row.volume || 0).replace(/,/g, ''), 10);
+            
+            if (isNaN(price) && isNaN(volume)) continue;
+            
+            stocks.push({
+                symbol: symbol.trim(),
+                company_name: row.name || row.company_name || null,
+                last_price: isNaN(price) ? 0 : price,
+                pchange: isNaN(change) ? 0 : change,
+                per_change: isNaN(changePercent) ? 0 : changePercent,
+                volume: isNaN(volume) ? 0 : volume,
+                market_cap: null,
+                pe_ratio: null,
+                week_52_low: null,
+                week_52_high: null,
+                data_type: fileType,
+                additional_data: JSON.stringify({ source: fileType })
+            });
+        }
+        
+        return stocks;
+    }
+
+    /**
+     * Parse ACTIVES/GAINERS/DECLINERS CSV format (has Ticker, Name, Volume, Price, Change %)
+     */
+    parseRankingsCSV(csvText, fileType) {
+        const lines = csvText.split('\n').filter(line => line.trim() && !line.includes('No.'));
+        if (lines.length < 2) return [];
+        
+        // Find header row
+        let headerLine = null;
+        let startRow = 0;
+        for (let i = 0; i < Math.min(5, lines.length); i++) {
+            if (lines[i].toUpperCase().includes('TICKER') || 
+                (lines[i].toUpperCase().includes('NAME') && lines[i].toUpperCase().includes('VOLUME'))) {
+                headerLine = lines[i];
+                startRow = i + 1;
+                break;
+            }
+        }
+        
+        if (!headerLine) {
+            headerLine = lines[0];
+            startRow = 1;
+        }
+        
+        const headers = this.parseCSVLine(headerLine);
+        const stocks = [];
+        
+        for (let i = startRow; i < lines.length; i++) {
+            const values = this.parseCSVLine(lines[i]);
+            if (values.length < 3) continue;
+            
+            const row = {};
+            headers.forEach((h, idx) => {
+                if (idx < values.length) {
+                    row[h.toLowerCase().replace(/\s+/g, '_')] = values[idx];
+                }
+            });
+            
+            let symbol = row.ticker || row.symbol || '';
+            if (symbol.startsWith('NSE:')) symbol = symbol.substring(4);
+            if (symbol.startsWith('BOM:')) symbol = symbol.substring(4);
+            if (!symbol || symbol === '%' || symbol === 'TICKER') continue;
+            
+            // Parse values (handle arrow symbols in change)
+            let changePercent = parseFloat(row.change_ || row.change_percent || row['change_%'] || 0);
+            if (isNaN(changePercent)) {
+                const changeStr = String(row.change_ || '');
+                const match = changeStr.match(/(\d+(?:\.\d+)?)/);
+                if (match) changePercent = parseFloat(match[1]);
+            }
+            
+            const price = parseFloat(String(row.price || 0).replace(/,/g, ''));
+            const volume = parseInt(String(row.volume || 0).replace(/,/g, ''), 10);
+            const marketCap = this.parseMarketCap(row.market_cap);
+            const peRatio = parseFloat(row.pe_ratio);
+            const weekLow = parseFloat(row.week_52_low);
+            const weekHigh = parseFloat(row.week_52_high);
+            
+            if (isNaN(price) && isNaN(volume)) continue;
+            
+            stocks.push({
+                symbol: symbol.trim(),
+                company_name: row.name || null,
+                last_price: isNaN(price) ? 0 : price,
+                pchange: 0,
+                per_change: isNaN(changePercent) ? 0 : changePercent,
+                volume: isNaN(volume) ? 0 : volume,
+                market_cap: marketCap,
+                pe_ratio: isNaN(peRatio) ? null : peRatio,
+                week_52_low: isNaN(weekLow) ? null : weekLow,
+                week_52_high: isNaN(weekHigh) ? null : weekHigh,
+                data_type: fileType,
+                additional_data: JSON.stringify({ source: fileType })
+            });
+        }
+        
+        return stocks;
+    }
+
+    /**
+     * Parse market cap string like "₹931,749,841,329.00" to number
+     */
+    parseMarketCap(value) {
+        if (!value) return null;
+        const str = String(value);
+        const match = str.match(/(\d+(?:,\d+)*(?:\.\d+)?)/);
+        if (match) {
+            return parseFloat(match[1].replace(/,/g, ''));
+        }
+        return null;
+    }
+
+    /**
+     * Parse CSV line respecting quotes
      */
     parseCSVLine(line) {
         const result = [];
@@ -166,196 +300,77 @@ class ExcelFileSyncJob {
         }
         result.push(current.trim());
         
-        return result.map(field => field.replace(/^"|"$/g, '').replace(/""/g, '"'));
+        return result.map(f => f.replace(/^"|"$/g, '').replace(/""/g, '"'));
     }
 
     /**
-     * Parse CSV data to stock objects
-     */
-    parseCSVToStocks(csvText, fileType) {
-        const lines = csvText.split('\n').filter(line => line.trim());
-        if (lines.length < 2) return [];
-        
-        // Parse headers (first row)
-        const headers = this.parseCSVLine(lines[0]);
-        
-        const stocks = [];
-        
-        for (let i = 1; i < lines.length; i++) {
-            if (!lines[i].trim()) continue;
-            
-            const values = this.parseCSVLine(lines[i]);
-            const row = {};
-            headers.forEach((header, idx) => {
-                let value = values[idx] || '';
-                value = value.trim();
-                const headerKey = header.toLowerCase().replace(/\s+/g, '_').replace(/[^a-z0-9_]/g, '');
-                row[headerKey] = value;
-            });
-            
-            // Extract symbol (remove NSE:/BOM: prefix)
-            let symbol = row.symbol || row.ticker || '';
-            if (symbol.startsWith('NSE:')) symbol = symbol.substring(4);
-            if (symbol.startsWith('BOM:')) symbol = symbol.substring(4);
-            if (!symbol || symbol === '%') continue;
-            
-            // Parse price (remove commas)
-            const price = parseFloat(String(row.price || row.last_price || 0).replace(/,/g, ''));
-            const change = parseFloat(row.change || 0);
-            const changePercent = parseFloat(row.change_ || row.change_percent || 0);
-            const volume = parseInt(String(row.volume || 0).replace(/,/g, ''));
-            
-            // Market cap and PE ratio (from ACTIVES/GAINERS/DECLINERS files)
-            let marketCap = null;
-            let peRatio = null;
-            let week52Low = null;
-            let week52High = null;
-            
-            if (row.market_cap) {
-                marketCap = parseFloat(String(row.market_cap).replace(/,/g, ''));
-            }
-            if (row.pe_ratio) {
-                peRatio = parseFloat(row.pe_ratio);
-            }
-            if (row.week_52_low) {
-                week52Low = parseFloat(row.week_52_low);
-            }
-            if (row.week_52_high) {
-                week52High = parseFloat(row.week_52_high);
-            }
-            
-            const stock = {
-                symbol: symbol,
-                company_name: row.name || row.company_name || null,
-                last_price: isNaN(price) ? 0 : price,
-                pchange: isNaN(change) ? 0 : change,
-                per_change: isNaN(changePercent) ? 0 : changePercent,
-                volume: isNaN(volume) ? 0 : volume,
-                market_cap: marketCap,
-                pe_ratio: peRatio,
-                week_52_low: week52Low,
-                week_52_high: week52High,
-                data_type: fileType,
-                additional_data: null
-            };
-            
-            // Only add if symbol is valid
-            if (stock.symbol && stock.symbol.length > 0) {
-                stocks.push(stock);
-            }
-        }
-        
-        return stocks;
-    }
-
-    /**
-     * Read all 4 CSV files from Google Drive
+     * Read all 4 CSV files
      */
     async readFromGoogleSheets() {
-        LOG.info('[Excel File Sync] Reading 4 CSV files from Google Drive...');
+        LOG.info('[Excel File Sync] Reading 4 CSV files...');
         
         const allStocks = [];
         
-        for (const file of this.csvFiles) {
-            try {
-                LOG.info(`[Excel File Sync] Fetching ${file.name}...`);
-                const csvText = await this.fetchCSV(file.id);
-                const stocks = this.parseCSVToStocks(csvText, file.type);
-                LOG.success(`[Excel File Sync] ${file.name}: ${stocks.length} records`);
-                allStocks.push(...stocks);
-            } catch (error) {
-                LOG.error(`[Excel File Sync] Failed to fetch ${file.name}:`, error.message);
-            }
+        // Process DATA.csv
+        try {
+            LOG.info('[Excel File Sync] Fetching DATA...');
+            const csvText = await this.fetchCSV(this.fileIds.data);
+            const stocks = this.parseDataCSV(csvText, 'data');
+            LOG.success(`[Excel File Sync] DATA: ${stocks.length} records`);
+            allStocks.push(...stocks);
+        } catch (err) {
+            LOG.error('[Excel File Sync] DATA failed:', err.message);
+        }
+        
+        // Process ACTIVES.csv
+        try {
+            LOG.info('[Excel File Sync] Fetching ACTIVES...');
+            const csvText = await this.fetchCSV(this.fileIds.actives);
+            const stocks = this.parseRankingsCSV(csvText, 'actives');
+            LOG.success(`[Excel File Sync] ACTIVES: ${stocks.length} records`);
+            allStocks.push(...stocks);
+        } catch (err) {
+            LOG.error('[Excel File Sync] ACTIVES failed:', err.message);
+        }
+        
+        // Process GAINERS.csv
+        try {
+            LOG.info('[Excel File Sync] Fetching GAINERS...');
+            const csvText = await this.fetchCSV(this.fileIds.gainers);
+            const stocks = this.parseRankingsCSV(csvText, 'gainers');
+            LOG.success(`[Excel File Sync] GAINERS: ${stocks.length} records`);
+            allStocks.push(...stocks);
+        } catch (err) {
+            LOG.error('[Excel File Sync] GAINERS failed:', err.message);
+        }
+        
+        // Process DECLINERS.csv
+        try {
+            LOG.info('[Excel File Sync] Fetching DECLINERS...');
+            const csvText = await this.fetchCSV(this.fileIds.decliners);
+            const stocks = this.parseRankingsCSV(csvText, 'decliners');
+            LOG.success(`[Excel File Sync] DECLINERS: ${stocks.length} records`);
+            allStocks.push(...stocks);
+        } catch (err) {
+            LOG.error('[Excel File Sync] DECLINERS failed:', err.message);
         }
         
         if (allStocks.length === 0) {
             throw new Error('No data found in any CSV file');
         }
         
-        LOG.success(`[Excel File Sync] Total: ${allStocks.length} records from 4 files`);
-        return allStocks;
-    }
-
-    async readFromLocalExcel() {
-        LOG.warning('[Excel File Sync] Falling back to local Excel file');
-        
-        if (!this.ENABLE_LOCAL_FALLBACK) {
-            throw new Error('Local file fallback is disabled');
+        // Remove duplicates by symbol (keep first occurrence)
+        const uniqueStocks = [];
+        const seenSymbols = new Set();
+        for (const stock of allStocks) {
+            if (!seenSymbols.has(stock.symbol)) {
+                seenSymbols.add(stock.symbol);
+                uniqueStocks.push(stock);
+            }
         }
         
-        const excelFileService = require('../services/excelFileService');
-        const data = await excelFileService.readAllSheetsByType();
-        
-        const allStocks = [
-            ...(data.gainers || []),
-            ...(data.decliners || []),
-            ...(data.actives || []),
-            ...(data.data || [])
-        ];
-        
-        if (allStocks.length === 0) {
-            throw new Error('No data found in local Excel file');
-        }
-        
-        LOG.success(`[Excel File Sync] Local fallback: ${allStocks.length} records`);
-        return allStocks;
-    }
-
-    async wasSyncedInCurrentMinute() {
-        try {
-            const pool = require('../database').getPool();
-            if (!pool) return false;
-
-            const connection = await pool.getConnection();
-            const [result] = await connection.query(`SELECT MAX(last_updated) as lastSyncTime FROM live_stock_data`);
-            connection.release();
-            
-            const lastSyncTime = result[0]?.lastSyncTime;
-            if (!lastSyncTime) return false;
-            
-            const lastSyncDate = new Date(lastSyncTime);
-            const now = new Date();
-            
-            return lastSyncDate.getFullYear() === now.getFullYear() &&
-                   lastSyncDate.getMonth() === now.getMonth() &&
-                   lastSyncDate.getDate() === now.getDate() &&
-                   lastSyncDate.getHours() === now.getHours() &&
-                   lastSyncDate.getMinutes() === now.getMinutes();
-        } catch (err) {
-            return false;
-        }
-    }
-
-    async checkIfDataExistsForToday() {
-        try {
-            const pool = require('../database').getPool();
-            if (!pool) return false;
-
-            const connection = await pool.getConnection();
-            const [result] = await connection.query(`SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate FROM live_stock_data`);
-            connection.release();
-            
-            const count = result[0]?.count || 0;
-            if (count === 0) return false;
-            
-            const lastUpdateDate = new Date(result[0]?.lastUpdate);
-            const today = new Date();
-            
-            return lastUpdateDate.getDate() === today.getDate() &&
-                   lastUpdateDate.getMonth() === today.getMonth() &&
-                   lastUpdateDate.getFullYear() === today.getFullYear();
-        } catch (err) {
-            return false;
-        }
-    }
-
-    validateStockData(stock) {
-        if (!stock.symbol || stock.symbol.trim() === '') return false;
-        if (isNaN(stock.last_price)) stock.last_price = 0;
-        if (isNaN(stock.pchange)) stock.pchange = 0;
-        if (isNaN(stock.per_change)) stock.per_change = 0;
-        if (isNaN(stock.volume)) stock.volume = 0;
-        return true;
+        LOG.success(`[Excel File Sync] Total: ${uniqueStocks.length} unique records (from ${allStocks.length} raw)`);
+        return uniqueStocks;
     }
 
     async sync(forceSync = false) {
@@ -369,94 +384,70 @@ class ExcelFileSyncJob {
         LOG.info(`[Excel File Sync] Starting sync (force: ${forceSync})`);
 
         try {
-            // Skip checks if force sync
-            if (!forceSync) {
-                const syncedRecently = await this.wasSyncedInCurrentMinute();
-                if (syncedRecently) {
-                    LOG.info('[Excel File Sync] Skipped - already synced in current minute');
-                    this.isRunning = false;
-                    return;
-                }
-
-                const dataExists = await this.checkIfDataExistsForToday();
-                if (dataExists) {
-                    LOG.info('[Excel File Sync] Skipped - data exists for today');
-                    this.isRunning = false;
-                    return;
-                }
-            }
-
-            // Read data from Google Drive
-            let allStocks;
-            let dataSource = 'Google Drive CSV';
+            // Read all CSV files
+            const stocks = await this.readFromGoogleSheets();
             
-            try {
-                allStocks = await this.readFromGoogleSheets();
-                LOG.success('[Excel File Sync] Data loaded from Google Drive');
-            } catch (googleError) {
-                LOG.warning(`Google Drive failed: ${googleError.message}`);
-                
-                if (this.ENABLE_LOCAL_FALLBACK) {
-                    allStocks = await this.readFromLocalExcel();
-                    dataSource = 'Local Excel';
-                    LOG.success('[Excel File Sync] Data loaded from local file');
-                } else {
-                    throw googleError;
-                }
-            }
-            
-            // Validate and clean data
-            const validStocks = allStocks.filter(s => this.validateStockData(s));
-            LOG.info(`[Excel File Sync] Valid records: ${validStocks.length}`);
-            
-            if (validStocks.length === 0) {
-                throw new Error('No valid data after validation');
+            if (stocks.length === 0) {
+                throw new Error('No valid stocks found');
             }
             
             // Show sample
-            if (validStocks.length > 0) {
-                LOG.info(`[Excel File Sync] Sample: ${validStocks[0].symbol} @ ₹${validStocks[0].last_price}`);
-            }
-
+            LOG.info(`[Excel File Sync] Sample: ${stocks[0].symbol} @ ₹${stocks[0].last_price} (${stocks[0].data_type})`);
+            
             // Database operations
             const pool = require('../database').getPool();
             if (!pool) {
-                LOG.warning('No database pool, using in-memory');
-                await stockDataService.archiveCurrentData();
-                await stockDataService.truncateLiveData();
-                await stockDataService.insertLiveData(validStocks);
-                this.lastSyncTime = new Date();
-                this.lastSyncStatus = 'success';
-                LOG.success(`[Excel File Sync] In-memory: ${validStocks.length} records`);
+                LOG.error('[Excel File Sync] No database pool');
                 this.isRunning = false;
                 return;
             }
 
             const connection = await pool.getConnection();
-            await connection.beginTransaction();
-
+            
             try {
-                // Archive existing data
-                const [liveData] = await connection.query('SELECT * FROM live_stock_data');
-                if (liveData.length > 0) {
-                    await this.archiveWithConnection(connection, liveData);
-                    LOG.info(`[Excel File Sync] Archived ${liveData.length} records`);
-                }
+                // Get current count
+                const [countResult] = await connection.query('SELECT COUNT(*) as count FROM live_stock_data');
+                LOG.info(`[Excel File Sync] Current records in DB: ${countResult[0].count}`);
                 
-                // Truncate and insert
+                // Clear existing data
                 await connection.query('TRUNCATE TABLE live_stock_data');
-                const insertedCount = await this.insertWithConnection(connection, validStocks);
+                LOG.info('[Excel File Sync] Truncated live_stock_data');
                 
-                await connection.commit();
+                // Insert new data in batches
+                const batchSize = 500;
+                let inserted = 0;
+                
+                for (let i = 0; i < stocks.length; i += batchSize) {
+                    const batch = stocks.slice(i, i + batchSize);
+                    const values = batch.map(s => [
+                        s.symbol, s.company_name, s.last_price,
+                        s.pchange, s.per_change, s.volume,
+                        s.market_cap, s.pe_ratio,
+                        s.week_52_low, s.week_52_high,
+                        s.data_type, s.additional_data
+                    ]);
+                    
+                    const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
+                    
+                    const [result] = await connection.query(`
+                        INSERT INTO live_stock_data 
+                        (symbol, company_name, last_price, pchange, per_change, volume, 
+                         market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                        VALUES ${placeholders}
+                    `, values.flat());
+                    
+                    inserted += result.affectedRows;
+                    LOG.info(`[Excel File Sync] Inserted batch ${Math.floor(i/batchSize)+1}: ${result.affectedRows} rows`);
+                }
                 
                 const syncDuration = Date.now() - syncStartTime;
                 this.lastSyncTime = new Date();
                 this.lastSyncStatus = 'success';
                 this.lastSyncError = null;
 
-                LOG.success(`[Excel File Sync] DONE: ${insertedCount} records | ${syncDuration}ms | Source: ${dataSource}`);
+                LOG.success(`[Excel File Sync] ✅ COMPLETE: ${inserted} records inserted in ${syncDuration}ms`);
 
-                // Generate ML features (non-critical)
+                // Generate ML features (optional)
                 try {
                     await featureEngineeringService.generateFeaturesForML();
                     LOG.success('[Excel File Sync] Features generated');
@@ -464,9 +455,6 @@ class ExcelFileSyncJob {
                     LOG.warning('Feature generation failed:', featureError.message);
                 }
 
-            } catch (error) {
-                await connection.rollback();
-                throw error;
             } finally {
                 connection.release();
             }
@@ -475,61 +463,10 @@ class ExcelFileSyncJob {
             const syncDuration = Date.now() - syncStartTime;
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
-            LOG.error(`[Excel File Sync] FAILED after ${syncDuration}ms: ${error.message}`);
+            LOG.error(`[Excel File Sync] ❌ FAILED after ${syncDuration}ms: ${error.message}`);
         } finally {
             this.isRunning = false;
         }
-    }
-
-    async archiveWithConnection(connection, liveData) {
-        const archiveValues = liveData.map(row => [
-            row.symbol, row.company_name, row.last_price, row.pchange,
-            row.per_change, row.volume, row.market_cap,
-            row.pe_ratio || null, row.week_52_low || null,
-            row.week_52_high || null, row.data_type || 'data'
-        ]);
-
-        const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-        await connection.query(`
-            INSERT INTO stock_data_history 
-            (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
-            VALUES ${placeholders}
-        `, archiveValues.flat());
-        
-        return archiveValues.length;
-    }
-
-    async insertWithConnection(connection, stockData) {
-        const values = stockData.map(stock => [
-            stock.symbol, stock.company_name, stock.last_price,
-            stock.pchange, stock.per_change, stock.volume,
-            stock.market_cap, stock.pe_ratio,
-            stock.week_52_low, stock.week_52_high,
-            stock.data_type, stock.additional_data
-        ]);
-
-        const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-        
-        const [result] = await connection.query(`
-            INSERT INTO live_stock_data 
-            (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
-            VALUES ${placeholders}
-            ON DUPLICATE KEY UPDATE
-                company_name = VALUES(company_name),
-                last_price = VALUES(last_price),
-                pchange = VALUES(pchange),
-                per_change = VALUES(per_change),
-                volume = VALUES(volume),
-                market_cap = VALUES(market_cap),
-                pe_ratio = VALUES(pe_ratio),
-                week_52_low = VALUES(week_52_low),
-                week_52_high = VALUES(week_52_high),
-                data_type = VALUES(data_type),
-                additional_data = VALUES(additional_data),
-                last_updated = CURRENT_TIMESTAMP
-        `, values.flat());
-        
-        return result.affectedRows;
     }
 
     getStatus() {
@@ -540,8 +477,7 @@ class ExcelFileSyncJob {
             lastSyncStatus: this.lastSyncStatus,
             lastSyncError: this.lastSyncError,
             cronExpression: this.CRON_EXPRESSION,
-            enabled: config.schedule?.enabled || false,
-            csvFilesCount: this.csvFiles.length
+            enabled: config.schedule?.enabled || false
         };
     }
 }
