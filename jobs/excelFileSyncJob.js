@@ -52,7 +52,7 @@ class ExcelFileSyncJob {
             res.json({ success: true, status: this.getStatus() });
         });
         
-        LOG.success('[Excel File Sync] Endpoints registered: /g/refresh, /g/sync-status, /g/force-sync');
+        LOG.success('[Excel File Sync] Endpoints registered');
     }
 
     start() {
@@ -70,7 +70,7 @@ class ExcelFileSyncJob {
 
         const cron = require('node-cron');
         this.cronJob = cron.schedule(this.CRON_EXPRESSION, async () => {
-            LOG.info(`[Excel File Sync] Cron triggered at ${new Date().toISOString()}`);
+            LOG.info(`[Excel File Sync] Cron triggered`);
             await this.sync();
         }, {
             scheduled: true,
@@ -145,82 +145,98 @@ class ExcelFileSyncJob {
             
             if (lines.length < 3) return [];
             
-            // Find the actual header row (skip title rows like "GAINERS", "DECLINERS", etc.)
+            // Find header row based on file type
             let headerLine = null;
             let startRow = 0;
             
-            for (let i = 0; i < Math.min(10, lines.length); i++) {
-                const line = lines[i].toLowerCase();
-                // Look for common header keywords
-                if (line.includes('ticker') || 
-                    line.includes('symbol') || 
-                    (line.includes('name') && line.includes('volume')) ||
-                    (line.includes('no.') && line.includes('row')) ||
-                    line.includes('price')) {
-                    headerLine = lines[i];
-                    startRow = i + 1;
-                    LOG.info(`[Excel File Sync] ${type}: Found header at row ${i}`);
-                    break;
-                }
-            }
-            
-            // If no header found, try using first line that contains multiple commas
-            if (!headerLine) {
+            if (type === 'data') {
+                // DATA.csv format: Row 0 has "ENTER SYMBOL IN THIS COLUMN", Row 1 has actual headers
                 for (let i = 0; i < Math.min(10, lines.length); i++) {
-                    const parts = this.parseCSVLine(lines[i]);
-                    if (parts.length >= 3) {
+                    const line = lines[i].toUpperCase();
+                    if (line.includes('SYMBOL') && (line.includes('NAME') || line.includes('PRICE'))) {
                         headerLine = lines[i];
                         startRow = i + 1;
-                        LOG.info(`[Excel File Sync] ${type}: Using row ${i} as header (${parts.length} columns)`);
+                        LOG.info(`[Excel File Sync] ${type}: Found DATA header at row ${i}`);
+                        break;
+                    }
+                }
+                // If still not found, try row 1 (skip title row)
+                if (!headerLine && lines.length > 1) {
+                    headerLine = lines[1];
+                    startRow = 2;
+                    LOG.info(`[Excel File Sync] ${type}: Using row 1 as header`);
+                }
+            } else {
+                // ACTIVES/GAINERS/DECLINERS format: Has title row then header row
+                for (let i = 0; i < Math.min(10, lines.length); i++) {
+                    const line = lines[i].toLowerCase();
+                    if (line.includes('ticker') || 
+                        line.includes('symbol') || 
+                        (line.includes('name') && line.includes('volume')) ||
+                        (line.includes('no.') && line.includes('row'))) {
+                        headerLine = lines[i];
+                        startRow = i + 1;
+                        LOG.info(`[Excel File Sync] ${type}: Found header at row ${i}`);
                         break;
                     }
                 }
             }
             
             if (!headerLine) {
-                LOG.warning(`[Excel File Sync] ${type}: Could not find header row`);
-                return [];
+                LOG.warning(`[Excel File Sync] ${type}: Could not find header row, using first line`);
+                headerLine = lines[0];
+                startRow = 1;
             }
             
             const headers = this.parseCSVLine(headerLine);
-            LOG.info(`[Excel File Sync] ${type}: Headers: ${headers.slice(0, 6).join(', ')}`);
+            // Clean headers: remove special chars, convert to lowercase
+            const cleanHeaders = headers.map(h => 
+                h.toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/^_+|_+$/g, '')
+            );
+            LOG.info(`[Excel File Sync] ${type}: Headers: ${cleanHeaders.slice(0, 6).join(', ')}`);
             
             const stocks = [];
             
             // Process data rows
             for (let i = startRow; i < lines.length; i++) {
+                if (!lines[i].trim()) continue;
+                
                 const values = this.parseCSVLine(lines[i]);
                 if (values.length < 2) continue;
                 
                 const row = {};
-                headers.forEach((header, idx) => {
+                cleanHeaders.forEach((header, idx) => {
                     if (idx < values.length && values[idx] && values[idx].trim()) {
-                        const cleanHeader = header.toLowerCase().replace(/[^a-z]/g, '');
-                        row[cleanHeader] = values[idx].trim();
+                        row[header] = values[idx].trim();
                     }
                 });
                 
-                // Extract symbol (try different column names)
-                let symbol = row.ticker || row.symbol || '';
+                // Extract symbol - try multiple possible column names
+                let symbol = row.symbol || row.ticker || row.scripname || '';
                 
-                // If symbol starts with NSE: or BOM:, clean it
+                // If symbol contains NSE: or BOM:, clean it
                 if (symbol && symbol.includes(':')) {
                     symbol = symbol.split(':')[1];
                 }
                 
                 // Skip invalid symbols
-                if (!symbol || symbol === '%' || symbol === 'ticker' || symbol === 'symbol' || symbol.length < 2) {
+                if (!symbol || symbol === '%' || symbol === 'symbol' || symbol === 'ticker' || symbol.length < 2) {
                     continue;
                 }
                 
-                // Extract name
-                const name = row.name || '';
+                // Clean symbol - remove special characters, keep only alphanumeric and dots
+                symbol = symbol.replace(/[^A-Za-z0-9.]/g, '').toUpperCase().trim();
+                if (symbol.length === 0) continue;
                 
-                // Extract price (handle ₹ symbol and commas)
+                // Extract name
+                const name = row.name || row.companyname || '';
+                
+                // Extract price - handle various formats
                 let price = 0;
-                const priceValue = row.price || row.lastprice || '';
+                const priceValue = row.price || row.lastprice || row.last_price || '';
                 if (priceValue) {
-                    price = parseFloat(String(priceValue).replace(/[^0-9.-]/g, ''));
+                    const cleaned = String(priceValue).replace(/[^0-9.-]/g, '');
+                    price = parseFloat(cleaned);
                 }
                 if (isNaN(price)) price = 0;
                 
@@ -228,46 +244,35 @@ class ExcelFileSyncJob {
                 let volume = 0;
                 const volumeValue = row.volume || '';
                 if (volumeValue) {
-                    volume = parseInt(String(volumeValue).replace(/[^0-9]/g, ''), 10);
+                    const cleaned = String(volumeValue).replace(/[^0-9]/g, '');
+                    volume = parseInt(cleaned, 10);
                 }
                 if (isNaN(volume)) volume = 0;
                 
                 // Extract change percent
                 let changePercent = 0;
-                const changeStr = row.change || row.change_ || row.changepercent || row['change'] || '';
+                const changeStr = row.change || row.changepercent || row.change_percent || row.change_;
                 if (changeStr) {
-                    const match = changeStr.match(/(\d+(?:\.\d+)?)/);
+                    const match = String(changeStr).match(/(\d+(?:\.\d+)?)/);
                     if (match) changePercent = parseFloat(match[1]);
                 }
+                if (isNaN(changePercent)) changePercent = 0;
                 
                 // Extract market cap (for ACTIVES/GAINERS/DECLINERS)
                 let marketCap = null;
-                const marketCapValue = row.marketcap || row['market_cap'] || '';
+                const marketCapValue = row.marketcap || row.market_cap || '';
                 if (marketCapValue) {
-                    marketCap = parseFloat(String(marketCapValue).replace(/[^0-9]/g, ''));
+                    const cleaned = String(marketCapValue).replace(/[^0-9]/g, '');
+                    marketCap = parseInt(cleaned, 10);
                     if (isNaN(marketCap)) marketCap = null;
                 }
                 
                 // Extract PE ratio
                 let peRatio = null;
-                const peValue = row.peratio || row['pe_ratio'] || '';
+                const peValue = row.peratio || row.pe_ratio || '';
                 if (peValue) {
                     peRatio = parseFloat(peValue);
                     if (isNaN(peRatio)) peRatio = null;
-                }
-                
-                // Extract 52 week low/high
-                let weekLow = null;
-                let weekHigh = null;
-                const lowValue = row.weeklow || row['week_52_low'] || '';
-                const highValue = row.weekhigh || row['week_52_high'] || '';
-                if (lowValue) {
-                    weekLow = parseFloat(String(lowValue).replace(/[^0-9.-]/g, ''));
-                    if (isNaN(weekLow)) weekLow = null;
-                }
-                if (highValue) {
-                    weekHigh = parseFloat(String(highValue).replace(/[^0-9.-]/g, ''));
-                    if (isNaN(weekHigh)) weekHigh = null;
                 }
                 
                 // Skip if no meaningful data
@@ -276,7 +281,7 @@ class ExcelFileSyncJob {
                 }
                 
                 stocks.push({
-                    symbol: symbol.toUpperCase().trim(),
+                    symbol: symbol,
                     company_name: name || null,
                     last_price: price,
                     pchange: 0,
@@ -284,18 +289,18 @@ class ExcelFileSyncJob {
                     volume: volume,
                     market_cap: marketCap,
                     pe_ratio: peRatio,
-                    week_52_low: weekLow,
-                    week_52_high: weekHigh,
+                    week_52_low: null,
+                    week_52_high: null,
                     data_type: type,
-                    additional_data: JSON.stringify({ source: type })
+                    additional_data: JSON.stringify({ source: type, original_symbol: row.symbol || '' })
                 });
             }
             
-            LOG.success(`[Excel File Sync] ${type.toUpperCase()}: ${stocks.length} records parsed`);
-            
-            // Show first record as sample
             if (stocks.length > 0) {
-                LOG.info(`[Excel File Sync] ${type} sample: ${stocks[0].symbol} - ₹${stocks[0].last_price} (${stocks[0].data_type})`);
+                LOG.success(`[Excel File Sync] ${type.toUpperCase()}: ${stocks.length} records parsed`);
+                LOG.info(`[Excel File Sync] ${type} sample: ${stocks[0].symbol} - ₹${stocks[0].last_price}`);
+            } else {
+                LOG.warning(`[Excel File Sync] ${type.toUpperCase()}: 0 records parsed`);
             }
             
             return stocks;
@@ -318,10 +323,10 @@ class ExcelFileSyncJob {
         this.isRunning = true;
         const syncStartTime = Date.now();
         LOG.info(`[Excel File Sync] ========================================`);
-        LOG.info(`[Excel File Sync] Starting sync (force: ${forceSync}) at ${new Date().toISOString()}`);
+        LOG.info(`[Excel File Sync] Starting sync (force: ${forceSync})`);
 
         try {
-            // Fetch all 4 CSV files
+            // Fetch all 4 CSV files in parallel
             LOG.info('[Excel File Sync] Fetching all 4 CSV files...');
             
             const [dataStocks, activesStocks, gainersStocks, declinersStocks] = await Promise.all([
@@ -423,7 +428,7 @@ class ExcelFileSyncJob {
                 this.lastSyncStatus = 'success';
                 this.lastSyncError = null;
 
-                LOG.success(`[Excel File Sync] ✅✅✅ COMPLETE: ${inserted} records inserted in ${syncDuration}ms ✅✅✅`);
+                LOG.success(`[Excel File Sync] ✅ COMPLETE: ${inserted} records inserted in ${syncDuration}ms ✅`);
 
                 // Verify insertion
                 const [verify] = await connection.query('SELECT COUNT(*) as count FROM live_stock_data');
@@ -438,14 +443,19 @@ class ExcelFileSyncJob {
                     LOG.info(`  - ${t.data_type}: ${t.count} records`);
                 });
 
-                // Generate ML features (optional, non-critical)
+                // Generate ML features with error handling (non-critical)
                 try {
+                    LOG.info('[Excel File Sync] Generating ML features...');
                     await featureEngineeringService.generateFeaturesForML();
-                    LOG.success('[Excel File Sync] ML features generated');
+                    LOG.success('[Excel File Sync] ML features generated successfully');
                 } catch (featureError) {
-                    LOG.warning('[Excel File Sync] Feature generation failed (non-critical):', featureError.message);
+                    // Log as warning, not error - feature generation is optional
+                    LOG.warning('[Excel File Sync] Feature generation skipped (non-critical):', featureError.message);
                 }
 
+            } catch (dbError) {
+                LOG.error('[Excel File Sync] Database error:', dbError.message);
+                throw dbError;
             } finally {
                 connection.release();
             }
@@ -455,9 +465,6 @@ class ExcelFileSyncJob {
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
             LOG.error(`[Excel File Sync] ❌ FAILED after ${syncDuration}ms: ${error.message}`);
-            if (error.stack) {
-                LOG.error(`[Excel File Sync] Stack: ${error.stack}`);
-            }
         } finally {
             this.isRunning = false;
             LOG.info(`[Excel File Sync] ========================================`);
