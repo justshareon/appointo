@@ -96,54 +96,41 @@ class ExcelFileSyncJob {
                 LOCAL_EXCEL_PATH: this.LOCAL_EXCEL_PATH
             },
             status: this.getStatus(),
-            google_auth_test: null,
-            sheet_read_test: null,
+            csv_export_test: null,
             local_file_test: null,
             database_test: null
         };
         
-        // Test Google Auth
+        // Test CSV export (works for both native Sheets and uploaded Excel files)
         try {
-            const auth = this.getGoogleAuth();
-            if (auth) {
-                await auth.authorize();
-                diagnostics.google_auth_test = {
+            const exportUrl = `https://docs.google.com/spreadsheets/d/${this.SPREADSHEET_ID}/export?format=csv`;
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            
+            const response = await fetch(exportUrl, { signal: controller.signal });
+            clearTimeout(timeoutId);
+            
+            if (response.ok) {
+                const csvText = await response.text();
+                const lines = csvText.split('\n').filter(line => line.trim());
+                diagnostics.csv_export_test = {
                     status: '✅ Success',
-                    email: process.env.GOOGLE_CLIENT_EMAIL
+                    url: exportUrl,
+                    total_lines: lines.length,
+                    data_rows: lines.length > 1 ? lines.length - 1 : 0,
+                    sample: lines.slice(0, 3).map(line => line.substring(0, 100))
                 };
-                
-                // Test reading each sheet
-                const sheetResults = {};
-                for (const sheetName of this.SHEET_NAMES) {
-                    try {
-                        const sheets = google.sheets({ version: 'v4', auth });
-                        const response = await sheets.spreadsheets.values.get({
-                            spreadsheetId: this.SPREADSHEET_ID,
-                            range: `${sheetName}!A1:A10`,
-                        });
-                        sheetResults[sheetName] = {
-                            status: '✅ Success',
-                            rows_found: response.data.values?.length || 0,
-                            headers: response.data.values && response.data.values[0] ? response.data.values[0].slice(0, 5) : null
-                        };
-                    } catch (sheetError) {
-                        sheetResults[sheetName] = {
-                            status: '❌ Failed',
-                            error: sheetError.message
-                        };
-                    }
-                }
-                diagnostics.sheet_read_test = sheetResults;
             } else {
-                diagnostics.google_auth_test = {
+                diagnostics.csv_export_test = {
                     status: '❌ Failed',
-                    error: 'Could not create Google Auth object'
+                    url: exportUrl,
+                    error: `HTTP ${response.status}: ${response.statusText}`
                 };
             }
-        } catch (authError) {
-            diagnostics.google_auth_test = {
+        } catch (csvError) {
+            diagnostics.csv_export_test = {
                 status: '❌ Failed',
-                error: authError.message
+                error: csvError.message
             };
         }
         
@@ -203,7 +190,6 @@ class ExcelFileSyncJob {
         try {
             LOG.info('[Excel File Sync] Creating Google Auth from .env...');
             
-            // Check if required credentials exist in .env
             if (!process.env.GOOGLE_CLIENT_EMAIL) {
                 LOG.error('[Excel File Sync] ❌ GOOGLE_CLIENT_EMAIL missing in .env');
                 return null;
@@ -222,12 +208,9 @@ class ExcelFileSyncJob {
             LOG.info(`[Excel File Sync] Using service account: ${process.env.GOOGLE_CLIENT_EMAIL}`);
             LOG.info(`[Excel File Sync] Using spreadsheet ID: ${this.SPREADSHEET_ID}`);
 
-            // Format private key (handle newlines)
             let privateKey = process.env.GOOGLE_PRIVATE_KEY;
             if (privateKey) {
-                // Remove quotes if present
                 privateKey = privateKey.replace(/^"|"$/g, '');
-                // Replace literal \n with actual newlines
                 privateKey = privateKey.replace(/\\n/g, '\n');
             }
 
@@ -242,7 +225,6 @@ class ExcelFileSyncJob {
             return auth;
         } catch (error) {
             LOG.error('[Excel File Sync] Failed to create Google Auth:', error.message);
-            LOG.error('[Excel File Sync] Error stack:', error.stack);
             return null;
         }
     }
@@ -259,31 +241,16 @@ class ExcelFileSyncJob {
         
         if (!config.schedule || !config.schedule.enabled) {
             LOG.warning('[Excel File Sync] Job is disabled in configuration');
-            LOG.info('[Excel File Sync] Check config.schedule.enabled in tradingConfig.js');
             return;
         }
 
         LOG.info('[Excel File Sync] Config schedule enabled:', config.schedule.enabled);
 
-        // Validate Google Sheets configuration
         if (!this.SPREADSHEET_ID) {
             LOG.error('[Excel File Sync] ❌ GOOGLE_SHEETS_ID not found in .env');
-            if (this.ENABLE_LOCAL_FALLBACK) {
-                LOG.warning('[Excel File Sync] Will use local Excel file fallback');
-            } else {
-                LOG.info('[Excel File Sync] Please add GOOGLE_SHEETS_ID to your .env file');
+            if (!this.ENABLE_LOCAL_FALLBACK) {
                 return;
             }
-        }
-
-        if (!process.env.GOOGLE_CLIENT_EMAIL && !this.ENABLE_LOCAL_FALLBACK) {
-            LOG.error('[Excel File Sync] ❌ GOOGLE_CLIENT_EMAIL not found in .env');
-            return;
-        }
-
-        if (!process.env.GOOGLE_PRIVATE_KEY && !this.ENABLE_LOCAL_FALLBACK) {
-            LOG.error('[Excel File Sync] ❌ GOOGLE_PRIVATE_KEY not found in .env');
-            return;
         }
 
         LOG.info('[Excel File Sync] ✅ All configurations validated');
@@ -291,12 +258,8 @@ class ExcelFileSyncJob {
         // Initialize database tables
         LOG.info('[Excel File Sync] Initializing database tables...');
         stockDataService.initializeTables()
-            .then(() => {
-                LOG.success('[Excel File Sync] Database tables initialized');
-            })
-            .catch(err => {
-                LOG.error('[Excel File Sync] DB init failed:', err.message);
-            });
+            .then(() => LOG.success('[Excel File Sync] Database tables initialized'))
+            .catch(err => LOG.error('[Excel File Sync] DB init failed:', err.message));
 
         // Schedule the cron job
         LOG.info(`[Excel File Sync] Scheduling job with cron: ${this.CRON_EXPRESSION}`);
@@ -313,13 +276,10 @@ class ExcelFileSyncJob {
 
             LOG.success('[Excel File Sync] ✅ Cron job scheduled successfully');
             this.initialized = true;
-            
-            // Log next execution time (fixed - removed .nextDates() which doesn't exist)
             LOG.info(`[Excel File Sync] Job scheduled to run every ${this.CRON_EXPRESSION}`);
 
         } catch (cronError) {
             LOG.error('[Excel File Sync] Failed to schedule cron job:', cronError.message);
-            LOG.error('[Excel File Sync] Cron error stack:', cronError.stack);
             return;
         }
 
@@ -345,16 +305,11 @@ class ExcelFileSyncJob {
         this.initialized = false;
     }
 
-    /**
-     * Manual trigger endpoint handler
-     */
     async manualTrigger(req, res) {
         LOG.info('[Excel File Sync] 📍 Manual trigger via API endpoint');
         
         try {
-            // Check if already running
             if (this.isRunning) {
-                LOG.warning('[Excel File Sync] Sync already in progress');
                 return res.status(409).json({
                     success: false,
                     message: 'Sync already in progress',
@@ -362,7 +317,6 @@ class ExcelFileSyncJob {
                 });
             }
             
-            // Start sync with force=true on manual trigger
             await this.sync(true);
             
             return res.status(200).json({
@@ -382,15 +336,11 @@ class ExcelFileSyncJob {
         }
     }
 
-    /**
-     * Force sync endpoint - bypasses all checks
-     */
     async forceSync(req, res) {
         LOG.info('[Excel File Sync] 💪 Force sync via API endpoint');
         
         try {
             if (this.isRunning) {
-                LOG.warning('[Excel File Sync] Sync already in progress');
                 return res.status(409).json({
                     success: false,
                     message: 'Sync already in progress',
@@ -398,7 +348,6 @@ class ExcelFileSyncJob {
                 });
             }
             
-            // Force sync with force=true
             await this.sync(true);
             
             return res.status(200).json({
@@ -419,127 +368,116 @@ class ExcelFileSyncJob {
     }
 
     /**
-     * Read data directly from Google Sheets using .env credentials with retry logic
+     * Read data using CSV export (works for both native Sheets and uploaded Excel files)
      */
     async readFromGoogleSheets(retries = 3) {
-        LOG.info('[Excel File Sync] 📊 Reading data from Google Sheets...');
+        LOG.info('[Excel File Sync] 📊 Reading data via CSV export...');
         
         for (let attempt = 1; attempt <= retries; attempt++) {
             try {
-                // Get auth from .env
-                const auth = this.getGoogleAuth();
-                if (!auth) {
-                    throw new Error('Failed to create Google Auth from .env');
+                // Use CSV export endpoint - works for ANY spreadsheet (native or uploaded Excel)
+                const exportUrl = `https://docs.google.com/spreadsheets/d/${this.SPREADSHEET_ID}/export?format=csv&gid=0`;
+                
+                LOG.info(`[Excel File Sync] Fetching CSV from: ${exportUrl.substring(0, 80)}...`);
+                
+                const response = await fetch(exportUrl);
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
                 }
-
-                // Authorize
-                LOG.info(`[Excel File Sync] Authorizing with Google (Attempt ${attempt}/${retries})...`);
-                await auth.authorize();
-                LOG.success('[Excel File Sync] ✅ Authorization successful');
-
-                const sheets = google.sheets({ version: 'v4', auth });
-
+                
+                const csvText = await response.text();
+                LOG.info(`[Excel File Sync] Downloaded ${csvText.length} bytes of CSV data`);
+                
+                // Parse CSV manually (simple parser)
+                const lines = csvText.split('\n').filter(line => line.trim());
+                if (lines.length < 2) {
+                    throw new Error('CSV has no data rows');
+                }
+                
+                // Parse headers (first row)
+                const headers = this.parseCSVLine(lines[0]);
+                LOG.info(`[Excel File Sync] Found ${headers.length} columns: ${headers.slice(0, 5).join(', ')}...`);
+                
+                // Parse data rows
                 const allData = {
                     gainers: [],
                     decliners: [],
                     actives: [],
                     data: []
                 };
-
-                let totalRecords = 0;
-
-                // Read each sheet/tab
-                for (const sheetName of this.SHEET_NAMES) {
-                    try {
-                        LOG.info(`[Excel File Sync] Reading sheet: "${sheetName}"`);
-                        
-                        // Try to get sheet metadata first to check if it exists
-                        try {
-                            const sheetMetadata = await sheets.spreadsheets.get({
-                                spreadsheetId: this.SPREADSHEET_ID,
-                                includeGridData: false
-                            });
-                            
-                            const sheetExists = sheetMetadata.data.sheets.some(
-                                sheet => sheet.properties.title === sheetName
-                            );
-                            
-                            if (!sheetExists) {
-                                LOG.warning(`[Excel File Sync] Sheet "${sheetName}" does not exist, skipping`);
-                                continue;
-                            }
-                        } catch (metaError) {
-                            LOG.warning(`[Excel File Sync] Could not verify sheet existence: ${metaError.message}`);
+                
+                let validRecords = 0;
+                
+                for (let i = 1; i < lines.length; i++) {
+                    if (!lines[i].trim()) continue;
+                    
+                    const values = this.parseCSVLine(lines[i]);
+                    const obj = {};
+                    
+                    headers.forEach((header, idx) => {
+                        let value = values[idx] || '';
+                        value = value.trim();
+                        // Try to convert numeric values
+                        if (!isNaN(value) && value !== '') {
+                            obj[header] = parseFloat(value);
+                        } else {
+                            obj[header] = value;
                         }
-                        
-                        const response = await sheets.spreadsheets.values.get({
-                            spreadsheetId: this.SPREADSHEET_ID,
-                            range: `${sheetName}`,
-                        });
-
-                        const rows = response.data.values;
-                        if (!rows || rows.length === 0) {
-                            LOG.warning(`[Excel File Sync] Sheet "${sheetName}" is empty`);
-                            continue;
-                        }
-
-                        LOG.info(`[Excel File Sync] Sheet "${sheetName}" has ${rows.length} rows`);
-
-                        // Assume first row is headers
-                        const headers = rows[0];
-                        const dataRows = rows.slice(1);
-
-                        // Map data to objects
-                        const mappedData = dataRows.map(row => {
-                            const obj = {};
-                            headers.forEach((header, index) => {
-                                const key = header.toLowerCase()
-                                    .replace(/\s/g, '_')
-                                    .replace(/[()]/g, '')
-                                    .replace(/[%]/g, 'percent')
-                                    .replace(/[\/]/g, '_');
-                                obj[key] = row[index] || null;
-                            });
-                            return obj;
-                        }).filter(item => item.symbol && item.symbol.toString().trim() !== ''); // Filter out empty rows
-
-                        // Map to appropriate array based on sheet name
-                        const sheetKey = sheetName.toLowerCase();
-                        if (sheetKey === 'gainers') allData.gainers = mappedData;
-                        else if (sheetKey === 'decliners') allData.decliners = mappedData;
-                        else if (sheetKey === 'actives') allData.actives = mappedData;
-                        else allData.data.push(...mappedData);
-
-                        LOG.success(`[Excel File Sync] Read ${mappedData.length} valid records from "${sheetName}"`);
-                        totalRecords += mappedData.length;
-
-                    } catch (sheetError) {
-                        LOG.error(`[Excel File Sync] Failed to read sheet "${sheetName}": ${sheetError.message}`);
-                        // Continue with other sheets even if one fails
+                    });
+                    
+                    // Check if this looks like stock data
+                    if (obj.symbol && obj.symbol.toString().trim() !== '') {
+                        validRecords++;
+                        // For now, add all to data array
+                        // You can filter by sheet if your CSV has a sheet column
+                        allData.data.push(obj);
                     }
                 }
-
-                if (totalRecords === 0) {
-                    throw new Error('No data found in any sheet');
+                
+                LOG.success(`[Excel File Sync] ✅ Parsed ${validRecords} valid records from CSV export`);
+                
+                if (validRecords === 0) {
+                    throw new Error('No valid stock records found in CSV');
                 }
-
-                LOG.success(`[Excel File Sync] ✅ Total records from Google Sheets: ${totalRecords}`);
+                
                 return allData;
-
+                
             } catch (error) {
-                LOG.error(`[Excel File Sync] Google Sheets read failed (Attempt ${attempt}/${retries}):`, error.message);
+                LOG.error(`[Excel File Sync] CSV read failed (Attempt ${attempt}/${retries}):`, error.message);
                 if (attempt === retries) {
                     throw error;
                 }
-                // Wait before retry
                 await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
             }
         }
     }
-
+    
     /**
-     * Fallback: Read from local Excel file if Google Sheets fails
+     * Simple CSV line parser (handles quoted fields)
      */
+    parseCSVLine(line) {
+        const result = [];
+        let current = '';
+        let inQuotes = false;
+        
+        for (let i = 0; i < line.length; i++) {
+            const char = line[i];
+            
+            if (char === '"') {
+                inQuotes = !inQuotes;
+            } else if (char === ',' && !inQuotes) {
+                result.push(current.trim());
+                current = '';
+            } else {
+                current += char;
+            }
+        }
+        result.push(current.trim());
+        
+        // Remove quotes from fields
+        return result.map(field => field.replace(/^"|"$/g, ''));
+    }
+
     async readFromLocalExcel() {
         LOG.warning('[Excel File Sync] Falling back to local Excel file');
         
@@ -558,7 +496,7 @@ class ExcelFileSyncJob {
                 throw new Error('No data found in local Excel file');
             }
             
-            LOG.success(`[Excel File Sync] Local Excel fallback successful - Gainers: ${data.gainers?.length || 0}, Decliners: ${data.decliners?.length || 0}, Actives: ${data.actives?.length || 0}, Data: ${data.data?.length || 0}`);
+            LOG.success(`[Excel File Sync] Local Excel fallback successful - Total records: ${data.gainers?.length || 0 + data.decliners?.length || 0 + data.actives?.length || 0 + data.data?.length || 0}`);
             return data;
         } catch (error) {
             LOG.error('[Excel File Sync] Local Excel fallback failed:', error.message);
@@ -573,11 +511,7 @@ class ExcelFileSyncJob {
 
             const connection = await pool.getConnection();
             try {
-                const [result] = await connection.query(`
-                    SELECT MAX(last_updated) as lastSyncTime 
-                    FROM live_stock_data
-                `);
-                
+                const [result] = await connection.query(`SELECT MAX(last_updated) as lastSyncTime FROM live_stock_data`);
                 const lastSyncTime = result[0]?.lastSyncTime;
                 if (!lastSyncTime) return false;
                 
@@ -589,10 +523,6 @@ class ExcelFileSyncJob {
                                    lastSyncDate.getDate() === now.getDate() &&
                                    lastSyncDate.getHours() === now.getHours() &&
                                    lastSyncDate.getMinutes() === now.getMinutes();
-                
-                if (sameMinute) {
-                    LOG.info(`[Excel File Sync] Last sync was at ${lastSyncTime} (same minute)`);
-                }
                 
                 return sameMinute;
             } finally {
@@ -611,11 +541,7 @@ class ExcelFileSyncJob {
 
             const connection = await pool.getConnection();
             try {
-                const [result] = await connection.query(`
-                    SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate
-                    FROM live_stock_data
-                `);
-                
+                const [result] = await connection.query(`SELECT COUNT(*) as count, MAX(last_updated) as lastUpdate FROM live_stock_data`);
                 const count = result[0]?.count || 0;
                 const lastUpdate = result[0]?.lastUpdate;
                 
@@ -631,12 +557,6 @@ class ExcelFileSyncJob {
                                 lastUpdateDate.getMonth() === today.getMonth() &&
                                 lastUpdateDate.getFullYear() === today.getFullYear();
                 
-                if (sameDay) {
-                    LOG.info(`[Excel File Sync] Data exists for today (${count} records)`);
-                } else {
-                    LOG.info(`[Excel File Sync] Last data from ${lastUpdateDate.toDateString()}, refreshing`);
-                }
-                
                 return sameDay;
             } finally {
                 connection.release();
@@ -647,32 +567,16 @@ class ExcelFileSyncJob {
         }
     }
 
-    /**
-     * Validate stock data before insertion
-     */
     validateStockData(stock, index) {
-        // Required fields
         if (!stock.symbol || stock.symbol.toString().trim() === '') {
             if (index < 5) LOG.warning(`[Excel File Sync] Record ${index}: Missing symbol, skipping`);
             return false;
         }
         
-        // Validate numeric fields
-        if (isNaN(stock.last_price) || stock.last_price < 0) {
-            stock.last_price = 0;
-        }
-        
-        if (isNaN(stock.pchange)) {
-            stock.pchange = 0;
-        }
-        
-        if (isNaN(stock.per_change)) {
-            stock.per_change = 0;
-        }
-        
-        if (isNaN(stock.volume) || stock.volume < 0) {
-            stock.volume = 0;
-        }
+        if (isNaN(stock.last_price) || stock.last_price < 0) stock.last_price = 0;
+        if (isNaN(stock.pchange)) stock.pchange = 0;
+        if (isNaN(stock.per_change)) stock.per_change = 0;
+        if (isNaN(stock.volume) || stock.volume < 0) stock.volume = 0;
         
         return true;
     }
@@ -685,11 +589,9 @@ class ExcelFileSyncJob {
 
         this.isRunning = true;
         const syncStartTime = Date.now();
-        LOG.info(`[Excel File Sync] ========================================`);
         LOG.info(`[Excel File Sync] 🔄 Starting sync (force: ${forceSync}) at ${new Date().toISOString()}`);
 
         try {
-            // Skip checks if force sync
             if (!forceSync) {
                 const syncedInCurrentMinute = await this.wasSyncedInCurrentMinute();
                 if (syncedInCurrentMinute) {
@@ -708,15 +610,14 @@ class ExcelFileSyncJob {
                 }
             }
 
-            // Read data from Google Sheets (with fallback to local file)
             let sheetsData;
-            let dataSource = 'Google Sheets';
+            let dataSource = 'Google Sheets (CSV Export)';
             
             try {
                 sheetsData = await this.readFromGoogleSheets();
-                LOG.success('[Excel File Sync] ✅ Data loaded from Google Sheets');
+                LOG.success('[Excel File Sync] ✅ Data loaded via CSV export');
             } catch (googleError) {
-                LOG.warning(`[Excel File Sync] Google Sheets failed: ${googleError.message}`);
+                LOG.warning(`[Excel File Sync] CSV export failed: ${googleError.message}`);
                 
                 if (this.ENABLE_LOCAL_FALLBACK) {
                     LOG.info('[Excel File Sync] Attempting local file fallback...');
@@ -728,7 +629,6 @@ class ExcelFileSyncJob {
                 }
             }
             
-            // Combine all data
             const allStockData = [
                 ...(sheetsData.gainers || []),
                 ...(sheetsData.decliners || []),
@@ -742,7 +642,6 @@ class ExcelFileSyncJob {
 
             LOG.info(`[Excel File Sync] Processing ${allStockData.length} total records from ${dataSource}`);
 
-            // Clean and validate data
             const cleanedData = [];
             for (let idx = 0; idx < allStockData.length; idx++) {
                 const stock = allStockData[idx];
@@ -762,7 +661,6 @@ class ExcelFileSyncJob {
                     additional_data: null
                 };
                 
-                // Validate the cleaned data
                 if (this.validateStockData(cleaned, idx)) {
                     cleanedData.push(cleaned);
                 }
@@ -773,8 +671,7 @@ class ExcelFileSyncJob {
             }
             
             LOG.info(`[Excel File Sync] Valid records after cleaning: ${cleanedData.length}`);
-
-            // Sample first record for debugging
+            
             if (cleanedData.length > 0) {
                 LOG.info('[Excel File Sync] Sample record:', JSON.stringify(cleanedData[0]));
             }
@@ -799,16 +696,13 @@ class ExcelFileSyncJob {
             await connection.beginTransaction();
 
             try {
-                // Archive existing data
                 LOG.info('[Excel File Sync] Archiving existing data...');
                 const archivedCount = await this.archiveWithConnection(connection);
                 LOG.info(`[Excel File Sync] Archived ${archivedCount} records`);
                 
-                // Truncate live table
                 LOG.info('[Excel File Sync] Truncating live_stock_data...');
                 await connection.query('TRUNCATE TABLE live_stock_data');
                 
-                // Insert new data
                 LOG.info(`[Excel File Sync] Inserting ${cleanedData.length} records...`);
                 const insertedCount = await this.insertWithConnection(connection, cleanedData);
                 
@@ -822,7 +716,6 @@ class ExcelFileSyncJob {
 
                 LOG.success(`[Excel File Sync] ✅✅✅ DONE: ${insertedCount} records inserted | ${syncDuration}ms | Archived: ${archivedCount} | Source: ${dataSource}`);
 
-                // Generate features (non-critical, don't fail if this errors)
                 try {
                     LOG.info('[Excel File Sync] Generating ML features...');
                     await featureEngineeringService.generateFeaturesForML();
@@ -857,20 +750,12 @@ class ExcelFileSyncJob {
             if (liveData.length === 0) return 0;
 
             const archiveValues = liveData.map(row => [
-                row.symbol, 
-                row.company_name, 
-                row.last_price, 
-                row.pchange,
-                row.per_change, 
-                row.volume, 
-                row.market_cap,
-                row.pe_ratio || null, 
-                row.week_52_low || null,
-                row.week_52_high || null, 
-                row.data_type || 'data'
+                row.symbol, row.company_name, row.last_price, row.pchange,
+                row.per_change, row.volume, row.market_cap,
+                row.pe_ratio || null, row.week_52_low || null,
+                row.week_52_high || null, row.data_type || 'data'
             ]);
 
-            // Insert in batches to avoid memory issues
             const batchSize = 1000;
             let archivedCount = 0;
             
@@ -895,18 +780,11 @@ class ExcelFileSyncJob {
     async insertWithConnection(connection, stockData) {
         try {
             const values = stockData.map(stock => [
-                stock.symbol, 
-                stock.company_name, 
-                stock.last_price,
-                stock.pchange, 
-                stock.per_change, 
-                stock.volume,
-                stock.market_cap, 
-                stock.pe_ratio,
-                stock.week_52_low, 
-                stock.week_52_high,
-                stock.data_type, 
-                stock.additional_data
+                stock.symbol, stock.company_name, stock.last_price,
+                stock.pchange, stock.per_change, stock.volume,
+                stock.market_cap, stock.pe_ratio,
+                stock.week_52_low, stock.week_52_high,
+                stock.data_type, stock.additional_data
             ]);
 
             const batchSize = 1000;
