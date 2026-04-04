@@ -170,7 +170,7 @@ class FeatureEngineeringService {
                 // This is a simplification - ideally we'd have real OHLC data
                 const changePercent = index > 0 ? 
                     ((close - parseFloat(rows[index - 1]?.last_price || close)) / parseFloat(rows[index - 1]?.last_price || 1)) * 100 : 0;
-                const volatility = Math.abs(changePercent) * 0.01; // 1% of change as volatility estimate
+                const volatility = Math.abs(changePercent) * 0.01; // 1% of pchange as volatility estimate
                 
                 return {
                     open: close * (1 - volatility * 0.5), // Open slightly lower/higher
@@ -348,7 +348,7 @@ class FeatureEngineeringService {
 
     /**
      * Calculate Volume Rate of Change
-     * Measures the percentage change in volume over a period
+     * Measures the percentage pchange in volume over a period
      */
     calculateVolumeROC(volumes, period = 14) {
         const volumeROC = [];
@@ -758,11 +758,11 @@ class FeatureEngineeringService {
                         if (currentStock) {
                             currentPrice = parseFloat(currentStock.last_price || currentStock.price || 0);
                             currentVolume = parseInt(currentStock.volume) || 0;
-                            changePercent = parseFloat(currentStock.percent_change || currentStock.changePercent || 0);
+                            changePercent = parseFloat(currentStock.per_change || currentStock.changePercent || 0);
                         }
                     } else {
                         const [currentStockRows] = await pool.query(`
-                            SELECT last_price, volume, change, percent_change
+                            SELECT last_price, volume, pchange, per_change
                             FROM live_stock_data
                             WHERE symbol = ?
                             LIMIT 1
@@ -771,7 +771,7 @@ class FeatureEngineeringService {
                             currentStock = currentStockRows[0];
                             currentPrice = parseFloat(currentStock.last_price || 0);
                             currentVolume = parseInt(currentStock.volume) || 0;
-                            changePercent = parseFloat(currentStock.percent_change || 0);
+                            changePercent = parseFloat(currentStock.per_change || 0);
                         }
                     }
                     
@@ -799,10 +799,10 @@ class FeatureEngineeringService {
                         const priceHash = Math.floor(currentPrice) % 100;
                         const seed = (symbolHash + priceHash) % 1000;
                         
-                        // Create synthetic data with a trend based on current change
+                        // Create synthetic data with a trend based on current pchange
                         // If stock is gaining, create upward trend; if losing, downward trend
                         const trendDirection = isGaining ? 1 : -1;
-                        const baseTrend = Math.abs(changePercentDecimal) * 0.01; // 1% of change as base trend
+                        const baseTrend = Math.abs(changePercentDecimal) * 0.01; // 1% of pchange as base trend
                         
                         // Add stock-specific variation to trend strength
                         const trendVariation = (seed % 50) / 100; // 0 to 0.5 variation
@@ -865,8 +865,8 @@ class FeatureEngineeringService {
                         LOG.warning(`[Feature Engineering] Failed to calculate indicators for ${symbol}, creating varied indicators from current price`);
                         // Create varied indicators from current price if calculation fails
                         // Use stock-specific factors to create diversity
-                        const isGaining = parseFloat(currentStock.percent_change || currentStock.changePercent || 0) > 0;
-                        const changePercent = parseFloat(currentStock.percent_change || currentStock.changePercent || 0);
+                        const isGaining = parseFloat(currentStock.per_change || currentStock.changePercent || 0) > 0;
+                        const changePercent = parseFloat(currentStock.per_change || currentStock.changePercent || 0);
                         
                         // Create stock-specific variation based on symbol hash and price
                         // This ensures different stocks get different indicator patterns
@@ -882,7 +882,7 @@ class FeatureEngineeringService {
                         const rsiVariation = (variationFactor - 0.5) * 20; // ±10 variation
                         const rsi14 = Math.max(20, Math.min(80, rsiBase + rsiVariation));
                         
-                        // Vary MACD based on change percent and variation
+                        // Vary MACD based on pchange percent and variation
                         const macdBase = isGaining ? currentPrice * 0.015 : -currentPrice * 0.015;
                         const macdVariation = (variationFactor - 0.5) * currentPrice * 0.01;
                         const macd = macdBase + macdVariation;

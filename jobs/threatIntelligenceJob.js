@@ -80,7 +80,7 @@ class ThreatIntelligenceJob {
         this.currentInterval = await this.getScanInterval();
         await this._scheduleWithInterval(this.currentInterval);
 
-        // Also set up a listener to reschedule when settings change
+        // Also set up a listener to reschedule when settings pchange
         if (this.io) {
             this.io.on('settings_updated', async (newSettings) => {
                 if (newSettings.threat_scan_interval !== undefined) {

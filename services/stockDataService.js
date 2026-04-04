@@ -57,8 +57,8 @@ class StockDataService {
                     symbol VARCHAR(20) NOT NULL,
                     company_name VARCHAR(255),
                     last_price DECIMAL(10, 2),
-                    \`change\` DECIMAL(10, 2),
-                    percent_change DECIMAL(5, 2),
+                    pchange DECIMAL(10, 2),
+                    per_change DECIMAL(5, 2),
                     volume BIGINT,
                     market_cap BIGINT,
                     pe_ratio DECIMAL(10, 2),
@@ -116,8 +116,8 @@ class StockDataService {
                     symbol VARCHAR(20) NOT NULL,
                     company_name VARCHAR(255),
                     last_price DECIMAL(10, 2),
-                    \`change\` DECIMAL(10, 2),
-                    percent_change DECIMAL(5, 2),
+                    pchange DECIMAL(10, 2),
+                    per_change DECIMAL(5, 2),
                     volume BIGINT,
                     market_cap BIGINT,
                     data_type ENUM('gainers', 'decliners', 'actives', 'data') DEFAULT 'data',
@@ -221,8 +221,8 @@ class StockDataService {
                 row.symbol,
                 row.company_name,
                 row.last_price,
-                row.change,
-                row.percent_change,
+                row.pchange,
+                row.per_change,
                 row.volume,
                 row.market_cap,
                 row.pe_ratio || null,
@@ -235,7 +235,7 @@ class StockDataService {
             const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO stock_data_history 
-                (symbol, company_name, last_price, \`change\`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
                 VALUES ${placeholders}
             `;
 
@@ -304,8 +304,8 @@ class StockDataService {
                 stock.symbol,
                 stock.company_name,
                 stock.last_price,
-                stock.change,
-                stock.percent_change,
+                stock.pchange,
+                stock.per_change,
                 stock.volume,
                 stock.market_cap,
                 stock.pe_ratio || null,
@@ -317,13 +317,13 @@ class StockDataService {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, \`change\`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
                 VALUES ${placeholders}
                 ON DUPLICATE KEY UPDATE
                     company_name = VALUES(company_name),
                     last_price = VALUES(last_price),
-                    \`change\` = VALUES(\`change\`),
-                    percent_change = VALUES(percent_change),
+                    pchange = VALUES(pchange),
+                    per_change = VALUES(per_change),
                     volume = VALUES(volume),
                     market_cap = VALUES(market_cap),
                     pe_ratio = VALUES(pe_ratio),
@@ -510,7 +510,7 @@ class StockDataService {
                     symbol: validStocks[0].symbol,
                     name: validStocks[0].name,
                     price: validStocks[0].price,
-                    change: validStocks[0].change,
+                    pchange: validStocks[0].pchange,
                     changePercent: validStocks[0].changePercent
                 });
             }
@@ -578,10 +578,10 @@ class StockDataService {
             LOG.info(`[Stock Data] Filtered by type '${dataType}': ${filtered.length} stocks`);
             
             const sorted = filtered.sort((a, b) => {
-                // For gainers/decliners, sort by percent_change
+                // For gainers/decliners, sort by per_change
                 if (dataType === 'gainers' || dataType === 'decliners') {
-                    const aChange = a.percent_change || 0;
-                    const bChange = b.percent_change || 0;
+                    const aChange = a.per_change || 0;
+                    const bChange = b.per_change || 0;
                     return dataType === 'gainers' 
                         ? bChange - aChange 
                         : aChange - bChange;
@@ -601,7 +601,7 @@ class StockDataService {
                 LOG.info(`[Stock Data] Sample stock:`, {
                     symbol: limited[0].symbol,
                     data_type: limited[0].data_type,
-                    percent_change: limited[0].percent_change
+                    per_change: limited[0].per_change
                 });
             }
             
@@ -642,8 +642,8 @@ class StockDataService {
             let orderBy = 'symbol';
             if (dataType === 'gainers' || dataType === 'decliners') {
                 orderBy = dataType === 'gainers' 
-                    ? 'percent_change DESC' 
-                    : 'percent_change ASC';
+                    ? 'per_change DESC' 
+                    : 'per_change ASC';
             } else if (dataType === 'actives') {
                 orderBy = 'volume DESC';
             }
@@ -661,7 +661,7 @@ class StockDataService {
                 LOG.info(`[Stock Data] Sample row:`, {
                     symbol: rows[0].symbol,
                     data_type: rows[0].data_type,
-                    percent_change: rows[0].percent_change,
+                    per_change: rows[0].per_change,
                     company_name: rows[0].company_name
                 });
             }
@@ -850,8 +850,8 @@ class StockDataService {
             'symbol': ['ticker', 'code', 'scrip', 'stock symbol'],
             'name': ['companyname', 'company_name', 'company', 'stockname'],
             'price': ['lastprice', 'last_price', 'ltp', 'currentprice'],
-            'change': ['changeamount', 'pricechange'],
-            'changePercent': ['percentchange', 'change%', '%change', 'pctchange', 'percent_change'],
+            'pchange': ['changeamount', 'pricechange'],
+            'changePercent': ['percentchange', 'pchange%', '%pchange', 'pctchange', 'per_change'],
             'volume': ['tradedvolume', 'qty', 'quantity'],
             'marketCap': ['market_cap', 'mcap', 'marketcapitalization'],
             'pe_ratio': ['peratio', 'pe', 'p/e', 'priceearnings'],
@@ -921,7 +921,7 @@ class StockDataService {
         let volumeStatus = null; // 'high' (>7x in Cr), 'low' (<=1x for gainers only), 'normal' (other)
         
         // Determine if stock is a gainer or loser
-        const changePercent = parseFloat(row.percent_change || row.changePercent || 0) || 0;
+        const changePercent = parseFloat(row.per_change || row.changePercent || 0) || 0;
         const isGainer = changePercent > 0;
         
         if (lastWeekVol !== null && lastWeekVol > 0 && currentVolume > 0) {
@@ -984,8 +984,8 @@ class StockDataService {
             symbol: String(validSymbol).trim().toUpperCase() || 'N/A',
             name: stockName, // Only 'name', not both 'name' and 'company_name'
             price: parseFloat(row.last_price || row.price || 0) || 0,
-            change: parseFloat(row.change || 0) || 0,
-            changePercent: parseFloat(row.percent_change || row.changePercent || 0) || 0,
+            pchange: parseFloat(row.pchange || 0) || 0,
+            changePercent: parseFloat(row.per_change || row.changePercent || 0) || 0,
             volume: currentVolume,
             lastWeekVolume: lastWeekVol,
             volumeRatio: volumeRatio,
@@ -1005,7 +1005,7 @@ class StockDataService {
                 symbol: baseData.symbol,
                 name: baseData.name,
                 price: baseData.price,
-                change: baseData.change,
+                pchange: baseData.pchange,
                 changePercent: baseData.changePercent,
                 hasValidData: !!(baseData.symbol && baseData.symbol !== 'N/A' && baseData.symbol !== 'SYMBOL')
             });

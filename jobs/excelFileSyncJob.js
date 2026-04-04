@@ -521,8 +521,8 @@ class ExcelFileSyncJob {
                     symbol: (stock.symbol || stock.Symbol || '').toString().substring(0, 20),
                     company_name: (stock.company_name || stock.Company_Name || '').toString().substring(0, 255),
                     last_price: parseFloat(stock.last_price || stock.Last_Price || 0),
-                    change: parseFloat(stock.change || stock.Change || 0),
-                    percent_change: parseFloat(stock.percent_change || stock.Percent_Change || 0),
+                    pchange: parseFloat(stock.pchange || stock.Change || 0),
+                    per_change: parseFloat(stock.per_change || stock.Percent_Change || 0),
                     volume: parseFloat(stock.volume || stock.Volume || 0),
                     market_cap: parseFloat(stock.market_cap || stock.Market_Cap || null),
                     pe_ratio: parseFloat(stock.pe_ratio || stock.PE_Ratio || null),
@@ -612,8 +612,8 @@ class ExcelFileSyncJob {
             if (liveData.length === 0) return 0;
 
             const archiveValues = liveData.map(row => [
-                row.symbol, row.company_name, row.last_price, row.change,
-                row.percent_change, row.volume, row.market_cap,
+                row.symbol, row.company_name, row.last_price, row.pchange,
+                row.per_change, row.volume, row.market_cap,
                 row.pe_ratio || null, row.week_52_low || null,
                 row.week_52_high || null, row.data_type || 'data'
             ]);
@@ -621,7 +621,7 @@ class ExcelFileSyncJob {
             const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             await connection.query(`
                 INSERT INTO stock_data_history 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type)
                 VALUES ${placeholders}
             `, archiveValues.flat());
             
@@ -636,7 +636,7 @@ class ExcelFileSyncJob {
         try {
             const values = stockData.map(stock => [
                 stock.symbol, stock.company_name, stock.last_price,
-                stock.change, stock.percent_change, stock.volume,
+                stock.pchange, stock.per_change, stock.volume,
                 stock.market_cap, stock.pe_ratio,
                 stock.week_52_low, stock.week_52_high,
                 stock.data_type, stock.additional_data
@@ -645,13 +645,13 @@ class ExcelFileSyncJob {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
             const [result] = await connection.query(`
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, \`change\`, percent_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
                 VALUES ${placeholders}
                 ON DUPLICATE KEY UPDATE
                     company_name = VALUES(company_name),
                     last_price = VALUES(last_price),
-                    \`change\` = VALUES(\`change\`),
-                    percent_change = VALUES(percent_change),
+                    pchange = VALUES(pchange),
+                    per_change = VALUES(per_change),
                     volume = VALUES(volume),
                     market_cap = VALUES(market_cap),
                     pe_ratio = VALUES(pe_ratio),

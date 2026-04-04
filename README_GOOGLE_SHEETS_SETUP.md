@@ -100,8 +100,8 @@ Your Google Sheet should have the following columns (in order):
 | A | Symbol | Stock symbol | RELIANCE |
 | B | Company Name | Company name | Reliance Industries Ltd |
 | C | Last Price | Current price | 2456.50 |
-| D | Change | Price change | 12.30 |
-| E | Change % | Percentage change | 0.50 |
+| D | Change | Price pchange | 12.30 |
+| E | Change % | Percentage pchange | 0.50 |
 | F | Volume | Trading volume | 1250000 |
 | G | Market Cap | Market capitalization | 1660000000000 |
 
@@ -119,8 +119,8 @@ The system automatically creates these tables:
 - `symbol` (VARCHAR, UNIQUE)
 - `company_name`
 - `last_price`
-- `change`
-- `percent_change`
+- pchange
+- `per_change`
 - `volume`
 - `market_cap`
 - `last_updated`
@@ -218,7 +218,7 @@ columnMapping: {
     symbol: 0,        // Column A
     companyName: 1,  // Column B
     lastPrice: 2,    // Column C
-    change: 3,       // Column D
+    pchange: 3,       // Column D
     percentChange: 4,// Column E
     volume: 5,       // Column F
     marketCap: 6,    // Column G

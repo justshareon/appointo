@@ -124,8 +124,8 @@ class GoogleSheetService {
                     symbol: String(row[mapping.symbol] || '').trim().toUpperCase(),
                     company_name: String(row[mapping.companyName] || '').trim() || null,
                     last_price: this.parseDecimal(row[mapping.lastPrice]),
-                    change: this.parseDecimal(row[mapping.change]),
-                    percent_change: this.parseDecimal(row[mapping.percentChange]),
+                    pchange: this.parseDecimal(row[mapping.pchange]),
+                    per_change: this.parseDecimal(row[mapping.percentChange]),
                     volume: this.parseBigInt(row[mapping.volume]),
                     market_cap: this.parseBigInt(row[mapping.marketCap] || row[mapping.marketCap]),
                 };

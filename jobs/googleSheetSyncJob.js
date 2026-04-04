@@ -208,8 +208,8 @@ class GoogleSheetSyncJob {
                 row.symbol,
                 row.company_name,
                 row.last_price,
-                row.change,
-                row.percent_change,
+                row.pchange,
+                row.per_change,
                 row.volume,
                 row.market_cap
             ]);
@@ -217,7 +217,7 @@ class GoogleSheetSyncJob {
             const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO stock_data_history 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap)
                 VALUES ${placeholders}
             `;
 
@@ -240,8 +240,8 @@ class GoogleSheetSyncJob {
                 stock.symbol,
                 stock.company_name,
                 stock.last_price,
-                stock.change,
-                stock.percent_change,
+                stock.pchange,
+                stock.per_change,
                 stock.volume,
                 stock.market_cap
             ]);
@@ -249,7 +249,7 @@ class GoogleSheetSyncJob {
             const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?)').join(', ');
             const query = `
                 INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, change, percent_change, volume, market_cap)
+                (symbol, company_name, last_price, pchange, per_change, volume, market_cap)
                 VALUES ${placeholders}
             `;
 

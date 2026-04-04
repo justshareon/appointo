@@ -85,13 +85,13 @@ router.get('/diagnostics', async (req, res) => {
                     symbol: sampleGainer.symbol,
                     company_name: sampleGainer.company_name,
                     last_price: sampleGainer.last_price,
-                    percent_change: sampleGainer.percent_change
+                    per_change: sampleGainer.per_change
                 } : null;
                 diagnostics.steps.step2_readExcel.details.sampleDecliner = sampleDecliner ? {
                     symbol: sampleDecliner.symbol,
                     company_name: sampleDecliner.company_name,
                     last_price: sampleDecliner.last_price,
-                    percent_change: sampleDecliner.percent_change
+                    per_change: sampleDecliner.per_change
                 } : null;
             }
         } catch (error) {

@@ -1953,7 +1953,7 @@ let inMemoryDb = {
         {
             id: 'threat_005',
             title: 'Massive Data Breach Exposes Millions of User Accounts',
-            description: 'A major data breach has exposed personal information of over 10 million users including emails, passwords, and credit card details. Affected users should change passwords immediately.',
+            description: 'A major data breach has exposed personal information of over 10 million users including emails, passwords, and credit card details. Affected users should pchange passwords immediately.',
             link: 'https://krebsonsecurity.com/',
             source: 'Krebs on Security',
             sourceUrl: 'https://krebsonsecurity.com/feed/',

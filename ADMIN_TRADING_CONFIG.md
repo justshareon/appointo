@@ -272,7 +272,7 @@ The sample data includes 50 popular Indian stocks:
 
 Each stock has:
 - Realistic price variations (-5% to +5%)
-- Calculated change and change percentage
+- Calculated pchange and pchange percentage
 - Estimated volume and market cap
 
 ## Notes

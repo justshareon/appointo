@@ -97,7 +97,7 @@ router.get('/data-trace', async (req, res) => {
                             symbol: row.symbol,
                             company_name: row.company_name,
                             last_price: row.last_price,
-                            percent_change: row.percent_change,
+                            per_change: row.per_change,
                             data_type: row.data_type,
                             volume: row.volume,
                             market_cap: row.market_cap
@@ -125,7 +125,7 @@ router.get('/data-trace', async (req, res) => {
                             symbol: stock.symbol,
                             company_name: stock.company_name,
                             last_price: stock.last_price,
-                            percent_change: stock.percent_change,
+                            per_change: stock.per_change,
                             data_type: stock.data_type,
                             volume: stock.volume,
                             market_cap: stock.market_cap
@@ -161,7 +161,7 @@ router.get('/data-trace', async (req, res) => {
                             name: g.name,
                             companyName: g.companyName,
                             price: g.price,
-                            change: g.change,
+                            pchange: g.pchange,
                             changePercent: g.changePercent,
                             volume: g.volume,
                             marketCap: g.marketCap,
@@ -175,7 +175,7 @@ router.get('/data-trace', async (req, res) => {
                             name: l.name,
                             companyName: l.companyName,
                             price: l.price,
-                            change: l.change,
+                            pchange: l.pchange,
                             changePercent: l.changePercent,
                             volume: l.volume,
                             marketCap: l.marketCap,
@@ -244,13 +244,13 @@ router.get('/data-trace', async (req, res) => {
                         symbol: excelFirst.symbol,
                         company_name: excelFirst.company_name,
                         last_price: excelFirst.last_price,
-                        percent_change: excelFirst.percent_change
+                        per_change: excelFirst.per_change
                     },
                     database: dbFirst ? {
                         symbol: dbFirst.symbol,
                         company_name: dbFirst.company_name,
                         last_price: dbFirst.last_price,
-                        percent_change: dbFirst.percent_change
+                        per_change: dbFirst.per_change
                     } : null,
                     match: dbFirst && dbFirst.symbol === excelFirst.symbol
                 });

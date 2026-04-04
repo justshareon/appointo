@@ -285,7 +285,7 @@ router.get('/top-gainers', async (req, res) => {
                     LOG.warning('[Trading Routes] Possible reasons:');
                     LOG.warning('[Trading Routes]   1. Excel file sync has not run yet');
                     LOG.warning('[Trading Routes]   2. Excel file is empty or has no data');
-                    LOG.warning('[Trading Routes]   3. No stocks with positive percent_change');
+                    LOG.warning('[Trading Routes]   3. No stocks with positive per_change');
                     LOG.warning('[Trading Routes]   4. Database connection issue');
                     LOG.warning(`[Trading Routes]   5. Total stocks in DB: ${totalStocks}`);
                     LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
@@ -423,7 +423,7 @@ router.get('/data', async (req, res) => {
                     symbol: stocks[0].symbol,
                     name: stocks[0].name,
                     price: stocks[0].price,
-                    change: stocks[0].change,
+                    pchange: stocks[0].pchange,
                     changePercent: stocks[0].changePercent,
                     hasValidData: !!(stocks[0].symbol && stocks[0].name && stocks[0].price !== undefined)
                 });
@@ -935,7 +935,7 @@ router.get('/market-high', async (req, res) => {
                 symbol: stock.symbol,
                 name: stock.name,
                 price: stock.price,
-                change: stock.change,
+                pchange: stock.pchange,
                 changePercent: stock.changePercent,
                 volume: stock.volume
             }));
@@ -968,7 +968,7 @@ router.get('/most-bought', async (req, res) => {
                 symbol: stock.symbol,
                 name: stock.name,
                 price: stock.price,
-                change: stock.change,
+                pchange: stock.pchange,
                 changePercent: stock.changePercent,
                 volume: stock.volume
             }));

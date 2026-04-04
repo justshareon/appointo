@@ -501,7 +501,7 @@ class ExcelFileService {
                                 symbol: stock.symbol,
                                 company_name: stock.company_name,
                                 last_price: stock.last_price,
-                                percent_change: stock.percent_change,
+                                per_change: stock.per_change,
                                 data_type: stock.data_type
                             });
                         });
@@ -560,8 +560,8 @@ class ExcelFileService {
         const symbolPatterns = ['ticker', 'symbol', 'stock symbol', 'code', 'scrip'];
         const namePatterns = ['name', 'company name', 'company', 'stock name'];
         const pricePatterns = ['price', 'ltp', 'last price', 'last traded price', 'current price', 'close'];
-        const changePatterns = ['change'];
-        const percentChangePatterns = ['change %', 'change%', '% change', 'percent change', 'change percent', 'pct change'];
+        const changePatterns = ['pchange'];
+        const percentChangePatterns = ['pchange %', 'pchange%', '% pchange', 'percent pchange', 'pchange percent', 'pct pchange'];
         const volumePatterns = ['volume', 'traded volume', 'qty', 'quantity'];
         const marketCapPatterns = ['market cap', 'market capitalization', 'mcap', 'marketcap'];
         const peRatioPatterns = ['pe ratio', 'pe', 'p/e', 'price to earnings', 'price earnings', 'p/e ratio'];
@@ -570,16 +570,16 @@ class ExcelFileService {
         const weekRangePatterns = ['52 week range', '52w range', 'week range', '52 week rang', '52w rang', 'range'];
 
         // Find symbol column - Skip "No." column (row numbers)
-        // Must check percent change BEFORE change to avoid confusion
+        // Must check percent pchange BEFORE pchange to avoid confusion
         mapping.percentChange = findColumn(percentChangePatterns);
         if (mapping.percentChange !== null) {
-            LOG.info(`[Excel File] Found percent change column at index ${mapping.percentChange}: "${headerRow[mapping.percentChange]}"`);
+            LOG.info(`[Excel File] Found percent pchange column at index ${mapping.percentChange}: "${headerRow[mapping.percentChange]}"`);
         }
 
-        // Find change column (not percent) - exclude percent patterns
-        mapping.change = findColumn(changePatterns, ['%', 'percent', 'pct']);
-        if (mapping.change !== null) {
-            LOG.info(`[Excel File] Found change column at index ${mapping.change}: "${headerRow[mapping.change]}"`);
+        // Find pchange column (not percent) - exclude percent patterns
+        mapping.pchange = findColumn(changePatterns, ['%', 'percent', 'pct']);
+        if (mapping.pchange !== null) {
+            LOG.info(`[Excel File] Found pchange column at index ${mapping.pchange}: "${headerRow[mapping.pchange]}"`);
         }
 
         // Find symbol column - Skip "No." column (row numbers)
@@ -641,7 +641,7 @@ class ExcelFileService {
             symbol: mapping.symbol !== null && mapping.symbol !== undefined ? mapping.symbol : config.columnMapping.symbol,
             companyName: mapping.companyName !== null && mapping.companyName !== undefined ? mapping.companyName : config.columnMapping.companyName,
             lastPrice: mapping.lastPrice !== null && mapping.lastPrice !== undefined ? mapping.lastPrice : config.columnMapping.lastPrice,
-            change: mapping.change !== null && mapping.change !== undefined ? mapping.change : config.columnMapping.change,
+            pchange: mapping.pchange !== null && mapping.pchange !== undefined ? mapping.pchange : config.columnMapping.pchange,
             percentChange: mapping.percentChange !== null && mapping.percentChange !== undefined ? mapping.percentChange : config.columnMapping.percentChange,
             volume: mapping.volume !== null && mapping.volume !== undefined ? mapping.volume : config.columnMapping.volume,
             marketCap: mapping.marketCap !== null && mapping.marketCap !== undefined ? mapping.marketCap : config.columnMapping.marketCap,
@@ -665,7 +665,7 @@ class ExcelFileService {
         LOG.info(`[Excel File]   Symbol (Ticker): Column ${finalMapping.symbol} = "${headerRow[finalMapping.symbol] || 'NOT FOUND'}"`);
         LOG.info(`[Excel File]   Company Name: Column ${finalMapping.companyName} = "${headerRow[finalMapping.companyName] || 'NOT FOUND'}"`);
         LOG.info(`[Excel File]   Price: Column ${finalMapping.lastPrice} = "${headerRow[finalMapping.lastPrice] || 'NOT FOUND'}"`);
-        LOG.info(`[Excel File]   Change: Column ${finalMapping.change} = "${headerRow[finalMapping.change] || 'NOT FOUND'}"`);
+        LOG.info(`[Excel File]   Change: Column ${finalMapping.pchange} = "${headerRow[finalMapping.pchange] || 'NOT FOUND'}"`);
         LOG.info(`[Excel File]   Change %: Column ${finalMapping.percentChange} = "${headerRow[finalMapping.percentChange] || 'NOT FOUND'}"`);
         LOG.info(`[Excel File]   Volume: Column ${finalMapping.volume} = "${headerRow[finalMapping.volume] || 'NOT FOUND'}"`);
         LOG.info(`[Excel File]   Market Cap: Column ${finalMapping.marketCap} = "${headerRow[finalMapping.marketCap] || 'NOT FOUND'}"`);
@@ -708,7 +708,7 @@ class ExcelFileService {
                                   firstRowStr.includes('ticker') || 
                                   firstRowStr.includes('company') ||
                                   firstRowStr.includes('price') ||
-                                  firstRowStr.includes('change');
+                                  firstRowStr.includes('pchange');
         
         // If first row doesn't look like header, try to find it
         if (!hasHeaderKeywords && rows.length > 1) {
@@ -790,8 +790,8 @@ class ExcelFileService {
                 
                 const companyName = String(row[mapping.companyName] || '').trim();
                 const lastPrice = this.parseDecimal(row[mapping.lastPrice]);
-                const change = this.parseDecimal(row[mapping.change]);
-                let percentChange = this.parsePercentChange(row[mapping.percentChange], lastPrice, change);
+                const pchange = this.parseDecimal(row[mapping.pchange]);
+                let percentChange = this.parsePercentChange(row[mapping.percentChange], lastPrice, pchange);
                 const volume = this.parseBigInt(row[mapping.volume]);
                 const marketCap = this.parseBigInt(row[mapping.marketCap]);
                 const peRatio = this.parseDecimal(row[mapping.peRatio]);
@@ -819,15 +819,15 @@ class ExcelFileService {
                 }
 
                 // Validate data - skip rows with invalid data
-                // Must have at least symbol and one of: price, percent_change, or volume
+                // Must have at least symbol and one of: price, per_change, or volume
                 if (!lastPrice && !percentChange && !volume) {
                     LOG.warning(`[Excel File] Skipping row with no valid data for symbol: ${symbol}`);
                     continue;
                 }
                 
-                // Skip if percent_change is unrealistic (>10000% or <-100%)
+                // Skip if per_change is unrealistic (>10000% or <-100%)
                 if (percentChange !== null && (percentChange > 10000 || percentChange < -100)) {
-                    LOG.warning(`[Excel File] Skipping row with unrealistic percent_change (${percentChange}%) for symbol: ${symbol}`);
+                    LOG.warning(`[Excel File] Skipping row with unrealistic per_change (${percentChange}%) for symbol: ${symbol}`);
                     continue;
                 }
 
@@ -852,8 +852,8 @@ class ExcelFileService {
                     symbol: symbol,
                     company_name: companyName || symbol, // Fallback to symbol if no company name
                     last_price: lastPrice || 0,
-                    change: change || 0,
-                    percent_change: percentChange || 0,
+                    pchange: pchange || 0,
+                    per_change: percentChange || 0,
                     data_type: dataType,
                     volume: volume || 0,
                     market_cap: marketCap || 0,
@@ -892,8 +892,8 @@ class ExcelFileService {
                         symbol: stock.symbol,
                         company_name: stock.company_name,
                         last_price: stock.last_price,
-                        change: stock.change,
-                        percent_change: stock.percent_change,
+                        pchange: stock.pchange,
+                        per_change: stock.per_change,
                         volume: stock.volume
                     });
                 }
@@ -916,11 +916,11 @@ class ExcelFileService {
     }
 
     /**
-     * Parse percentage change value from string or number
+     * Parse percentage pchange value from string or number
      * Handles various formats: "31.35%", "31.35", "-5.2%", etc.
-     * If value is missing or invalid, calculates from change and lastPrice
+     * If value is missing or invalid, calculates from pchange and lastPrice
      */
-    parsePercentChange(value, lastPrice, change) {
+    parsePercentChange(value, lastPrice, pchange) {
         // First try to parse the value directly
         if (value !== null && value !== undefined && value !== '') {
             let cleaned = String(value).replace(/[₹$€£,\s]/g, '').trim();
@@ -945,9 +945,9 @@ class ExcelFileService {
             }
         }
         
-        // If value is missing or invalid, calculate from change and lastPrice
-        if (lastPrice && lastPrice > 0 && change !== null && change !== undefined) {
-            const calculated = (change / lastPrice) * 100;
+        // If value is missing or invalid, calculate from pchange and lastPrice
+        if (lastPrice && lastPrice > 0 && pchange !== null && pchange !== undefined) {
+            const calculated = (pchange / lastPrice) * 100;
             return isNaN(calculated) ? null : calculated;
         }
         

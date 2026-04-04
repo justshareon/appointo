@@ -42,7 +42,7 @@ The response will show:
               "symbol": "RELIANCE",
               "company_name": "Reliance Industries Ltd",
               "last_price": 2500.50,
-              "percent_change": 2.5
+              "per_change": 2.5
             }
           ]
         }

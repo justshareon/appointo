@@ -74,8 +74,8 @@ class SampleStockDataService {
             // Generate realistic price variation (-5% to +5%)
             const variation = (Math.random() * 10 - 5) / 100;
             const currentPrice = stock.basePrice * (1 + variation);
-            const change = currentPrice - stock.basePrice;
-            const percentChange = (change / stock.basePrice) * 100;
+            const pchange = currentPrice - stock.basePrice;
+            const percentChange = (pchange / stock.basePrice) * 100;
             
             // Generate realistic volume (based on market cap)
             const marketCap = currentPrice * (Math.random() * 1000000000 + 500000000);
@@ -85,8 +85,8 @@ class SampleStockDataService {
                 symbol: stock.symbol,
                 company_name: stock.name,
                 last_price: parseFloat(currentPrice.toFixed(2)),
-                change: parseFloat(change.toFixed(2)),
-                percent_change: parseFloat(percentChange.toFixed(2)),
+                pchange: parseFloat(pchange.toFixed(2)),
+                per_change: parseFloat(percentChange.toFixed(2)),
                 volume: volume,
                 market_cap: Math.floor(marketCap),
             };

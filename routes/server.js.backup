@@ -1207,7 +1207,7 @@ app.post('/api/admin/settings', authenticateToken, async (req, res) => {
     if (req.user.role !== 'super_admin') return res.sendStatus(403);
     try {
         const updated = await db.updateSettings(req.body);
-        // Broadcast change via socket so apps update in real-time
+        // Broadcast pchange via socket so apps update in real-time
         io.emit('settings_updated', updated);
         res.json(updated);
     } catch (err) {

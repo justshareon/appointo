@@ -37,7 +37,7 @@ module.exports = {
         companyName: 2,   // Column C (Name)
         volume: 3,        // Column D (Volume)
         lastPrice: 4,     // Column E (Price)
-        change: 5,        // Column F (Change)
+        pchange: 5,        // Column F (Change)
         percentChange: 6, // Column G (Change %)
         marketCap: 7,     // Column H (Market Cap)
         // Add more columns as needed

@@ -249,7 +249,7 @@ class YahooFinanceService {
                             LOG.info(`[Yahoo Finance API]   - Symbol: ${firstQuote?.symbol || firstQuote?.fullSymbol || 'N/A'}`);
                             LOG.info(`[Yahoo Finance API]   - Full Symbol: ${firstQuote?.fullSymbol || firstQuote?.symbol || 'N/A'}`);
                             LOG.info(`[Yahoo Finance API]   - Price: ${firstQuote?.regularMarketPrice || firstQuote?.price || 'N/A'}`);
-                            LOG.info(`[Yahoo Finance API]   - Change: ${firstQuote?.regularMarketChange || firstQuote?.change || 'N/A'}`);
+                            LOG.info(`[Yahoo Finance API]   - Change: ${firstQuote?.regularMarketChange || firstQuote?.pchange || 'N/A'}`);
                             LOG.info(`[Yahoo Finance API]   - Change %: ${firstQuote?.regularMarketChangePercent || firstQuote?.changePercent || 'N/A'}`);
                             LOG.info(`[Yahoo Finance API]   - Has Data: ${!!firstQuote}`);
                             
@@ -402,7 +402,7 @@ class YahooFinanceService {
                     fullSymbol: symbol,
                     name: quote.longName || quote.shortName || quote.displayName || symbol,
                     price: quote.regularMarketPrice || quote.previousClose || 0,
-                    change: quote.regularMarketChange || 0,
+                    pchange: quote.regularMarketChange || 0,
                     changePercent: quote.regularMarketChangePercent || 0,
                     previousClose: quote.previousClose || 0,
                     open: quote.regularMarketOpen || 0,
@@ -834,14 +834,14 @@ class YahooFinanceService {
                 .map(item => {
                     // Handle both transformed format (from getQuote) and raw format
                     const price = item.price || item.regularMarketPrice || 0;
-                    const change = item.change || item.regularMarketChange || 0;
+                    const pchange = item.pchange || item.regularMarketChange || 0;
                     const changePercent = item.changePercent || item.regularMarketChangePercent || 0;
                     
                     return {
                         symbol: item.symbol || item.fullSymbol?.replace(/\.(NS|BO)$/i, '') || 'N/A',
                         name: item.name || item.longName || item.shortName || item.displayName || item.symbol,
                         price: price,
-                        change: change,
+                        pchange: pchange,
                         changePercent: changePercent,
                         volume: item.volume || item.regularMarketVolume || 0,
                         marketCap: item.marketCap || 0
@@ -889,11 +889,11 @@ class YahooFinanceService {
             // Filter to only positive changes (gainers)
             const gainers = screener.filter(stock => stock.changePercent > 0);
             
-            // If no gainers with positive change, return top stocks by price (market might be closed)
+            // If no gainers with positive pchange, return top stocks by price (market might be closed)
             let result = gainers.slice(0, limit);
             
             if (result.length === 0 && screener.length > 0) {
-                LOG.warning(`[Yahoo Finance] ⚠ No stocks with positive change found. Market might be closed.`);
+                LOG.warning(`[Yahoo Finance] ⚠ No stocks with positive pchange found. Market might be closed.`);
                 LOG.warning(`[Yahoo Finance] Returning top ${limit} stocks by price instead...`);
                 result = screener
                     .sort((a, b) => b.price - a.price)
@@ -1025,7 +1025,7 @@ class YahooFinanceService {
                 if (quote) {
                     LOG.info(`[Yahoo Finance] ✓ Found quote for ${index.name}:`, {
                         price: quote.price,
-                        change: quote.change,
+                        pchange: quote.pchange,
                         changePercent: quote.changePercent
                     });
                 } else {
@@ -1036,7 +1036,7 @@ class YahooFinanceService {
                 return {
                     name: index.name,
                     value: quote?.price || 0,
-                    change: quote?.change || 0,
+                    pchange: quote?.pchange || 0,
                     changePercent: quote?.changePercent || 0,
                     expiry: this.getExpiryDate()
                 };
@@ -1122,7 +1122,7 @@ class YahooFinanceService {
             const pool = db.getPool();
             if (pool) {
                 // TODO: Implement database storage for EOD history
-                // CREATE TABLE IF NOT EXISTS stock_history (symbol, date, price, change, ...)
+                // CREATE TABLE IF NOT EXISTS stock_history (symbol, date, price, pchange, ...)
             }
         } catch (error) {
             LOG.error('[Yahoo Finance] Error storing EOD history:', error.message);

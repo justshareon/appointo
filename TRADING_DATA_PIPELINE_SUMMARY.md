@@ -93,7 +93,7 @@ columnMapping: {
     symbol: 0,        // Column A
     companyName: 1,  // Column B
     lastPrice: 2,     // Column C
-    change: 3,        // Column D
+    pchange: 3,        // Column D
     percentChange: 4, // Column E
     volume: 5,        // Column F
     marketCap: 6,     // Column G
@@ -109,8 +109,8 @@ CREATE TABLE live_stock_data (
     symbol VARCHAR(20) NOT NULL UNIQUE,
     company_name VARCHAR(255),
     last_price DECIMAL(10, 2),
-    change DECIMAL(10, 2),
-    percent_change DECIMAL(5, 2),
+    pchange DECIMAL(10, 2),
+    per_change DECIMAL(5, 2),
     volume BIGINT,
     market_cap BIGINT,
     last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
@@ -124,8 +124,8 @@ CREATE TABLE stock_data_history (
     symbol VARCHAR(20) NOT NULL,
     company_name VARCHAR(255),
     last_price DECIMAL(10, 2),
-    change DECIMAL(10, 2),
-    percent_change DECIMAL(5, 2),
+    pchange DECIMAL(10, 2),
+    per_change DECIMAL(5, 2),
     volume BIGINT,
     market_cap BIGINT,
     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

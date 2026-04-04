@@ -1,0 +1,63 @@
+# CSV data files (ignore your stock data CSVs)
+*.csv
+!example.csv  # Keep example template if needed
+CF-BM-equities-*.csv
+
+# PDF files (ignore board meeting PDFs)
+*.pdf
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build outputs
+bin/
+obj/
+Debug/
+Release/
+
+# Node modules (if Node.js backend)
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Config files with sensitive data
+*config*.json
+!package.json
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+
+# Database files
+*.db
+*.sqlite
+*.mdf
+*.ldf
+
+# Temp files
+tmp/
+temp/
+*.tmp
+*.bak
+
+# Your specific files
+*_BM_intimation_to_stk_exchange_*.pdf
+*_BMNoticeToStockExchange*.pdf

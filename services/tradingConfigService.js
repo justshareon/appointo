@@ -34,7 +34,7 @@ class TradingConfigService {
     /**
      * Update USE_YAHOO_FINANCE setting
      * @param {boolean} enabled - Whether to enable Yahoo Finance
-     * @param {string} updatedBy - User who made the change
+     * @param {string} updatedBy - User who made the pchange
      */
     async updateYahooFinanceSetting(enabled, updatedBy = 'admin') {
         try {

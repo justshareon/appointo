@@ -97,17 +97,17 @@ FROM live_stock_data
 GROUP BY data_type;
 
 -- Check sample gainers
-SELECT symbol, company_name, last_price, percent_change, data_type 
+SELECT symbol, company_name, last_price, per_change, data_type 
 FROM live_stock_data 
 WHERE data_type = 'gainers' 
-ORDER BY percent_change DESC 
+ORDER BY per_change DESC 
 LIMIT 10;
 
 -- Check sample decliners
-SELECT symbol, company_name, last_price, percent_change, data_type 
+SELECT symbol, company_name, last_price, per_change, data_type 
 FROM live_stock_data 
 WHERE data_type = 'decliners' 
-ORDER BY percent_change ASC 
+ORDER BY per_change ASC 
 LIMIT 10;
 
 -- Check if data has company names
