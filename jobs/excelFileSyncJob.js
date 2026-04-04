@@ -314,9 +314,8 @@ class ExcelFileSyncJob {
             LOG.success('[Excel File Sync] ✅ Cron job scheduled successfully');
             this.initialized = true;
             
-            // Log next execution time
-            const nextDates = this.cronJob.nextDates();
-            LOG.info(`[Excel File Sync] Next execution: ${nextDates instanceof Date ? nextDates.toISOString() : 'Unknown'}`);
+            // Log next execution time (fixed - removed .nextDates() which doesn't exist)
+            LOG.info(`[Excel File Sync] Job scheduled to run every ${this.CRON_EXPRESSION}`);
 
         } catch (cronError) {
             LOG.error('[Excel File Sync] Failed to schedule cron job:', cronError.message);
@@ -454,9 +453,28 @@ class ExcelFileSyncJob {
                     try {
                         LOG.info(`[Excel File Sync] Reading sheet: "${sheetName}"`);
                         
+                        // Try to get sheet metadata first to check if it exists
+                        try {
+                            const sheetMetadata = await sheets.spreadsheets.get({
+                                spreadsheetId: this.SPREADSHEET_ID,
+                                includeGridData: false
+                            });
+                            
+                            const sheetExists = sheetMetadata.data.sheets.some(
+                                sheet => sheet.properties.title === sheetName
+                            );
+                            
+                            if (!sheetExists) {
+                                LOG.warning(`[Excel File Sync] Sheet "${sheetName}" does not exist, skipping`);
+                                continue;
+                            }
+                        } catch (metaError) {
+                            LOG.warning(`[Excel File Sync] Could not verify sheet existence: ${metaError.message}`);
+                        }
+                        
                         const response = await sheets.spreadsheets.values.get({
                             spreadsheetId: this.SPREADSHEET_ID,
-                            range: `${sheetName}!A1:Z1000`, // Increased to 1000 rows
+                            range: `${sheetName}`,
                         });
 
                         const rows = response.data.values;
@@ -478,7 +496,8 @@ class ExcelFileSyncJob {
                                 const key = header.toLowerCase()
                                     .replace(/\s/g, '_')
                                     .replace(/[()]/g, '')
-                                    .replace(/[%]/g, 'percent');
+                                    .replace(/[%]/g, 'percent')
+                                    .replace(/[\/]/g, '_');
                                 obj[key] = row[index] || null;
                             });
                             return obj;
@@ -940,7 +959,7 @@ class ExcelFileSyncJob {
             googleSheetsId: this.SPREADSHEET_ID,
             serviceAccount: process.env.GOOGLE_CLIENT_EMAIL || 'NOT SET',
             localFallbackEnabled: this.ENABLE_LOCAL_FALLBACK,
-            nextExecution: this.cronJob ? (this.cronJob.nextDates() instanceof Date ? this.cronJob.nextDates().toISOString() : 'Unknown') : 'Not scheduled'
+            nextExecution: 'Scheduled - check cron pattern'
         };
     }
 }
