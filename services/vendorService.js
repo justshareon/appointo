@@ -14,9 +14,18 @@ class VendorService {
         const includeTradeOffer = req.query.include_trade_offer === 'true';
         const includeCyber = req.query.include_cyber === 'true';
         const includeTrustScore = req.query.include_trust_score === 'true';
-        LOG.info(`[API /vendors] Request received - include_trade_offer: ${includeTradeOffer}, include_cyber: ${includeCyber}, include_trust_score: ${includeTrustScore}`);
+        const feature = String(req.query.feature || '').toLowerCase();
+        LOG.info(`[API /vendors] Request received - feature: ${feature || 'none'}, include_trade_offer: ${includeTradeOffer}`);
 
-        const vendors = await db.getVendors(true, 1, 1000, 'newest', '', includeTradeOffer || includeCyber || includeTrustScore);
+        const vendors = await db.getVendors(
+            true,
+            1,
+            1000,
+            'newest',
+            '',
+            includeTradeOffer || includeCyber || includeTrustScore || !!feature,
+            feature
+        );
         LOG.info(`[API /vendors] Returning ${vendors.length} vendors`);
 
         // Debug logging

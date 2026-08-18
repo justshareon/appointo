@@ -90,30 +90,6 @@ function setupSurakshaSocket(io) {
         });
     });
     
-    // Periodic SIM monitoring (runs every 5 minutes)
-    setInterval(async () => {
-        try {
-            // Get all connected users
-            const sockets = await io.fetchSockets();
-            const userIds = new Set();
-            
-            sockets.forEach(socket => {
-                if (socket.userId) {
-                    userIds.add(socket.userId);
-                }
-            });
-            
-            // Check SIMs for each connected user
-            // Note: This is a simplified version - in production, check all users from DB
-            LOG.info(`[Suraksha Socket] Periodic SIM check for ${userIds.size} connected users`);
-            
-            // Actual SIM checking would be done via validationService
-            // and results emitted to user rooms
-        } catch (error) {
-            LOG.error('[Suraksha Socket] Periodic SIM check error:', error);
-        }
-    }, 5 * 60 * 1000); // Every 5 minutes
-    
     LOG.success('[Suraksha Socket] Socket.IO handlers initialized');
 }
 

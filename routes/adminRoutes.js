@@ -32,6 +32,14 @@ router.post('/update-vendor', (req, res) => adminController.updateVendor(req, re
 router.post('/add-vendor', (req, res) => adminController.addVendor(req, res));
 router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendorDashboard(req, res));
 
+// User & Mapping Management
+router.get('/users-with-mappings', (req, res) => adminController.getUsersWithMappings(req, res));
+router.post('/users', (req, res) => adminController.createUser(req, res));
+router.put('/users/:userId', (req, res) => adminController.updateUser(req, res));
+router.delete('/users/:userId', (req, res) => adminController.deleteUser(req, res));
+router.post('/user-vendor-mapping', (req, res) => adminController.addUserVendorMapping(req, res));
+router.delete('/user-vendor-mapping', (req, res) => adminController.removeUserVendorMapping(req, res));
+
 // Cyber Features Management
 router.get('/cyber-features', (req, res) => cyberFeaturesController.getCyberFeatures(req, res));
 router.post('/cyber-features', attachSocket(ioInstance), (req, res) => cyberFeaturesController.updateCyberFeatures(req, res));

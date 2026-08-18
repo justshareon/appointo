@@ -139,6 +139,100 @@ class AdminService {
             throw err;
         }
     }
+
+    /**
+     * Get users with vendor mappings (admin view)
+     */
+    async getUsersWithMappings() {
+        return await db.getUsersWithVendorMappings();
+    }
+
+    /**
+     * Create user (admin)
+     */
+    async createUser(userData) {
+        const { name, email, mobile, role, location_name } = userData;
+        if (!name || !mobile) {
+            throw new Error('name and mobile are required');
+        }
+
+        const user = {
+            id: userData.id || ('usr_' + Math.random().toString(36).substring(2, 11)),
+            name,
+            email: email || `${mobile}@qrqueue.local`,
+            mobile,
+            role: role || 'user',
+            location_name: location_name || '',
+            created_at: new Date()
+        };
+
+        await db.addUser(user);
+        LOG.success(`Admin created user ${user.id} (${user.name})`);
+        return { success: true, user };
+    }
+
+    /**
+     * Update user (admin)
+     */
+    async updateUser(userId, userData) {
+        const user = await db.getUserById(userId);
+        if (!user) throw new Error('User not found');
+
+        if (userData.name !== undefined || userData.email !== undefined || userData.location_name !== undefined) {
+            await db.updateUserProfile(userId, {
+                name: userData.name,
+                email: userData.email,
+                location_name: userData.location_name
+            });
+        }
+        if (userData.role !== undefined) {
+            await db.updateUserRole(userId, userData.role);
+        }
+
+        const updated = await db.getUserById(userId);
+        return { success: true, user: updated };
+    }
+
+    /**
+     * Delete user (admin)
+     */
+    async deleteUser(userId) {
+        const user = await db.getUserById(userId);
+        if (!user) throw new Error('User not found');
+        if (user.role === 'super_admin') {
+            throw new Error('Cannot delete super admin user');
+        }
+        await db.deleteUser(userId);
+        LOG.success(`Admin deleted user ${userId}`);
+        return { success: true };
+    }
+
+    /**
+     * Add user-vendor mapping
+     */
+    async addUserVendorMapping(userId, vendorId) {
+        const user = await db.getUserById(userId);
+        if (!user) throw new Error('User not found');
+        const vendor = await db.getVendorById(vendorId);
+        if (!vendor) throw new Error('Vendor not found');
+        const mapping = await db.addUserVendorMapping(userId, vendorId);
+        return { success: true, mapping };
+    }
+
+    /**
+     * Remove user-vendor mapping
+     */
+    async removeUserVendorMapping(userId, vendorId) {
+        await db.removeUserVendorMapping(userId, vendorId);
+        return { success: true };
+    }
+
+    /**
+     * Get mapped vendors for a user
+     */
+    async getMappedVendorsForUser(userId) {
+        return await db.getMappedVendorsForUser(userId);
+    }
 }
 
 module.exports = new AdminService();

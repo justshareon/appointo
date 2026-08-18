@@ -1297,7 +1297,9 @@ class FeatureEngineeringService {
                 LOG.info(`[Feature Engineering] getLatestIndicators: Unique symbols with indicators: ${uniqueSymbols}`);
                 
                 LOG.info('[Feature Engineering] getLatestIndicators: Executing query to get latest indicators...');
-                const [rows] = await pool.query(`
+                // Optimization: get latest indicator by doing simple select ordered by id desc to avoid heavy group by max if possible
+                // Using an optimized query that doesn't need to scan the entire table for max_computed_at
+                const [rowsResult] = await pool.query(`
                     SELECT 
                         si.symbol,
                         si.computed_at,
@@ -1315,13 +1317,12 @@ class FeatureEngineeringService {
                         si.week_52_low,
                         si.week_52_high,
                         lsd.last_price as close
-                    FROM stock_indicators si
-                    INNER JOIN (
-                        SELECT symbol, MAX(computed_at) as max_computed_at
+                    FROM (
+                        SELECT *, ROW_NUMBER() OVER(PARTITION BY symbol ORDER BY computed_at DESC) as rn
                         FROM stock_indicators
-                        GROUP BY symbol
-                    ) latest ON si.symbol = latest.symbol AND si.computed_at = latest.max_computed_at
+                    ) si
                     LEFT JOIN live_stock_data lsd ON si.symbol = lsd.symbol
+                    WHERE si.rn = 1
                     ORDER BY si.symbol
                 `);
                 

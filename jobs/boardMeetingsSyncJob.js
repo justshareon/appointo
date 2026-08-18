@@ -40,14 +40,7 @@ class BoardMeetingsSyncJob {
             timezone: "Asia/Kolkata"
         });
 
-        LOG.success('[Board Meetings Sync] Scheduled successfully');
-
-        setTimeout(() => {
-            LOG.info('[Board Meetings Sync] Running initial sync...');
-            this.sync(true).catch(err => {
-                LOG.error('[Board Meetings Sync] Initial sync failed:', err.message);
-            });
-        }, 5000);
+        LOG.success('[Board Meetings Sync] Scheduled successfully (lazy-load on first /trade use)');
     }
 
     stop() {

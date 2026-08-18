@@ -40,14 +40,7 @@ class CorporateActionsSyncJob {
             timezone: "Asia/Kolkata"
         });
 
-        LOG.success('[Corporate Actions Sync] Scheduled successfully');
-
-        setTimeout(() => {
-            LOG.info('[Corporate Actions Sync] Running initial sync...');
-            this.sync(true).catch(err => {
-                LOG.error('[Corporate Actions Sync] Initial sync failed:', err.message);
-            });
-        }, 5000);
+        LOG.success('[Corporate Actions Sync] Scheduled successfully (lazy-load on first /trade use)');
     }
 
     stop() {

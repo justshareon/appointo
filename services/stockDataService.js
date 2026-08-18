@@ -201,7 +201,9 @@ class StockDataService {
                 ...item,
                 archived_at: new Date()
             })));
-            LOG.info(`[Stock Data] Archived ${liveData.length} records to in-memory history`);
+            const { HISTORY_CAP, capArray } = require('../database/featureMemoryManager');
+            capArray(inMemoryDb.stock_data_history, HISTORY_CAP * Math.max(liveData.length, 1));
+            LOG.info(`[Stock Data] Archived ${liveData.length} records to in-memory history (capped)`);
             return liveData.length;
         }
 

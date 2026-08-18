@@ -120,7 +120,9 @@ class MutualFundDataService {
                 ...item,
                 archived_at: new Date()
             })));
-            LOG.info(`[Mutual Fund Data] Archived ${liveData.length} records to in-memory history`);
+            const { HISTORY_CAP, capArray } = require('../database/featureMemoryManager');
+            capArray(inMemoryDb.mutual_fund_history, HISTORY_CAP * Math.max(liveData.length, 1));
+            LOG.info(`[Mutual Fund Data] Archived ${liveData.length} records to in-memory history (capped)`);
             return liveData.length;
         }
 

@@ -5,6 +5,7 @@
  */
 const db = require('../database');
 const LOG = require('../utils/logger');
+const { BOARD_CAP, capByDate } = require('../database/featureMemoryManager');
 
 class BoardMeetingsDataService {
     constructor() {
@@ -112,18 +113,19 @@ class BoardMeetingsDataService {
 
         const pool = db.getPool();
         if (!pool) {
-            // Use in-memory storage
             const inMemoryDb = this.getInMemoryDb();
-            meetingsData.forEach(meeting => {
-                inMemoryDb.push({
-                    ...meeting,
-                    id: Date.now() + Math.random(),
-                    created_at: new Date(),
-                    updated_at: new Date()
-                });
-            });
-            LOG.success(`[Board Meetings] Inserted ${meetingsData.length} records in memory`);
-            return meetingsData.length;
+            inMemoryDb.length = 0;
+            const capped = capByDate(meetingsData, 'meeting_date', BOARD_CAP);
+            for (let i = 0; i < capped.length; i += 1) {
+                const meeting = capped[i];
+                meeting.id = i + 1;
+                inMemoryDb.push(meeting);
+            }
+            if (meetingsData.length > capped.length) {
+                LOG.info(`[Board Meetings] Capped in-memory rows ${meetingsData.length} -> ${capped.length}`);
+            }
+            LOG.success(`[Board Meetings] Inserted ${capped.length} records in memory`);
+            return capped.length;
         }
         try {
             const values = meetingsData.map(meeting => [
@@ -166,10 +168,10 @@ class BoardMeetingsDataService {
         if (!pool) {
             // Use in-memory storage
             const inMemoryDb = this.getInMemoryDb();
-            let filtered = [...inMemoryDb];
+            let filtered = inMemoryDb;
 
             if (symbol) {
-                filtered = filtered.filter(m => m.symbol === symbol.toUpperCase());
+                filtered = inMemoryDb.filter(m => m.symbol === symbol.toUpperCase());
             }
             if (meetingDateFrom) {
                 filtered = filtered.filter(m => m.meeting_date && new Date(m.meeting_date) >= new Date(meetingDateFrom));
@@ -179,7 +181,7 @@ class BoardMeetingsDataService {
             }
 
             if (limit) {
-                filtered = filtered.slice(offset, offset + limit);
+                return filtered.slice(offset, offset + limit);
             }
 
             return filtered;

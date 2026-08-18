@@ -266,6 +266,8 @@ let inMemoryDb = {
             features_queue: false,
             features_matchmaking: false,
             features_offer: true,
+            current_offer: 'Launch offer · up to 40% off',
+            location_name: 'Mumbai',
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false

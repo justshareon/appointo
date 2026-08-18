@@ -70,6 +70,7 @@ class BidirectionalSyncService {
                 settings: 0,
                 matchmaking_templates: 0,
                 activities: 0,
+                user_vendor_mappings: 0,
                 errors: []
             };
 
@@ -346,6 +347,33 @@ class BidirectionalSyncService {
                 }
                 LOG.success(`[Bidirectional Sync] Synced ${syncResult.activities} activities`);
 
+                // 10. SYNC USER-VENDOR MAPPINGS
+                LOG.info('[Bidirectional Sync] Syncing user-vendor mappings...');
+                await connection.query(`
+                    CREATE TABLE IF NOT EXISTS user_vendor_mappings (
+                        id INT AUTO_INCREMENT PRIMARY KEY,
+                        user_id VARCHAR(64) NOT NULL,
+                        vendor_id VARCHAR(64) NOT NULL,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE KEY uniq_user_vendor (user_id, vendor_id),
+                        INDEX idx_user (user_id),
+                        INDEX idx_vendor (vendor_id)
+                    )
+                `);
+                for (const m of inMemoryDb.user_vendor_mappings || []) {
+                    try {
+                        await connection.query(
+                            `INSERT IGNORE INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, ?)`,
+                            [m.user_id, m.vendor_id, m.created_at || new Date()]
+                        );
+                        syncResult.user_vendor_mappings++;
+                    } catch (err) {
+                        syncResult.errors.push(`Mapping ${m.user_id}->${m.vendor_id}: ${err.message}`);
+                        LOG.warning(`[Bidirectional Sync] Error syncing mapping ${m.user_id}->${m.vendor_id}:`, err.message);
+                    }
+                }
+                LOG.success(`[Bidirectional Sync] Synced ${syncResult.user_vendor_mappings} user-vendor mappings`);
+
                 await connection.commit();
                 this.lastSyncTime = new Date().toISOString();
 
@@ -353,7 +381,7 @@ class BidirectionalSyncService {
                 LOG.success('[Bidirectional Sync] ✅ Sync to MySQL completed successfully!');
                 LOG.success(`[Bidirectional Sync] Users: ${syncResult.users}, Vendors: ${syncResult.vendors}, Products: ${syncResult.products}`);
                 LOG.success(`[Bidirectional Sync] Orders: ${syncResult.orders}, Queues: ${syncResult.queues}, Appointments: ${syncResult.appointments}`);
-                LOG.success(`[Bidirectional Sync] Settings: ${syncResult.settings}, Templates: ${syncResult.matchmaking_templates}, Activities: ${syncResult.activities}`);
+                LOG.success(`[Bidirectional Sync] Settings: ${syncResult.settings}, Templates: ${syncResult.matchmaking_templates}, Activities: ${syncResult.activities}, Mappings: ${syncResult.user_vendor_mappings}`);
                 if (syncResult.errors.length > 0) {
                     LOG.warning(`[Bidirectional Sync] ⚠️ ${syncResult.errors.length} errors occurred during sync`);
                 }
@@ -421,6 +449,7 @@ class BidirectionalSyncService {
                 settings: 0,
                 matchmaking_templates: 0,
                 activities: 0,
+                user_vendor_mappings: 0,
                 errors: []
             };
 
@@ -662,13 +691,30 @@ class BidirectionalSyncService {
                     inMemoryDb.activities = [];
                 }
 
+                // 10. SYNC USER-VENDOR MAPPINGS
+                LOG.info('[Bidirectional Sync] Loading user-vendor mappings from MySQL...');
+                try {
+                    const [mappings] = await connection.query('SELECT * FROM user_vendor_mappings');
+                    inMemoryDb.user_vendor_mappings = mappings.map(m => ({
+                        id: m.id,
+                        user_id: m.user_id,
+                        vendor_id: m.vendor_id,
+                        created_at: m.created_at
+                    }));
+                    syncResult.user_vendor_mappings = mappings.length;
+                    LOG.success(`[Bidirectional Sync] Loaded ${syncResult.user_vendor_mappings} user-vendor mappings from MySQL`);
+                } catch (err) {
+                    LOG.warning('[Bidirectional Sync] user_vendor_mappings table may not exist');
+                    inMemoryDb.user_vendor_mappings = inMemoryDb.user_vendor_mappings || [];
+                }
+
                 this.lastSyncTime = new Date().toISOString();
 
                 LOG.success('[Bidirectional Sync] ========================================');
                 LOG.success('[Bidirectional Sync] ✅ Sync from MySQL completed successfully!');
                 LOG.success(`[Bidirectional Sync] Users: ${syncResult.users}, Vendors: ${syncResult.vendors}, Products: ${syncResult.products}`);
                 LOG.success(`[Bidirectional Sync] Orders: ${syncResult.orders}, Queues: ${syncResult.queues}, Appointments: ${syncResult.appointments}`);
-                LOG.success(`[Bidirectional Sync] Settings: ${syncResult.settings}, Templates: ${syncResult.matchmaking_templates}, Activities: ${syncResult.activities}`);
+                LOG.success(`[Bidirectional Sync] Settings: ${syncResult.settings}, Templates: ${syncResult.matchmaking_templates}, Activities: ${syncResult.activities}, Mappings: ${syncResult.user_vendor_mappings}`);
                 LOG.success('[Bidirectional Sync] ========================================');
 
                 return {

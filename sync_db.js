@@ -234,6 +234,8 @@ const inMemoryDb = {
             features_matchmaking: false,
             features_trade: false,
             features_offer: true,
+            current_offer: 'Launch offer · up to 40% off',
+            location_name: 'Mumbai',
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false
@@ -398,10 +400,37 @@ const inMemoryDb = {
         { id: 1, type: 'appointment', vendor_id: 'v_new1', userId: 'usr_u1', userName: 'User One', message: 'booked an appointment at Vendor One Shop', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
         { id: 2, type: 'review', vendor_id: 'v_5', userId: 'usr_rahul', userName: 'Rahul Sharma', message: 'rated Super Market 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
     ],
+    user_vendor_mappings: [
+        { id: 1, user_id: 'usr_user', vendor_id: 'v_1' },
+        { id: 2, user_id: 'usr_user', vendor_id: 'v_new1' },
+        { id: 3, user_id: 'usr_u1', vendor_id: 'v_new1' },
+        { id: 4, user_id: 'usr_u2', vendor_id: 'v_new1' },
+        { id: 5, user_id: 'usr_u3', vendor_id: 'v_new1' },
+        { id: 6, user_id: 'usr_u4', vendor_id: 'v_new1' },
+        { id: 7, user_id: 'usr_u5', vendor_id: 'v_new1' },
+        { id: 8, user_id: 'usr_temple_user', vendor_id: 'v_4' },
+        { id: 9, user_id: 'usr_rahul', vendor_id: 'v_5' },
+        { id: 10, user_id: 'usr_new_patient', vendor_id: 'v_3' },
+        { id: 11, user_id: 'usr_trade1', vendor_id: 'v_trade1' },
+        { id: 12, user_id: 'usr_offer1', vendor_id: 'v_offer1' },
+        { id: 13, user_id: 'usr_qlessuser1', vendor_id: 'v_qless1' },
+        { id: 14, user_id: 'usr_fleetuser1', vendor_id: 'v_fleet1' },
+        { id: 15, user_id: 'usr_realuser1', vendor_id: 'v_realestate1' },
+        { id: 16, user_id: 'usr_match_u1', vendor_id: 'v_match_super' },
+        { id: 17, user_id: 'usr_match_u2', vendor_id: 'v_match_super' },
+    ],
     settings: {
-        enable_queue: false,
-        enable_appointments: false,
-        enable_shopping: false,
+        enable_queue: true,
+        enable_appointments: true,
+        enable_shopping: true,
+        enable_matchmaking: true,
+        enable_offer: true,
+        enable_trade: true,
+        enable_qless: true,
+        enable_fleet: true,
+        enable_realestate: true,
+        enable_cyber: true,
+        enable_trust_score: true,
         enable_news: true,
         news_user_emails: 'newsuser11',
         news_vendor_emails: 'newsvendor1'
@@ -437,6 +466,117 @@ const inMemoryDb = {
     ]
 };
 
+async function ensureCoreTables(connection) {
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS users (
+            id VARCHAR(255) PRIMARY KEY,
+            name VARCHAR(255),
+            email VARCHAR(255) UNIQUE NOT NULL,
+            password VARCHAR(255),
+            role ENUM('user', 'vendor', 'super_admin') DEFAULT 'user',
+            mobile VARCHAR(20),
+            location_name VARCHAR(255),
+            loyalty_points INT DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS vendors (
+            id VARCHAR(255) PRIMARY KEY,
+            owner_id VARCHAR(255),
+            shop_name VARCHAR(255),
+            category VARCHAR(100),
+            is_active BOOLEAN DEFAULT TRUE,
+            is_promoted BOOLEAN DEFAULT FALSE,
+            latitude DECIMAL(10, 8),
+            longitude DECIMAL(11, 8),
+            branding_primary_color VARCHAR(10) DEFAULT '#6200ee',
+            branding_bg_color VARCHAR(10) DEFAULT '#f8f9fa',
+            google_link TEXT,
+            instagram_handle VARCHAR(100),
+            facebook_link TEXT,
+            sms_enabled BOOLEAN DEFAULT FALSE,
+            features_products BOOLEAN DEFAULT TRUE,
+            features_payments BOOLEAN DEFAULT TRUE,
+            features_appointments BOOLEAN DEFAULT TRUE,
+            features_queue BOOLEAN DEFAULT TRUE,
+            features_matchmaking BOOLEAN DEFAULT FALSE,
+            features_trade BOOLEAN DEFAULT FALSE,
+            features_offer BOOLEAN DEFAULT FALSE,
+            features_qless BOOLEAN DEFAULT FALSE,
+            features_fleet BOOLEAN DEFAULT FALSE,
+            features_realestate BOOLEAN DEFAULT FALSE,
+            gateway_razorpay BOOLEAN DEFAULT TRUE,
+            gateway_sabpaisa BOOLEAN DEFAULT TRUE,
+            visibility_top_rated BOOLEAN DEFAULT TRUE,
+            visibility_list BOOLEAN DEFAULT TRUE,
+            visibility_feed BOOLEAN DEFAULT TRUE
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS products (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            vendor_id VARCHAR(255),
+            name VARCHAR(255),
+            price DECIMAL(10, 2),
+            description TEXT,
+            offer VARCHAR(255),
+            offer_amount DECIMAL(10, 2) DEFAULT 0,
+            image_urls_json JSON,
+            validity_from DATE,
+            validity_to DATE,
+            category VARCHAR(100),
+            stock INT DEFAULT 0
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            vendor_id VARCHAR(255) NOT NULL,
+            user_id VARCHAR(255) NOT NULL,
+            total_amount DECIMAL(10,2) NOT NULL,
+            payment_gateway VARCHAR(30),
+            payment_ref VARCHAR(255),
+            status ENUM('paid', 'pending', 'failed') DEFAULT 'paid',
+            items_json JSON,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS queues (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            vendor_id VARCHAR(255),
+            user_id VARCHAR(255),
+            status ENUM('waiting', 'serving', 'done', 'cancelled') DEFAULT 'waiting',
+            position INT,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS appointments (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            vendor_id VARCHAR(255),
+            user_id VARCHAR(255),
+            date DATE,
+            time TIME,
+            status ENUM('pending', 'confirmed', 'completed', 'cancelled') DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+    await connection.query(`
+        CREATE TABLE IF NOT EXISTS activities (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            type VARCHAR(50),
+            vendor_id VARCHAR(255),
+            user_id VARCHAR(255),
+            user_name VARCHAR(255),
+            message TEXT,
+            metadata JSON,
+            timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    `);
+}
+
 async function sync() {
     console.log("Starting MySQL Sync...");
     const connection = await mysql.createConnection({
@@ -450,6 +590,8 @@ async function sync() {
 
     try {
         console.log("Connected to MySQL.");
+        console.log("Ensuring tables exist (CREATE IF NOT EXISTS)...");
+        await ensureCoreTables(connection);
 
         // 1. ALTER USERS TABLE
         try {
@@ -487,62 +629,34 @@ async function sync() {
             }
         }
 
-        // 3. SYNC USERS (Bidirectional: preserve MySQL data, merge with local)
-        console.log("Syncing Users...");
-        
-        // First, fetch existing users from MySQL to preserve their created_at dates
-        const [existingUsers] = await connection.query('SELECT * FROM users');
+        // 3. SYNC USERS — insert missing only; leave existing MySQL rows unchanged
+        console.log("Syncing Users (insert missing, ignore existing)...");
+        const [existingUsers] = await connection.query('SELECT id FROM users');
         const existingUserIds = new Set(existingUsers.map(u => u.id));
-        
-        // Insert/update users from in-memory DB
+        let usersInserted = 0;
         for (const u of inMemoryDb.users) {
-            const existingUser = existingUsers.find(eu => eu.id === u.id);
-            if (existingUser) {
-                // Update existing user but preserve created_at
-                await connection.query(
-                    `UPDATE users SET name=?, email=?, mobile=?, role=?, location_name=? WHERE id=?`,
-                    [u.name, u.email, u.mobile, u.role, u.location_name, u.id]
-                );
-            } else {
-                // Insert new user
-                await connection.query(
-                    `INSERT INTO users (id, name, email, mobile, role, location_name, created_at) 
-                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-                    [u.id, u.name, u.email, u.mobile, u.role, u.location_name]
-                );
-            }
+            if (existingUserIds.has(u.id)) continue;
+            await connection.query(
+                `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                [u.id, u.name, u.email, u.mobile, u.role, u.location_name]
+            );
+            usersInserted++;
         }
-        
-        // Also sync any users that exist in MySQL but not in local (preserve yesterday's data)
-        for (const existingUser of existingUsers) {
-            if (!inMemoryDb.users.find(u => u.id === existingUser.id)) {
-                console.log(`Preserving MySQL user: ${existingUser.id} (${existingUser.name})`);
-            }
-        }
-        
-        console.log(`Synced ${inMemoryDb.users.length} users from local, preserved ${existingUsers.length} total users in MySQL`);
+        console.log(`Users: inserted ${usersInserted}, ignored ${inMemoryDb.users.length - usersInserted} existing (${existingUsers.length} already in MySQL)`);
 
-        // 4. SYNC VENDORS
-        console.log("Syncing Vendors...");
+        // 4. SYNC VENDORS — insert missing only
+        console.log("Syncing Vendors (insert missing, ignore existing)...");
         for (const v of inMemoryDb.vendors) {
             await connection.query(
-                `INSERT INTO vendors (
-                    id, owner_id, shop_name, category, is_active, is_promoted, latitude, longitude, 
-                    google_link, instagram_handle, facebook_link, 
+                `INSERT IGNORE INTO vendors (
+                    id, owner_id, shop_name, category, is_active, is_promoted, latitude, longitude,
+                    google_link, instagram_handle, facebook_link,
                     features_products, features_payments, features_appointments, features_queue, features_matchmaking,
                     features_trade, features_offer, features_qless, features_fleet, features_realestate,
                     gateway_razorpay, gateway_sabpaisa,
                     visibility_top_rated, visibility_list, visibility_feed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE 
-                    shop_name=VALUES(shop_name), category=VALUES(category), is_active=VALUES(is_active), 
-                    features_queue=VALUES(features_queue), features_appointments=VALUES(features_appointments),
-                    features_products=VALUES(features_products), features_payments=VALUES(features_payments),
-                    features_matchmaking=VALUES(features_matchmaking),
-                    features_trade=VALUES(features_trade), features_offer=VALUES(features_offer),
-                    features_qless=VALUES(features_qless), features_fleet=VALUES(features_fleet), features_realestate=VALUES(features_realestate),
-                    gateway_razorpay=VALUES(gateway_razorpay), gateway_sabpaisa=VALUES(gateway_sabpaisa),
-                    visibility_top_rated=VALUES(visibility_top_rated), visibility_list=VALUES(visibility_list), visibility_feed=VALUES(visibility_feed)`,
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [
                     v.id, v.owner_id, v.shop_name, v.category, v.is_active, v.is_promoted, v.latitude, v.longitude,
                     v.google_link, v.instagram_handle, v.facebook_link,
@@ -554,99 +668,64 @@ async function sync() {
             );
         }
 
-        // 5. SYNC PRODUCTS
-        console.log("Syncing Products...");
+        // 5. SYNC PRODUCTS — insert missing only
+        console.log("Syncing Products (insert missing, ignore existing)...");
         for (const p of inMemoryDb.products) {
             const imageUrlsJson = JSON.stringify(p.image_urls || []);
             await connection.query(
-                `INSERT INTO products (id, vendor_id, name, price, offer, offer_amount, validity_from, validity_to, image_urls_json)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE name=VALUES(name), price=VALUES(price), offer=VALUES(offer), offer_amount=VALUES(offer_amount), image_urls_json=VALUES(image_urls_json)`,
+                `INSERT IGNORE INTO products (id, vendor_id, name, price, offer, offer_amount, validity_from, validity_to, image_urls_json)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                 [p.id, p.vendor_id, p.name, p.price, p.offer, p.offer_amount, p.validity_from, p.validity_to, imageUrlsJson]
             );
         }
 
-        // 6. SYNC ORDERS (Preserve existing orders from MySQL)
-        console.log("Syncing Orders...");
-        
-        // Fetch existing orders to preserve them
-        const [existingOrders] = await connection.query('SELECT * FROM orders');
+        // 6. SYNC ORDERS — insert missing only
+        console.log("Syncing Orders (insert missing, ignore existing)...");
+        const [existingOrders] = await connection.query('SELECT id FROM orders');
         const existingOrderIds = new Set(existingOrders.map(o => o.id));
-        
+        let ordersInserted = 0;
         for (const o of inMemoryDb.orders) {
-            if (existingOrderIds.has(o.id)) {
-                // Update existing order but preserve created_at
-                await connection.query(
-                    `UPDATE orders SET vendor_id=?, user_id=?, total_amount=? WHERE id=?`,
-                    [o.vendor_id, o.user_id, o.total_amount, o.id]
-                );
-            } else {
-                // Insert new order
-                await connection.query(
-                    `INSERT INTO orders (id, vendor_id, user_id, total_amount, created_at)
-                     VALUES (?, ?, ?, ?, ?)`,
-                    [o.id, o.vendor_id, o.user_id, o.total_amount, o.created_at || new Date()]
-                );
-            }
+            if (existingOrderIds.has(o.id)) continue;
+            await connection.query(
+                `INSERT IGNORE INTO orders (id, vendor_id, user_id, total_amount, created_at)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [o.id, o.vendor_id, o.user_id, o.total_amount, o.created_at || new Date()]
+            );
+            ordersInserted++;
         }
-        
-        // Preserve orders from MySQL that aren't in local (yesterday's data)
-        console.log(`Synced ${inMemoryDb.orders.length} orders from local, preserved ${existingOrders.length} total orders in MySQL`);
+        console.log(`Orders: inserted ${ordersInserted}, ignored ${inMemoryDb.orders.length - ordersInserted} existing`);
 
-        // 7. SYNC QUEUES (Preserve existing queues from MySQL)
-        console.log("Syncing Queues...");
-        
-        // Fetch existing queues to preserve them
-        const [existingQueues] = await connection.query('SELECT * FROM queues');
+        // 7. SYNC QUEUES — insert missing only
+        console.log("Syncing Queues (insert missing, ignore existing)...");
+        const [existingQueues] = await connection.query('SELECT id FROM queues');
         const existingQueueIds = new Set(existingQueues.map(q => q.id));
-        
+        let queuesInserted = 0;
         for (const q of inMemoryDb.queues) {
-            if (existingQueueIds.has(q.id)) {
-                // Update existing queue but preserve joined_at
-                await connection.query(
-                    `UPDATE queues SET vendor_id=?, user_id=?, status=? WHERE id=?`,
-                    [q.vendor_id, q.user_id, q.status, q.id]
-                );
-            } else {
-                // Insert new queue
-                await connection.query(
-                    `INSERT INTO queues (id, vendor_id, user_id, status, joined_at)
-                     VALUES (?, ?, ?, ?, ?)`,
-                    [q.id, q.vendor_id, q.user_id, q.status, q.joined_at || new Date()]
-                );
-            }
+            if (existingQueueIds.has(q.id)) continue;
+            await connection.query(
+                `INSERT IGNORE INTO queues (id, vendor_id, user_id, status, joined_at)
+                 VALUES (?, ?, ?, ?, ?)`,
+                [q.id, q.vendor_id, q.user_id, q.status, q.joined_at || new Date()]
+            );
+            queuesInserted++;
         }
-        
-        // Preserve queues from MySQL that aren't in local (yesterday's data)
-        console.log(`Synced ${inMemoryDb.queues.length} queues from local, preserved ${existingQueues.length} total queues in MySQL`);
+        console.log(`Queues: inserted ${queuesInserted}, ignored ${inMemoryDb.queues.length - queuesInserted} existing`);
 
-        // 8. SYNC APPOINTMENTS (Preserve existing appointments from MySQL, including yesterday's)
-        console.log("Syncing Appointments...");
-        
-        // Fetch existing appointments to preserve them
-        const [existingAppointments] = await connection.query('SELECT * FROM appointments');
+        // 8. SYNC APPOINTMENTS — insert missing only
+        console.log("Syncing Appointments (insert missing, ignore existing)...");
+        const [existingAppointments] = await connection.query('SELECT id FROM appointments');
         const existingAppointmentIds = new Set(existingAppointments.map(a => a.id));
-        
+        let appointmentsInserted = 0;
         for (const a of inMemoryDb.appointments) {
-            if (existingAppointmentIds.has(a.id)) {
-                // Update existing appointment but preserve created_at
-                await connection.query(
-                    `UPDATE appointments SET vendor_id=?, user_id=?, date=?, time=?, status=? WHERE id=?`,
-                    [a.vendor_id, a.user_id, a.date, a.time, a.status, a.id]
-                );
-            } else {
-                // Insert new appointment
-                await connection.query(
-                    `INSERT INTO appointments (id, vendor_id, user_id, date, time, status, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                    [a.id, a.vendor_id, a.user_id, a.date, a.time, a.status, a.created_at || new Date()]
-                );
-            }
+            if (existingAppointmentIds.has(a.id)) continue;
+            await connection.query(
+                `INSERT IGNORE INTO appointments (id, vendor_id, user_id, date, time, status, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [a.id, a.vendor_id, a.user_id, a.date, a.time, a.status, a.created_at || new Date()]
+            );
+            appointmentsInserted++;
         }
-        
-        // Preserve appointments from MySQL that aren't in local (yesterday's data)
-        const preservedAppointments = existingAppointments.filter(ea => !inMemoryDb.appointments.find(a => a.id === ea.id));
-        console.log(`Synced ${inMemoryDb.appointments.length} appointments from local, preserved ${existingAppointments.length} total appointments in MySQL (${preservedAppointments.length} from previous days)`);
+        console.log(`Appointments: inserted ${appointmentsInserted}, ignored ${inMemoryDb.appointments.length - appointmentsInserted} existing`);
 
         // 9. SYNC SYSTEM SETTINGS
         console.log("Syncing System Settings...");
@@ -658,7 +737,7 @@ async function sync() {
         `);
         for (const [key, val] of Object.entries(inMemoryDb.settings)) {
              await connection.query(
-                'INSERT INTO system_settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value=VALUES(value)',
+                'INSERT IGNORE INTO system_settings (key_name, value) VALUES (?, ?)',
                 [key, String(val)]
             );
         }
@@ -716,14 +795,8 @@ async function sync() {
         console.log("Syncing Matchmaking Templates...");
         for (const t of inMemoryDb.matchmaking_templates || []) {
             await connection.query(
-                `INSERT INTO matchmaking_templates (vendor_id, template_name, selected_preset, template_json, scoring_json, is_active)
-                 VALUES (?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    template_name=VALUES(template_name),
-                    selected_preset=VALUES(selected_preset),
-                    template_json=VALUES(template_json),
-                    scoring_json=VALUES(scoring_json),
-                    is_active=VALUES(is_active)`,
+                `INSERT IGNORE INTO matchmaking_templates (vendor_id, template_name, selected_preset, template_json, scoring_json, is_active)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
                 [
                     t.vendor_id,
                     t.template_name,
@@ -735,6 +808,28 @@ async function sync() {
             );
         }
 
+        // 12. ENSURE USER-VENDOR MAPPINGS TABLE
+        console.log("Ensuring User-Vendor Mappings Table...");
+        await connection.query(`
+            CREATE TABLE IF NOT EXISTS user_vendor_mappings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(64) NOT NULL,
+                vendor_id VARCHAR(64) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_user_vendor (user_id, vendor_id),
+                INDEX idx_user (user_id),
+                INDEX idx_vendor (vendor_id)
+            )
+        `);
+        console.log("Syncing User-Vendor Mappings...");
+        for (const m of inMemoryDb.user_vendor_mappings || []) {
+            await connection.query(
+                `INSERT IGNORE INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())`,
+                [m.user_id, m.vendor_id]
+            );
+        }
+        console.log(`Synced ${(inMemoryDb.user_vendor_mappings || []).length} user-vendor mappings`);
+
         console.log("Sync Completed Successfully!");
 
     } catch (e) {
@@ -744,5 +839,9 @@ async function sync() {
     }
 }
 
-sync();
+if (require.main === module) {
+    sync();
+}
+
+module.exports = { sync, ensureCoreTables };
 

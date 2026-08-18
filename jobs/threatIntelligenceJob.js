@@ -29,7 +29,7 @@ class ThreatIntelligenceJob {
             LOG.info('[Threat Intelligence Job] Starting daily threat scan...');
 
             // Scan threats (force = false to respect 4-hour cooldown)
-            const threats = await threatIntelligenceService.scanThreats(force);
+            const threats = await threatIntelligenceService.scanThreats(false);
             
             // Save threats
             const result = await threatIntelligenceService.saveThreats(threats);
@@ -48,7 +48,7 @@ class ThreatIntelligenceJob {
 
             LOG.success(`[Threat Intelligence Job] Scan complete: ${result.saved} threats saved`);
         } catch (error) {
-            LOG.error('[Threat Intelligence Job] Error running scan:', error);
+            LOG.error('[Threat Intelligence Job] Error running scan:', error.message);
         } finally {
             this.isRunning = false;
         }
@@ -73,15 +73,11 @@ class ThreatIntelligenceJob {
      * Schedule runs with configurable interval
      */
     async schedule() {
-        // Run immediately on startup
-        this.run();
-
-        // Get interval from settings
         this.currentInterval = await this.getScanInterval();
         await this._scheduleWithInterval(this.currentInterval);
 
-        // Also set up a listener to reschedule when settings pchange
-        if (this.io) {
+        if (this.io && !this._settingsBound) {
+            this._settingsBound = true;
             this.io.on('settings_updated', async (newSettings) => {
                 if (newSettings.threat_scan_interval !== undefined) {
                     const newInterval = Math.max(1, Math.min(24, parseInt(newSettings.threat_scan_interval)));
@@ -127,6 +123,14 @@ class ThreatIntelligenceJob {
             clearInterval(this.intervalId);
         }
         await this._scheduleWithInterval(this.currentInterval);
+    }
+
+    stop() {
+        if (this.intervalId) {
+            clearInterval(this.intervalId);
+            this.intervalId = null;
+        }
+        this.isRunning = false;
     }
 }
 

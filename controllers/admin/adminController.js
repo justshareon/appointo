@@ -153,6 +153,114 @@ class AdminController {
             });
         }
     }
+
+    /**
+     * GET /api/admin/users-with-mappings
+     */
+    async getUsersWithMappings(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const data = await adminService.getUsersWithMappings();
+            res.json(data);
+        } catch (err) {
+            LOG.error('Admin get users with mappings failed', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    }
+
+    /**
+     * POST /api/admin/users
+     */
+    async createUser(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const result = await adminService.createUser(req.body);
+            res.json(result);
+        } catch (err) {
+            LOG.error('Admin create user failed', err.message);
+            const statusCode = err.message.includes('required') ? 400 : 500;
+            res.status(statusCode).json({ error: err.message });
+        }
+    }
+
+    /**
+     * PUT /api/admin/users/:userId
+     */
+    async updateUser(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const result = await adminService.updateUser(req.params.userId, req.body);
+            res.json(result);
+        } catch (err) {
+            LOG.error('Admin update user failed', err.message);
+            const statusCode = err.message.includes('not found') ? 404 : 500;
+            res.status(statusCode).json({ error: err.message });
+        }
+    }
+
+    /**
+     * DELETE /api/admin/users/:userId
+     */
+    async deleteUser(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const result = await adminService.deleteUser(req.params.userId);
+            res.json(result);
+        } catch (err) {
+            LOG.error('Admin delete user failed', err.message);
+            const statusCode = err.message.includes('not found') ? 404 : 500;
+            res.status(statusCode).json({ error: err.message });
+        }
+    }
+
+    /**
+     * POST /api/admin/user-vendor-mapping
+     */
+    async addUserVendorMapping(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const { userId, vendorId } = req.body;
+            if (!userId || !vendorId) {
+                return res.status(400).json({ error: 'userId and vendorId are required' });
+            }
+            const result = await adminService.addUserVendorMapping(userId, vendorId);
+            res.json(result);
+        } catch (err) {
+            LOG.error('Admin add mapping failed', err.message);
+            const statusCode = err.message.includes('not found') ? 404 : 500;
+            res.status(statusCode).json({ error: err.message });
+        }
+    }
+
+    /**
+     * DELETE /api/admin/user-vendor-mapping
+     */
+    async removeUserVendorMapping(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const { userId, vendorId } = req.body?.userId ? req.body : req.query;
+            if (!userId || !vendorId) {
+                return res.status(400).json({ error: 'userId and vendorId are required' });
+            }
+            const result = await adminService.removeUserVendorMapping(userId, vendorId);
+            res.json(result);
+        } catch (err) {
+            LOG.error('Admin remove mapping failed', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    }
 }
 
 module.exports = new AdminController();

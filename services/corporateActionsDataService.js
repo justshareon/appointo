@@ -5,6 +5,7 @@
  */
 const db = require('../database');
 const LOG = require('../utils/logger');
+const { CA_CAP, capByDate } = require('../database/featureMemoryManager');
 
 class CorporateActionsDataService {
     constructor() {
@@ -110,16 +111,18 @@ class CorporateActionsDataService {
         if (!pool || pool === null || pool === undefined) {
             // Use in-memory storage
             const inMemoryDb = this.getInMemoryDb();
-            actionsData.forEach(action => {
-                inMemoryDb.push({
-                    ...action,
-                    id: Date.now() + Math.random(),
-                    created_at: new Date(),
-                    updated_at: new Date()
-                });
-            });
-            LOG.success(`[Corporate Actions] Inserted ${actionsData.length} records in memory`);
-            return actionsData.length;
+            inMemoryDb.length = 0;
+            const capped = capByDate(actionsData, 'ex_date', CA_CAP);
+            for (let i = 0; i < capped.length; i += 1) {
+                const action = capped[i];
+                action.id = i + 1;
+                inMemoryDb.push(action);
+            }
+            if (actionsData.length > capped.length) {
+                LOG.info(`[Corporate Actions] Capped in-memory rows ${actionsData.length} -> ${capped.length}`);
+            }
+            LOG.success(`[Corporate Actions] Inserted ${capped.length} records in memory`);
+            return capped.length;
         }
 
         try {

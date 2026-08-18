@@ -1,18 +1,33 @@
 /**
- * Database Module - Main Entry Point (Optimized)
- * 
- * This module provides a backward-compatible interface to the database.
- * It loads the original database.js and re-exports it, allowing for
- * gradual migration to a modular structure.
- * 
- * For now, it simply re-exports from the original database.js file.
- * Feature modules can be added later for lazy loading.
+ * Database module index — connects main database.js with per-feature lazy pools.
  */
-
-// Load the original database.js (backward compatible)
-// This ensures all existing code continues to work
 const originalDb = require('../database');
+const featureConnectionManager = require('./featureConnectionManager');
 
-// Re-export everything from original database.js
-module.exports = originalDb;
+function asFeature(mod, name) {
+    if (typeof mod === 'function') {
+        return { feature: name, create: mod };
+    }
+    return mod;
+}
 
+const features = {
+    core: require('./features/core'),
+    trade: require('./features/trade'),
+    fleet: require('./features/fleet'),
+    cyber: require('./features/cyber'),
+    trust_score: require('./features/trust_score'),
+    offer: require('./features/offer'),
+    qless: asFeature(require('./features/qless'), 'qless'),
+    realestate: asFeature(require('./features/realestate'), 'realestate'),
+    matchmaking: asFeature(require('./features/matchmaking'), 'matchmaking'),
+    queue: asFeature(require('./features/queue'), 'queue'),
+    appointments: asFeature(require('./features/appointments'), 'appointments'),
+    shopping: asFeature(require('./features/shopping'), 'shopping'),
+};
+
+module.exports = {
+    ...originalDb,
+    featureConnectionManager,
+    features,
+};

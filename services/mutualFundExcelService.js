@@ -221,8 +221,7 @@ class MutualFundExcelService {
             risk: mapping.risk !== undefined ? mapping.risk : defaultMapping.risk,
         };
 
-        LOG.info(`[Mutual Fund Excel] Detected column mapping:`, finalMapping);
-        LOG.info(`[Mutual Fund Excel] Header row:`, headerRow);
+        LOG.info(`[Mutual Fund Excel] Detected column mapping for headers (${headerRow.length} cols)`);
 
         return finalMapping;
     }
@@ -259,14 +258,6 @@ class MutualFundExcelService {
         const mapping = this.detectColumnMapping(headerRow);
         const fundData = [];
 
-        // Log first few data rows for debugging
-        if (dataRows.length > 0) {
-            LOG.info(`[Mutual Fund Excel] Sample data rows from "${sheetName}" (first 3):`);
-            dataRows.slice(0, 3).forEach((row, idx) => {
-                LOG.info(`[Mutual Fund Excel] Row ${idx + 1}:`, row);
-            });
-        }
-
         for (const row of dataRows) {
             if (!row || row.length === 0) {
                 continue;
@@ -291,16 +282,6 @@ class MutualFundExcelService {
                     risk: String(row[mapping.risk] || '').trim() || null,
                     sheet_name: sheetName,
                 };
-
-                // Log sample fund for debugging
-                if (fundData.length < 2) {
-                    LOG.info(`[Mutual Fund Excel] Sample fund ${fundData.length + 1}:`, {
-                        fund_name: fund.fund_name,
-                        category: fund.category,
-                        nav: fund.nav,
-                        returns: fund.returns
-                    });
-                }
 
                 fundData.push(fund);
             } catch (error) {

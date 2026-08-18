@@ -42,14 +42,7 @@ class MutualFundSyncJob {
             timezone: "Asia/Kolkata"
         });
 
-        LOG.success('[Mutual Fund Sync] Scheduled successfully');
-
-        setTimeout(() => {
-            LOG.info('[Mutual Fund Sync] Running initial sync...');
-            this.sync(true).catch(err => {
-                LOG.error('[Mutual Fund Sync] Initial sync failed:', err.message);
-            });
-        }, 5000);
+        LOG.success('[Mutual Fund Sync] Scheduled successfully (lazy-load on first /trade use)');
     }
 
     stop() {

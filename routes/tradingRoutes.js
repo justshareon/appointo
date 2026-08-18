@@ -19,6 +19,7 @@ const settingsService = require('../services/settingsService');
 const newsCacheService = require('../services/newsCacheService');
 const rssNewsService = require('../services/rssNewsService');
 const LOG = require('../utils/logger');
+const featureMemory = require('../database/featureMemoryManager');
 
 /**
  * Middleware to disable ETags and caching for trading routes
@@ -34,6 +35,14 @@ const disableCaching = (req, res, next) => {
 
 // Apply caching disable middleware to all trading routes
 router.use(disableCaching);
+router.use(async (req, res, next) => {
+    try {
+        await featureMemory.ensureFeature('trade', { mode: 'heavy' });
+    } catch (err) {
+        LOG.warning('[Trading] Lazy feature load skipped:', err.message);
+    }
+    next();
+});
 
 /**
  * GET /api/trading/quote
@@ -274,23 +283,10 @@ router.get('/top-gainers', async (req, res) => {
                 });
             }
             
-            // Fallback to Yahoo Finance if no local data
             if (!gainers || gainers.length === 0) {
-                LOG.warning('[Trading Routes] No gainers found in database, attempting fallback to Yahoo Finance API...');
-                try {
-                    gainers = await yahooFinanceService.getTopGainers(limit);
-                    LOG.info(`[Trading Routes] Retrieved ${gainers?.length || 0} gainers from Yahoo Finance API`);
-                } catch (yahooErr) {
-                    LOG.warning('[Trading Routes] Yahoo Finance fallback also failed:', yahooErr.message);
-                    LOG.warning('[Trading Routes] Possible reasons:');
-                    LOG.warning('[Trading Routes]   1. Excel file sync has not run yet');
-                    LOG.warning('[Trading Routes]   2. Excel file is empty or has no data');
-                    LOG.warning('[Trading Routes]   3. No stocks with positive per_change');
-                    LOG.warning('[Trading Routes]   4. Database connection issue');
-                    LOG.warning(`[Trading Routes]   5. Total stocks in DB: ${totalStocks}`);
-                    LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-                    LOG.warning('[Trading Routes] Run diagnostics at /api/trading/diagnostics');
-                }
+                LOG.warning('[Trading Routes] No gainers found in database');
+                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
+                LOG.warning('[Trading Routes] Run diagnostics at /api/trading/diagnostics');
             } else {
                 LOG.info(`[Trading Routes] Found ${gainers.length} gainers in database`);
             }

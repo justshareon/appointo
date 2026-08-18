@@ -5,6 +5,11 @@ const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const LOG = require('../utils/logger');
+const featureMemory = require('../database/featureMemoryManager');
+
+const FEATURE_QUERY_KEYS = new Set([
+    'trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score', 'matchmaking',
+]);
 
 /**
  * GET /api/vendors
@@ -12,6 +17,10 @@ const LOG = require('../utils/logger');
  */
 router.get('/', async (req, res) => {
     try {
+        const feature = String(req.query.feature || '').toLowerCase();
+        if (FEATURE_QUERY_KEYS.has(feature)) {
+            await featureMemory.ensureFeature(feature, { mode: 'basic' });
+        }
         const vendors = await vendorService.getVendors(req);
         res.json(vendors);
     } catch (err) {
