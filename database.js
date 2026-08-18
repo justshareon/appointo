@@ -1,7 +1,8 @@
+require('./loadEnv');
+const path = require('path');
 const mysql = require('mysql2');
 const fs = require('fs');
-const path = require('path');
-require('dotenv').config();
+const { logDbAccess } = require('./utils/dbTiming');
 const {
     MATCHMAKING_PRESETS,
     deepClone,
@@ -9,13 +10,28 @@ const {
     calculateMatchmakingScore,
     buildAiInsight
 } = require('./matchmakingEngine');
+const featureConnectionManager = require('./database/featureConnectionManager');
 
-// Import test data from data.js
-let testData = {};
-try {
-    testData = require('./database/data.js');
-} catch (error) {
-    console.warn('[DB] Could not load test data from data.js:', error.message);
+/** Resolve MySQL pool for current request (lazy, feature-aware). */
+const getPool = () => featureConnectionManager.getPool();
+
+const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score'];
+const isFeatureFlagOn = (v, feature) => {
+    const val = v?.[`features_${feature}`];
+    return val === true || val === 1 || val === '1';
+};
+
+// Feature seed in data.js is loaded only when that feature is first opened.
+let testData = null;
+function getTestData() {
+    if (testData) return testData;
+    try {
+        testData = require('./database/data.js');
+    } catch (error) {
+        console.warn('[DB] Could not load test data from data.js:', error.message);
+        testData = {};
+    }
+    return testData;
 }
 
 const LOG_FILE = path.join(__dirname, 'error.log');
@@ -92,7 +108,9 @@ let inMemoryDb = {
         { id: 'usr_realuser1', name: 'Realestate User 1', email: 'realuser1@test.com', mobile: '8000000009', role: 'user', location_name: 'Bangalore' },
         { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
         { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
-        { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' }
+        { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' },
+        { id: 'usr_trust1', name: 'Trust User 1', email: 'trust1@test.com', mobile: '8000000101', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' }
     ],
     vendors: [
         {
@@ -278,6 +296,8 @@ let inMemoryDb = {
             features_queue: false,
             features_matchmaking: false,
             features_offer: true,
+            current_offer: 'Launch offer · up to 40% off',
+            location_name: 'Mumbai',
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false
@@ -295,10 +315,10 @@ let inMemoryDb = {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true,
-            features_queue: true,
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
             features_matchmaking: false,
             features_qless: true,
             visibility_top_rated: false,
@@ -318,10 +338,10 @@ let inMemoryDb = {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true,
-            features_queue: true,
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
             features_matchmaking: false,
             features_fleet: true,
             visibility_top_rated: false,
@@ -341,10 +361,10 @@ let inMemoryDb = {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true,
-            features_queue: true,
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
             features_matchmaking: false,
             features_realestate: true,
             visibility_top_rated: false,
@@ -364,12 +384,36 @@ let inMemoryDb = {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_cyber: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        },
+        {
+            id: 'v_trust1',
+            owner_id: 'usr_trustvendor1',
+            shop_name: 'Trust Score Services',
+            category: 'Trust Services',
+            is_active: true,
+            is_promoted: false,
+            latitude: 19.1136,
+            longitude: 72.8697,
+            location_name: 'Mumbai',
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
             features_products: true,
             features_payments: true,
             features_appointments: true,
             features_queue: true,
             features_matchmaking: false,
-            features_cyber: true,
+            features_trust_score: true,
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false
@@ -384,274 +428,10 @@ let inMemoryDb = {
     callHistory: [],
     communityReports: [],
     // Cyber Threats (User-reported threats) - Test data based on real internet searches
-    cyberThreats: [
-        // Phone Scams (Most Common)
-        {
-            id: 'threat_phone_001',
-            user_id: 'usr_user',
-            type: 'phone',
-            value: '9876543210',
-            title: 'Fake Bank OTP Scam',
-            description: 'Caller claiming to be from SBI asking for OTP to verify account. Multiple users reported.',
-            severity: 'high',
-            category: 'scam',
-            tags: ['bank', 'otp', 'sbi', 'fraud'],
-            report_count: 45,
-            reported_by: ['usr_user', 'usr_u1', 'usr_u2'],
-            status: 'active',
-            verified: true,
-            verified_by: 'admin',
-            location: 'Mumbai',
-            created_at: new Date('2024-01-10'),
-            updated_at: new Date('2024-01-14')
-        },
-        {
-            id: 'threat_phone_002',
-            user_id: 'usr_u1',
-            type: 'phone',
-            value: '9876543211',
-            title: 'Income Tax Refund Scam',
-            description: 'Caller claiming income tax refund and asking for bank details. Reported by 32 users.',
-            severity: 'high',
-            category: 'fraud',
-            tags: ['income-tax', 'refund', 'bank-details'],
-            report_count: 32,
-            reported_by: ['usr_u1', 'usr_u2', 'usr_u3'],
-            status: 'active',
-            verified: true,
-            location: 'Delhi',
-            created_at: new Date('2024-01-08'),
-            updated_at: new Date('2024-01-13')
-        },
-        {
-            id: 'threat_phone_003',
-            user_id: 'usr_u2',
-            type: 'phone',
-            value: '9876543212',
-            title: 'KYC Update Scam',
-            description: 'Caller asking to update KYC by clicking link. Multiple reports from Bangalore.',
-            severity: 'critical',
-            category: 'phishing',
-            tags: ['kyc', 'link', 'update'],
-            report_count: 67,
-            reported_by: ['usr_u2', 'usr_u4', 'usr_u5'],
-            status: 'active',
-            verified: true,
-            location: 'Bangalore',
-            created_at: new Date('2024-01-05'),
-            updated_at: new Date('2024-01-15')
-        },
-        // Email Threats
-        {
-            id: 'threat_email_001',
-            user_id: 'usr_u3',
-            type: 'email',
-            value: 'support@bank-sbi-update.com',
-            title: 'Phishing Email - Fake SBI',
-            description: 'Phishing email claiming to be from SBI asking for login credentials. Reported by 28 users.',
-            severity: 'high',
-            category: 'phishing',
-            tags: ['email', 'sbi', 'phishing', 'credentials'],
-            report_count: 28,
-            reported_by: ['usr_u3', 'usr_u1'],
-            status: 'active',
-            verified: true,
-            location: 'Pune',
-            created_at: new Date('2024-01-09'),
-            updated_at: new Date('2024-01-12')
-        },
-        {
-            id: 'threat_email_002',
-            user_id: 'usr_u4',
-            type: 'email',
-            value: 'noreply@paytm-security.com',
-            title: 'Fake Paytm Security Alert',
-            description: 'Fake Paytm security alert email asking to verify account. Multiple reports.',
-            severity: 'medium',
-            category: 'phishing',
-            tags: ['paytm', 'security', 'alert'],
-            report_count: 19,
-            reported_by: ['usr_u4', 'usr_u5'],
-            status: 'active',
-            verified: false,
-            location: 'Mumbai',
-            created_at: new Date('2024-01-11'),
-            updated_at: new Date('2024-01-14')
-        },
-        // URL Threats
-        {
-            id: 'threat_url_001',
-            user_id: 'usr_u5',
-            type: 'url',
-            value: 'https://sbi-online-verify.in',
-            title: 'Fake SBI Website',
-            description: 'Fake SBI website designed to steal banking credentials. Reported by 54 users.',
-            severity: 'critical',
-            category: 'phishing',
-            tags: ['url', 'sbi', 'fake-website', 'credentials'],
-            report_count: 54,
-            reported_by: ['usr_u5', 'usr_user', 'usr_u1'],
-            status: 'active',
-            verified: true,
-            location: 'Delhi',
-            created_at: new Date('2024-01-07'),
-            updated_at: new Date('2024-01-15')
-        },
-        {
-            id: 'threat_url_002',
-            user_id: 'usr_user',
-            type: 'url',
-            value: 'http://paytm-kyc-update.com',
-            title: 'Fake Paytm KYC Portal',
-            description: 'Fake Paytm KYC update portal. Multiple users reported losing money.',
-            severity: 'critical',
-            category: 'fraud',
-            tags: ['paytm', 'kyc', 'fake-portal'],
-            report_count: 41,
-            reported_by: ['usr_user', 'usr_u2'],
-            status: 'active',
-            verified: true,
-            location: 'Bangalore',
-            created_at: new Date('2024-01-06'),
-            updated_at: new Date('2024-01-13')
-        },
-        // UPI Threats
-        {
-            id: 'threat_upi_001',
-            user_id: 'usr_u1',
-            type: 'upi',
-            value: 'fraud@paytm',
-            title: 'Fake UPI ID - Money Theft',
-            description: 'UPI ID used to receive fraudulent payments. Multiple victims reported.',
-            severity: 'high',
-            category: 'fraud',
-            tags: ['upi', 'paytm', 'money-theft'],
-            report_count: 23,
-            reported_by: ['usr_u1', 'usr_u3'],
-            status: 'active',
-            verified: true,
-            location: 'Mumbai',
-            created_at: new Date('2024-01-12'),
-            updated_at: new Date('2024-01-14')
-        },
-        // More Phone Scams
-        {
-            id: 'threat_phone_004',
-            user_id: 'usr_u2',
-            type: 'phone',
-            value: '9876543213',
-            title: 'Credit Card Activation Scam',
-            description: 'Caller claiming credit card needs activation and asking for card details.',
-            severity: 'high',
-            category: 'scam',
-            tags: ['credit-card', 'activation', 'card-details'],
-            report_count: 38,
-            reported_by: ['usr_u2', 'usr_u4'],
-            status: 'active',
-            verified: true,
-            location: 'Delhi',
-            created_at: new Date('2024-01-11'),
-            updated_at: new Date('2024-01-15')
-        },
-        {
-            id: 'threat_phone_005',
-            user_id: 'usr_u3',
-            type: 'phone',
-            value: '9876543214',
-            title: 'Lottery Winner Scam',
-            description: 'Caller claiming lottery win and asking for processing fee. Classic scam.',
-            severity: 'medium',
-            category: 'scam',
-            tags: ['lottery', 'winner', 'processing-fee'],
-            report_count: 15,
-            reported_by: ['usr_u3'],
-            status: 'active',
-            verified: false,
-            location: 'Pune',
-            created_at: new Date('2024-01-13'),
-            updated_at: new Date('2024-01-13')
-        },
-        {
-            id: 'threat_phone_006',
-            user_id: 'usr_u4',
-            type: 'phone',
-            value: '9876543215',
-            title: 'SIM Card Deactivation Scam',
-            description: 'Caller claiming SIM will be deactivated and asking for personal details.',
-            severity: 'high',
-            category: 'fraud',
-            tags: ['sim', 'deactivation', 'personal-details'],
-            report_count: 29,
-            reported_by: ['usr_u4', 'usr_u5'],
-            status: 'active',
-            verified: true,
-            location: 'Bangalore',
-            created_at: new Date('2024-01-09'),
-            updated_at: new Date('2024-01-14')
-        }
-    ],
-    threatAlerts: [
-        {
-            id: 'alert_001',
-            threat_id: 'threat_phone_001',
-            user_id: null,
-            type: 'threat_alert',
-            title: 'New High Severity Threat: Fake Bank OTP Scam',
-            message: 'A high severity threat has been reported. Be cautious of calls asking for OTP.',
-            threat_data: { type: 'phone', severity: 'high' },
-            read: false,
-            created_at: new Date('2024-01-10')
-        },
-        {
-            id: 'alert_002',
-            threat_id: 'threat_url_001',
-            user_id: null,
-            type: 'threat_alert',
-            title: 'Critical Threat: Fake SBI Website Detected',
-            message: 'A fake SBI website has been reported. Do not enter credentials on suspicious sites.',
-            threat_data: { type: 'url', severity: 'critical' },
-            read: false,
-            created_at: new Date('2024-01-07')
-        }
-    ],
+    cyberThreats: [],
+    threatAlerts: [],
     // Cyber Security Tips
-    cyberSecurityTips: [
-        {
-            id: 1,
-            title: 'Use Strong, Unique Passwords',
-            description: 'Create passwords with at least 12 characters, mixing letters, numbers, and symbols.',
-            category: 'Password',
-            priority: 'high'
-        },
-        {
-            id: 2,
-            title: 'Enable Two-Factor Authentication',
-            description: 'Add an extra layer of security to your accounts with 2FA.',
-            category: 'Authentication',
-            priority: 'high'
-        },
-        {
-            id: 3,
-            title: 'Keep Software Updated',
-            description: 'Regularly update your operating system and apps to patch security vulnerabilities.',
-            category: 'Updates',
-            priority: 'high'
-        },
-        {
-            id: 4,
-            title: 'Be Wary of Phishing Emails',
-            description: 'Never click links or download attachments from suspicious emails.',
-            category: 'Phishing',
-            priority: 'medium'
-        },
-        {
-            id: 5,
-            title: 'Use VPN on Public WiFi',
-            description: 'Protect your data when using public WiFi networks with a VPN.',
-            category: 'Network',
-            priority: 'medium'
-        }
-    ],
+    cyberSecurityTips: [],
     products: [
         {
             id: 1, vendor_id: 'v_1', name: 'Dental Cleaning Package', price: 999, offer: '10% OFF', offer_amount: 100,
@@ -736,53 +516,51 @@ let inMemoryDb = {
         { id: 1, type: 'appointment', vendor_id: 'v_new1', userId: 'usr_u1', userName: 'User One', message: 'booked an appointment at Vendor One Shop', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
         { id: 2, type: 'review', vendor_id: 'v_5', userId: 'usr_rahul', userName: 'Rahul Sharma', message: 'rated Super Market 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
     ],
+    user_vendor_mappings: [
+        { id: 1, user_id: 'usr_user', vendor_id: 'v_1' },
+        { id: 2, user_id: 'usr_user', vendor_id: 'v_new1' },
+        { id: 3, user_id: 'usr_u1', vendor_id: 'v_new1' },
+        { id: 4, user_id: 'usr_u2', vendor_id: 'v_new1' },
+        { id: 5, user_id: 'usr_u3', vendor_id: 'v_new1' },
+        { id: 6, user_id: 'usr_u4', vendor_id: 'v_new1' },
+        { id: 7, user_id: 'usr_u5', vendor_id: 'v_new1' },
+        { id: 8, user_id: 'usr_temple_user', vendor_id: 'v_4' },
+        { id: 9, user_id: 'usr_rahul', vendor_id: 'v_5' },
+        { id: 10, user_id: 'usr_new_patient', vendor_id: 'v_3' },
+        { id: 11, user_id: 'usr_trade1', vendor_id: 'v_trade1' },
+        { id: 12, user_id: 'usr_offer1', vendor_id: 'v_offer1' },
+        { id: 13, user_id: 'usr_qlessuser1', vendor_id: 'v_qless1' },
+        { id: 14, user_id: 'usr_fleetuser1', vendor_id: 'v_fleet1' },
+        { id: 15, user_id: 'usr_realuser1', vendor_id: 'v_realestate1' },
+        { id: 16, user_id: 'usr_cyber1', vendor_id: 'v_cyber1' },
+        { id: 17, user_id: 'usr_match_u1', vendor_id: 'v_match_super' },
+        { id: 18, user_id: 'usr_match_u2', vendor_id: 'v_match_super' },
+        { id: 19, user_id: 'usr_trust1', vendor_id: 'v_trust1' },
+    ],
     // System Settings
     settings: {
-        enable_queue: false,
-        enable_appointments: false,
-        enable_shopping: false,
-        enable_matchmaking: false,
-        enable_offer: false,
+        enable_queue: true,
+        enable_appointments: true,
+        enable_shopping: true,
+        enable_matchmaking: true,
+        enable_offer: true,
         enable_trade: true,
-        enable_qless: false,
+        enable_qless: true,
         enable_fleet: true,
-        enable_realestate: false,
+        enable_realestate: true,
         enable_cyber: true,
+        enable_trust_score: true,
         theme_position: 'auto',
         enable_news: true,
         news_user_emails: 'newsuser11',
         news_vendor_emails: 'newsvendor1@test.com'
     },
-    matchmaking_templates: [
-        {
-            vendor_id: 'v_match_super',
-            template_name: 'Super Admin Matchmaking Basic',
-            selected_preset: 'classic_marriage_v1',
-            questions: [
-                {
-                    id: 'q_super_1',
-                    text: 'How do you prefer to spend weekends?',
-                    options: [
-                        { id: 'a', label: 'With family and close friends', marks: 10, tags: ['family', 'home'] },
-                        { id: 'b', label: 'Social events and travel', marks: 8, tags: ['travel', 'social'] },
-                        { id: 'c', label: 'Alone with no interaction', marks: -2, tags: ['solo'] }
-                    ]
-                },
-                {
-                    id: 'q_super_2',
-                    text: 'How do you handle disagreements?',
-                    options: [
-                        { id: 'a', label: 'Calm discussion and understanding', marks: 10, tags: ['communication', 'respect'] },
-                        { id: 'b', label: 'Take time and resolve later', marks: 6, tags: ['balanced'] },
-                        { id: 'c', label: 'Anger and blame', marks: -5, tags: ['anger'] }
-                    ]
-                }
-            ],
-            scoring: { pass: 50, good: 70, best: 90 },
-            is_active: true
-        }
-    ],
+    matchmaking_templates: [],
     matchmaking_submissions: [],
+    trustScoreProjects: [],
+    trustScoreFraudAlerts: [],
+    boardMeetings: [],
+    corporateActions: [],
     tradingWatchlists: {}, // User watchlists: { userId: [{ symbol, addedAt }] }
     tradingPortfolios: {}, // User portfolios: { userId: { holdings: [], positions: [], overallReturns: {} } }
     tradingOrders: {}, // User orders: { userId: [{ id, symbol, type, quantity, price, status, createdAt }] }
@@ -797,53 +575,13 @@ let inMemoryDb = {
     }
 };
 
-// --- MYSQL CONNECTION ---
-let pool;
-if (DB_TYPE === 'mysql') {
-    LOG.info(`Connecting to MySQL at ${process.env.DB_HOST}:${process.env.DB_PORT || 3306}...`);
-    pool = mysql.createPool({
-        host: process.env.DB_HOST || 'localhost',
-        port: process.env.DB_PORT || 3306,
-        user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASSWORD || 'root',
-        database: process.env.DB_NAME || 'qr_queue',
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        ssl: {
-            rejectUnauthorized: false
-        }
-    }).promise();
+// --- MYSQL CONNECTION (lazy via featureConnectionManager — no pool at startup) ---
+// Pool opens only when a feature route is hit (core for auth/login, trade for trading, etc.)
+// and closes after idle timeout when no requests are using that feature.
 
-    // Error handling for the pool
-    pool.on('error', (err) => {
-        LOG.error('Unexpected database pool error', err.message);
-        if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-            LOG.warning('Database connection lost. Reconnecting...');
-        }
-    });
-
-    // Test connection after a delay to ensure the server starts up first
-    setTimeout(() => {
-        LOG.info("Testing database connection (delayed)...");
-        pool.getConnection()
-            .then(conn => {
-                LOG.success("MySQL Database Connected successfully!");
-                conn.release();
-            })
-            .catch(err => {
-                LOG.error("MySQL Connection Failed!", err.message);
-                LOG.warning("Verify TiDB IP Whitelist (0.0.0.0/0) and Render Env Variables.");
-            });
-    }, 5000);
-}
-
-// Cleanup on exit
+// Cleanup delegated to featureConnectionManager
 process.on('SIGINT', async () => {
-    if (pool) {
-        LOG.info('Closing database pool...');
-        await pool.end();
-    }
+    await featureConnectionManager.closeAll();
     process.exit(0);
 });
 
@@ -874,8 +612,8 @@ const toMysqlDateTime = (date) => {
 
 let matchmakingTablesReady = false;
 const ensureMatchmakingTables = async () => {
-    if (!pool || matchmakingTablesReady) return;
-    await pool.query(`
+    if (!getPool() || matchmakingTablesReady) return;
+    await getPool().query(`
         CREATE TABLE IF NOT EXISTS matchmaking_templates (
             id INT AUTO_INCREMENT PRIMARY KEY,
             vendor_id VARCHAR(64) NOT NULL UNIQUE,
@@ -888,7 +626,7 @@ const ensureMatchmakingTables = async () => {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     `);
-    await pool.query(`
+    await getPool().query(`
         CREATE TABLE IF NOT EXISTS matchmaking_submissions (
             id INT AUTO_INCREMENT PRIMARY KEY,
             vendor_id VARCHAR(64) NOT NULL,
@@ -907,13 +645,32 @@ const ensureMatchmakingTables = async () => {
     matchmakingTablesReady = true;
 };
 
+const dbContext = require('./database/dbContext');
+dbContext.getPool = getPool;
+dbContext.inMemoryDb = inMemoryDb;
+dbContext.LOG = LOG;
+dbContext.DB_TYPE = DB_TYPE;
+dbContext.toMysqlDateTime = toMysqlDateTime;
+dbContext.normalizeProductRow = normalizeProductRow;
+dbContext.MATCHMAKING_PRESETS = MATCHMAKING_PRESETS;
+dbContext.deepClone = deepClone;
+dbContext.normalizeTemplate = normalizeTemplate;
+dbContext.calculateMatchmakingScore = calculateMatchmakingScore;
+dbContext.buildAiInsight = buildAiInsight;
+dbContext.ensureMatchmakingTables = ensureMatchmakingTables;
+
+const featureApi = (createFn) => {
+    const { feature, ...api } = createFn(dbContext);
+    return api;
+};
+
 let cyberThreatTablesReady = false;
 const ensureCyberThreatTables = async () => {
-    if (!pool || cyberThreatTablesReady) return;
+    if (!getPool() || cyberThreatTablesReady) return;
     
     try {
         // Cyber Threats Table
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS cyber_threats (
                 id VARCHAR(255) PRIMARY KEY,
                 user_id VARCHAR(64) NOT NULL,
@@ -944,7 +701,7 @@ const ensureCyberThreatTables = async () => {
         `);
         
         // Threat Alerts Table
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS threat_alerts (
                 id VARCHAR(255) PRIMARY KEY,
                 threat_id VARCHAR(255) NOT NULL,
@@ -975,9 +732,9 @@ const ensureCyberThreatTables = async () => {
  */
 let vendorFeatureColumnsReady = false;
 const ensureVendorFeatureColumns = async () => {
-    if (!pool || vendorFeatureColumnsReady) return;
+    if (!getPool() || vendorFeatureColumnsReady) return;
     try {
-        await pool.query(`
+        await getPool().query(`
             ALTER TABLE vendors
                 ADD COLUMN IF NOT EXISTS features_queue TINYINT(1) DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS features_matchmaking TINYINT(1) DEFAULT 0,
@@ -999,67 +756,113 @@ const ensureVendorFeatureColumns = async () => {
     }
 };
 
+let userVendorMappingTableReady = false;
+const ensureUserVendorMappingTable = async () => {
+    if (!getPool() || userVendorMappingTableReady) return;
+    try {
+        await getPool().query(`
+            CREATE TABLE IF NOT EXISTS user_vendor_mappings (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                user_id VARCHAR(64) NOT NULL,
+                vendor_id VARCHAR(64) NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_user_vendor (user_id, vendor_id),
+                INDEX idx_user (user_id),
+                INDEX idx_vendor (vendor_id)
+            )
+        `);
+        userVendorMappingTableReady = true;
+        LOG.success('[Database] user_vendor_mappings table ensured');
+    } catch (err) {
+        LOG.warning('[Database] Error ensuring user_vendor_mappings table:', err.message || err);
+    }
+};
+
+let usersUpdatedAtReady = false;
+const ensureUsersUpdatedAtColumn = async () => {
+    if (!getPool() || usersUpdatedAtReady) return;
+    try {
+        await getPool().query(`
+            ALTER TABLE users
+            ADD COLUMN updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+        `);
+        usersUpdatedAtReady = true;
+        LOG.success('[Database] users.updated_at column ensured');
+    } catch (err) {
+        if (/Duplicate column/i.test(err.message || '')) {
+            usersUpdatedAtReady = true;
+        } else {
+            LOG.warning('[Database] users.updated_at column (non-fatal):', err.message || err);
+        }
+    }
+};
+
+const stampUserUpdatedAt = async (userId) => {
+    const now = new Date();
+    const user = inMemoryDb.users.find(u => u.id === userId);
+    if (user) user.updated_at = now;
+    if (!getPool()) return;
+    try {
+        await ensureUsersUpdatedAtColumn();
+        await getPool().query('UPDATE users SET updated_at = NOW() WHERE id = ?', [userId]);
+    } catch (err) {
+        LOG.warning('[Database] stamp updated_at failed:', err.message || err);
+    }
+};
+
 /**
  * Ensure ALL test users and vendors are synced to MySQL on startup
  * Syncs ALL in-memory users/vendors to database, not just cyber ones
  */
 const ensureAllUsersAndVendors = async () => {
-    if (!pool) return;
+    if (!getPool()) return;
     
     try {
         // Ensure vendor feature/visibility columns exist
         await ensureVendorFeatureColumns();
+        await ensureUserVendorMappingTable();
+        await ensureUsersUpdatedAtColumn();
 
         // Sync ALL users from in-memory DB to MySQL
         LOG.info(`[All Users Sync] Starting sync of ${inMemoryDb.users.length} users to MySQL...`);
         
-        let created = 0, updated = 0;
+        let created = 0;
         for (const user of inMemoryDb.users) {
             try {
-                const [existing] = await pool.query(
+                const [existing] = await getPool().query(
                     'SELECT id FROM users WHERE id = ?', 
                     [user.id]
                 );
                 
                 if (existing.length === 0) {
-                    // Insert new user
-                    await pool.query(
-                        `INSERT INTO users (id, name, email, mobile, role, location_name, created_at) 
+                    await getPool().query(
+                        `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
                          VALUES (?, ?, ?, ?, ?, ?, NOW())`,
                         [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
                     );
                     created++;
-                } else {
-                    // Update existing user to ensure latest data
-                    await pool.query(
-                        `UPDATE users SET name=?, email=?, mobile=?, role=?, location_name=?, updated_at=NOW() 
-                         WHERE id=?`,
-                        [user.name, user.email, user.mobile, user.role, user.location_name, user.id]
-                    );
-                    updated++;
                 }
             } catch (err) {
                 LOG.warning(`[All Users Sync] Failed to sync user ${user.id}:`, err.message);
             }
         }
         
-        LOG.success(`[All Users Sync] ✅ Completed: ${created} created, ${updated} updated`);
+        LOG.success(`[All Users Sync] Completed: ${created} created, existing rows left unchanged`);
 
         // Sync ALL vendors from in-memory DB to MySQL  
         LOG.info(`[All Vendors Sync] Starting sync of ${inMemoryDb.vendors.length} vendors to MySQL...`);
         
-        let vendorsCreated = 0, vendorsUpdated = 0;
+        let vendorsCreated = 0;
         for (const vendor of inMemoryDb.vendors) {
             try {
-                const [existingVendor] = await pool.query(
+                const [existingVendor] = await getPool().query(
                     'SELECT id FROM vendors WHERE id = ?',
                     [vendor.id]
                 );
                 
                 if (existingVendor.length === 0) {
-                    // Insert new vendor
-                    await pool.query(
-                        `INSERT INTO vendors (
+                    await getPool().query(
+                        `INSERT IGNORE INTO vendors (
                             id, owner_id, shop_name, category, is_active, is_promoted, 
                             latitude, longitude, google_link, instagram_handle, facebook_link,
                             features_products, features_payments, features_appointments, features_queue,
@@ -1080,39 +883,31 @@ const ensureAllUsersAndVendors = async () => {
                         ]
                     );
                     vendorsCreated++;
-                } else {
-                    // Update existing vendor
-                    await pool.query(
-                        `UPDATE vendors SET 
-                            owner_id=?, shop_name=?, category=?, is_active=?, is_promoted=?,
-                            latitude=?, longitude=?, google_link=?, instagram_handle=?, facebook_link=?,
-                            features_products=?, features_payments=?, features_appointments=?, features_queue=?,
-                            features_matchmaking=?, features_cyber=?, features_trade=?, features_offer=?, features_qless=?,
-                            features_fleet=?, features_realestate=?, visibility_top_rated=?, visibility_list=?, visibility_feed=?,
-                            updated_at=NOW()
-                        WHERE id=?`,
-                        [
-                            vendor.owner_id, vendor.shop_name, vendor.category,
-                            vendor.is_active ? 1 : 0, vendor.is_promoted ? 1 : 0,
-                            vendor.latitude || 0, vendor.longitude || 0,
-                            vendor.google_link || '', vendor.instagram_handle || '', vendor.facebook_link || '',
-                            vendor.features_products ? 1 : 0, vendor.features_payments ? 1 : 0,
-                            vendor.features_appointments ? 1 : 0, vendor.features_queue ? 1 : 0,
-                            vendor.features_matchmaking ? 1 : 0, vendor.features_cyber ? 1 : 0,
-                            vendor.features_trade ? 1 : 0, vendor.features_offer ? 1 : 0, vendor.features_qless ? 1 : 0,
-                            vendor.features_fleet ? 1 : 0, vendor.features_realestate ? 1 : 0,
-                            vendor.visibility_top_rated ? 1 : 0, vendor.visibility_list ? 1 : 0, vendor.visibility_feed ? 1 : 0,
-                            vendor.id
-                        ]
-                    );
-                    vendorsUpdated++;
                 }
             } catch (err) {
                 LOG.warning(`[All Vendors Sync] Failed to sync vendor ${vendor.id}:`, err.message);
             }
         }
         
-        LOG.success(`[All Vendors Sync] ✅ Completed: ${vendorsCreated} created, ${vendorsUpdated} updated`);
+        LOG.success(`[All Vendors Sync] Completed: ${vendorsCreated} created, existing rows left unchanged`);
+
+        // Sync user-vendor mappings
+        const mappings = inMemoryDb.user_vendor_mappings || [];
+        LOG.info(`[Mappings Sync] Starting sync of ${mappings.length} user-vendor mappings...`);
+        let mappingsCreated = 0;
+        for (const mapping of mappings) {
+            try {
+                await getPool().query(
+                    `INSERT IGNORE INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())`,
+                    [mapping.user_id, mapping.vendor_id]
+                );
+                mappingsCreated++;
+            } catch (err) {
+                LOG.warning(`[Mappings Sync] Failed mapping ${mapping.user_id}->${mapping.vendor_id}:`, err.message);
+            }
+        }
+        LOG.success(`[Mappings Sync] ✅ Completed: ${mappingsCreated} mappings synced`);
+
         LOG.success(`[Database Init] ✅ All users and vendors synced to MySQL`);
         
     } catch (error) {
@@ -1125,7 +920,7 @@ const ensureAllUsersAndVendors = async () => {
  * Syncs cyber users and vendor from in-memory DB to MySQL
  */
 const ensureCyberUsersAndVendor = async () => {
-    if (!pool) return;
+    if (!getPool()) return;
     
     try {
         // Make sure vendors table has required feature flags/visibility columns
@@ -1138,21 +933,14 @@ const ensureCyberUsersAndVendor = async () => {
         ];
         
         for (const user of cyberUsers) {
-            const [existing] = await pool.query('SELECT id FROM users WHERE id = ?', [user.id]);
+            const [existing] = await getPool().query('SELECT id FROM users WHERE id = ?', [user.id]);
             if (existing.length === 0) {
-                await pool.query(
-                    `INSERT INTO users (id, name, email, mobile, role, location_name, created_at) 
+                await getPool().query(
+                    `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
                      VALUES (?, ?, ?, ?, ?, ?, NOW())`,
                     [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
                 );
                 LOG.success(`[Cyber Sync] Created user: ${user.id} (${user.name})`);
-            } else {
-                // Update existing user
-                await pool.query(
-                    `UPDATE users SET name=?, email=?, mobile=?, role=?, location_name=? WHERE id=?`,
-                    [user.name, user.email, user.mobile, user.role, user.location_name, user.id]
-                );
-                LOG.info(`[Cyber Sync] Updated user: ${user.id} (${user.name})`);
             }
         }
         
@@ -1169,10 +957,10 @@ const ensureCyberUsersAndVendor = async () => {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
-            features_products: true,
-            features_payments: true,
-            features_appointments: true,
-            features_queue: true,
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
             features_matchmaking: false,
             features_cyber: true,
             visibility_top_rated: false,
@@ -1180,9 +968,9 @@ const ensureCyberUsersAndVendor = async () => {
             visibility_feed: false
         };
         
-        const [existingVendor] = await pool.query('SELECT id FROM vendors WHERE id = ?', [cyberVendor.id]);
+        const [existingVendor] = await getPool().query('SELECT id FROM vendors WHERE id = ?', [cyberVendor.id]);
         if (existingVendor.length === 0) {
-            await pool.query(
+            await getPool().query(
                 `INSERT INTO vendors (
                     id, owner_id, shop_name, category, is_active, is_promoted, 
                     latitude, longitude, google_link, instagram_handle, facebook_link,
@@ -1199,26 +987,6 @@ const ensureCyberUsersAndVendor = async () => {
                 ]
             );
             LOG.success(`[Cyber Sync] Created vendor: ${cyberVendor.id} (${cyberVendor.shop_name})`);
-        } else {
-            // Update existing vendor, ensure features_cyber is enabled
-            await pool.query(
-                `UPDATE vendors SET 
-                    owner_id=?, shop_name=?, category=?, is_active=?, is_promoted=?,
-                    latitude=?, longitude=?, google_link=?, instagram_handle=?, facebook_link=?,
-                    features_products=?, features_payments=?, features_appointments=?, features_queue=?,
-                    features_matchmaking=?, features_cyber=?, visibility_top_rated=?, visibility_list=?, visibility_feed=?
-                WHERE id=?`,
-                [
-                    cyberVendor.owner_id, cyberVendor.shop_name, cyberVendor.category,
-                    cyberVendor.is_active, cyberVendor.is_promoted, cyberVendor.latitude, cyberVendor.longitude,
-                    cyberVendor.google_link, cyberVendor.instagram_handle, cyberVendor.facebook_link,
-                    cyberVendor.features_products, cyberVendor.features_payments, cyberVendor.features_appointments,
-                    cyberVendor.features_queue, cyberVendor.features_matchmaking, cyberVendor.features_cyber,
-                    cyberVendor.visibility_top_rated, cyberVendor.visibility_list, cyberVendor.visibility_feed,
-                    cyberVendor.id
-                ]
-            );
-            LOG.info(`[Cyber Sync] Updated vendor: ${cyberVendor.id} (${cyberVendor.shop_name})`);
         }
         
         LOG.success('[Cyber Sync] Cyber users and vendor synced to MySQL');
@@ -1229,10 +997,10 @@ const ensureCyberUsersAndVendor = async () => {
 
 let fleetTablesReady = false;
 const ensureFleetTables = async () => {
-    if (!pool || fleetTablesReady) return;
+    if (!getPool() || fleetTablesReady) return;
     try {
         // Fleet Queues
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_queues (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 gate_id VARCHAR(255) NOT NULL,
@@ -1252,7 +1020,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Fleet Trips
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_trips (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 driver_id VARCHAR(255) NOT NULL,
@@ -1277,7 +1045,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Fleet Road Conditions
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_road_conditions (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 type ENUM('pothole', 'lane_closure', 'wet_road', 'accident', 'construction', 'other') NOT NULL,
@@ -1296,7 +1064,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Fleet Hazards
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_hazards (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 driver_id VARCHAR(255) NOT NULL,
@@ -1316,7 +1084,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Fleet Driver Stats
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_driver_stats (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 driver_id VARCHAR(255) NOT NULL,
@@ -1334,7 +1102,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Fleet Gates
-        await pool.query(`
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS fleet_gates (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 gate_id VARCHAR(255) NOT NULL UNIQUE,
@@ -1354,7 +1122,7 @@ const ensureFleetTables = async () => {
         `);
         
         // Seed sample gates
-        await pool.query(`
+        await getPool().query(`
             INSERT IGNORE INTO fleet_gates (gate_id, gate_name, location_name, vendor_id, is_active)
             VALUES
             ('gate_7', 'Port of Oakland - Gate 7', 'Oakland, CA', 'v_fleet1', TRUE),
@@ -1371,177 +1139,44 @@ const ensureFleetTables = async () => {
 
 const db = {
     getType: () => DB_TYPE,
+    ...featureApi(require('./database/features/appointments')),
+    ...featureApi(require('./database/features/queue')),
+    ...featureApi(require('./database/features/shopping')),
+    ...featureApi(require('./database/features/matchmaking')),
 
-    // Auto-Expire Logic
-    autoExpireAppointments: async () => {
-        const now = new Date();
-        const currentDate = toMysqlDateTime(now).split(' ')[0]; // YYYY-MM-DD
-        const currentTime = now.toTimeString().slice(0, 5); // "HH:MM"
-
-        const affectedVendorIds = new Set();
-
-        try {
-            if (pool) {
-                // Create performance index on first run (idempotent)
-                try {
-                    await pool.query(`
-                        ALTER TABLE appointments
-                        ADD INDEX IF NOT EXISTS idx_status_date (status, date DESC)
-                    `);
-                } catch (e) {
-                    // Index may already exist, ignore error
-                }
-                
-                // Find appointments that are pending/confirmed AND date < today
-                // We REMOVED the check for (date = today AND time < now) so today's late appointments stay Pending (Red)
-                // Select only columns we need for better performance
-                const [rows] = await pool.query(
-                    `SELECT id, vendor_id, user_id FROM appointments 
-                     WHERE status IN ('pending', 'confirmed') 
-                     AND date < ?
-                     LIMIT 1000`,
-                    [currentDate]
-                );
-
-                if (rows.length > 0) {
-                    const ids = rows.map(r => r.id);
-                    // Batch update appointments to completed
-                    await pool.query(
-                        `UPDATE appointments SET status = 'completed', updated_at = NOW() 
-                         WHERE id IN (${ids.map(() => '?').join(',')})`,
-                        ids
-                    );
-                    
-                    // Batch sync queues
-                    const updates = rows.map(app => async () => {
-                        affectedVendorIds.add(app.vendor_id);
-                        await pool.query(
-                            'UPDATE queues SET status = "done", updated_at = NOW() WHERE user_id = ? AND vendor_id = ? AND status = "waiting"',
-                            [app.user_id, app.vendor_id]
-                        );
-                    });
-                    
-                    // Execute batch updates (max 10 parallel)
-                    for (let i = 0; i < updates.length; i += 10) {
-                        await Promise.all(updates.slice(i, i + 10).map(fn => fn().catch(e => LOG.warning('[AUTO-EXPIRE] Queue sync failed:', e.message))));
-                    }
-                    LOG.success(`[AUTO-EXPIRE] Completed ${rows.length} expired appointments in ${rows.length}ms`);
-                    return Array.from(affectedVendorIds);
-                }
-                return [];
-            }
-        } catch (err) {
-            LOG.error("MySQL autoExpireAppointments failed, falling back to local", err.message);
-        }
-
-        // In-memory implementation
-        inMemoryDb.appointments.forEach(app => {
-            if (app.status === 'pending' || app.status === 'confirmed') {
-                // Only expire if date is strictly before today
-                if (app.date < currentDate) {
-                    app.status = 'completed';
-                    affectedVendorIds.add(app.vendor_id);
-                    
-                    // Sync queue
-                    const relatedQueue = inMemoryDb.queues.find(q => 
-                        q.user_id === app.user_id && 
-                        q.vendor_id === app.vendor_id && 
-                        q.status === 'waiting'
-                    );
-                    if (relatedQueue) {
-                        relatedQueue.status = 'done';
-                        LOG.info(`[AUTO-EXPIRE] Appointment ${app.id} completed -> Queue done`);
-                    }
-                }
-            }
-        });
-        return Array.from(affectedVendorIds);
-    },
-
-    /**
-     * Auto-complete queue items from previous days
-     * Marks all "waiting" queue items from previous days as "done"
-     */
-    autoCompleteQueues: async () => {
-        const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const todayStr = toMysqlDateTime(today).split(' ')[0]; // YYYY-MM-DD
-        
-        const affectedVendorIds = new Set();
-
-        try {
-            if (pool) {
-                // Find queue items that are "waiting" and joined_at date is before today
-                const [rows] = await pool.query(
-                    `SELECT * FROM queues 
-                     WHERE status = 'waiting' 
-                     AND DATE(joined_at) < ?`,
-                    [todayStr]
-                );
-
-                if (rows.length > 0) {
-                    const ids = rows.map(r => r.id);
-                    await pool.query(
-                        `UPDATE queues SET status = 'done' WHERE id IN (?)`,
-                        [ids]
-                    );
-                    
-                    // Collect affected vendor IDs for socket updates
-                    for (const queue of rows) {
-                        affectedVendorIds.add(queue.vendor_id);
-                        LOG.info(`[AUTO-COMPLETE] Queue ${queue.id} from ${queue.joined_at} marked as done`);
-                    }
-                    
-                    return Array.from(affectedVendorIds);
-                }
-                return [];
-            }
-        } catch (err) {
-            LOG.error("MySQL autoCompleteQueues failed, falling back to local", err.message);
-        }
-
-        // In-memory implementation
-        inMemoryDb.queues.forEach(queue => {
-            if (queue.status === 'waiting') {
-                const queueDate = new Date(queue.joined_at);
-                const queueDateStr = new Date(queueDate.getFullYear(), queueDate.getMonth(), queueDate.getDate());
-                
-                // If queue was created before today, mark as done
-                if (queueDateStr < today) {
-                    queue.status = 'done';
-                    affectedVendorIds.add(queue.vendor_id);
-                    LOG.info(`[AUTO-COMPLETE] Queue ${queue.id} from ${queue.joined_at} marked as done`);
-                }
-            }
-        });
-        
-        return Array.from(affectedVendorIds);
-    },
-
-    // Users
+    // Users / vendors / settings stay here; feature CRUD is in backend/database/features/
     getUsers: async () => {
+        const mapUser = (u, index = 0) => ({
+            id: u.id,
+            name: u.name || 'Unknown',
+            email: u.email || null,
+            mobile: u.mobile || null,
+            role: u.role || 'user',
+            location_name: u.location_name || null,
+            created_at: u.created_at || null,
+            updated_at: u.updated_at || u.created_at || new Date(Date.now() - index * 3600000),
+        });
         try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT id, name, email, mobile, role, location_name, created_at FROM users ORDER BY created_at DESC, id DESC');
+            if (getPool()) {
+                await ensureUsersUpdatedAtColumn();
+                const [rows] = await getPool().query(
+                    'SELECT id, name, email, mobile, role, location_name, created_at, updated_at FROM users ORDER BY COALESCE(updated_at, created_at) DESC, id DESC'
+                );
                 if (rows) {
                     LOG.info(`[getUsers] Returning ${rows.length} users from MySQL`);
-                    // Ensure all required fields are present
-                    return rows.map(u => ({
-                        id: u.id,
-                        name: u.name || 'Unknown',
-                        email: u.email || null,
-                        mobile: u.mobile || null,
-                        role: u.role || 'user',
-                        location_name: u.location_name || null,
-                        created_at: u.created_at
-                    }));
+                    return rows.map(mapUser);
                 }
             }
         } catch (err) {
             LOG.error("MySQL getUsers failed, falling back to local", err.message);
         }
-        // In-memory: reverse to show newest first (assuming push order)
-        const localUsers = [...inMemoryDb.users].reverse();
+        const localUsers = [...inMemoryDb.users]
+            .map((u, i) => mapUser(u, i))
+            .sort((a, b) => {
+                const ta = new Date(a.updated_at || a.created_at || 0).getTime();
+                const tb = new Date(b.updated_at || b.created_at || 0).getTime();
+                return tb - ta;
+            });
         LOG.info(`[getUsers] Returning ${localUsers.length} users from local in-memory DB`);
         return localUsers;
     },
@@ -1549,8 +1184,8 @@ const db = {
     getUserByMobile: async (mobile) => {
         const cleanMobile = mobile.toString().replace(/\D/g, '').slice(-10);
         try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM users WHERE mobile = ? OR mobile = ?', [mobile, cleanMobile]);
+            if (getPool()) {
+                const [rows] = await getPool().query('SELECT * FROM users WHERE mobile = ? OR mobile = ?', [mobile, cleanMobile]);
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1566,9 +1201,9 @@ const db = {
         if (!email) return null;
         const normalizedEmail = email.trim().toLowerCase();
         try {
-            if (pool) {
+            if (getPool()) {
                 // Case-insensitive email lookup
-                const [rows] = await pool.query('SELECT * FROM users WHERE LOWER(email) = ?', [normalizedEmail]);
+                const [rows] = await getPool().query('SELECT * FROM users WHERE LOWER(email) = ?', [normalizedEmail]);
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1579,8 +1214,8 @@ const db = {
 
     getUserById: async (id) => {
         try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM users WHERE id = ?', [id]);
+            if (getPool()) {
+                const [rows] = await getPool().query('SELECT * FROM users WHERE id = ?', [id]);
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1591,8 +1226,8 @@ const db = {
 
     addUser: async (user) => {
         try {
-            if (pool) {
-                await pool.query('INSERT INTO users SET ?', [user]);
+            if (getPool()) {
+                await getPool().query('INSERT INTO users SET ?', [user]);
                 return user;
             }
         } catch (err) {
@@ -1610,8 +1245,11 @@ const db = {
         if (data.location_name !== undefined) cleanData.location_name = data.location_name;
 
         try {
-            if (pool) {
-                await pool.query('UPDATE users SET ? WHERE id = ?', [cleanData, userId]);
+            if (getPool()) {
+                await ensureUsersUpdatedAtColumn();
+                await getPool().query('UPDATE users SET ?, updated_at = NOW() WHERE id = ?', [cleanData, userId]);
+                const user = inMemoryDb.users.find(u => u.id === userId);
+                if (user) Object.assign(user, cleanData, { updated_at: new Date() });
                 return true;
             }
         } catch (err) {
@@ -1620,7 +1258,7 @@ const db = {
         
         const user = inMemoryDb.users.find(u => u.id === userId);
         if (user) {
-            Object.assign(user, cleanData);
+            Object.assign(user, cleanData, { updated_at: new Date() });
         }
         return !!user;
     },
@@ -1628,8 +1266,14 @@ const db = {
     updateUserRole: async (userId, role) => {
         LOG.info(`Updating role for user ${userId} to ${role}`);
         try {
-            if (pool) {
-                await pool.query('UPDATE users SET role = ? WHERE id = ?', [role, userId]);
+            if (getPool()) {
+                await ensureUsersUpdatedAtColumn();
+                await getPool().query('UPDATE users SET role = ?, updated_at = NOW() WHERE id = ?', [role, userId]);
+                const user = inMemoryDb.users.find(u => u.id === userId);
+                if (user) {
+                    user.role = role;
+                    user.updated_at = new Date();
+                }
                 return true;
             }
         } catch (err) {
@@ -1638,8 +1282,145 @@ const db = {
         const user = inMemoryDb.users.find(u => u.id === userId);
         if (user) {
             user.role = role;
+            user.updated_at = new Date();
         }
         return !!user;
+    },
+
+    deleteUser: async (userId) => {
+        inMemoryDb.user_vendor_mappings = (inMemoryDb.user_vendor_mappings || []).filter(m => m.user_id !== userId);
+        inMemoryDb.users = inMemoryDb.users.filter(u => u.id !== userId);
+        if (DB_TYPE === 'mysql') {
+            try {
+                if (getPool()) {
+                    await getPool().query('DELETE FROM user_vendor_mappings WHERE user_id = ?', [userId]);
+                    await getPool().query('DELETE FROM users WHERE id = ?', [userId]);
+                }
+            } catch (err) {
+                LOG.error(`MySQL deleteUser failed for ${userId}, in-memory write kept`, err.message);
+            }
+        }
+        return true;
+    },
+
+    getUserVendorMappings: async (userId = null) => {
+        // Source of truth is in-memory. MySQL is used only when DB_TYPE=mysql.
+        if (DB_TYPE === 'mysql') {
+            try {
+                if (getPool()) {
+                    await ensureUserVendorMappingTable();
+                    const query = userId
+                        ? 'SELECT * FROM user_vendor_mappings WHERE user_id = ? ORDER BY id ASC'
+                        : 'SELECT * FROM user_vendor_mappings ORDER BY id ASC';
+                    const params = userId ? [userId] : [];
+                    const [rows] = await getPool().query(query, params);
+                    if (rows) return rows;
+                }
+            } catch (err) {
+                LOG.error('MySQL getUserVendorMappings failed, falling back to local', err.message);
+            }
+        }
+        const mappings = inMemoryDb.user_vendor_mappings || [];
+        return userId ? mappings.filter(m => m.user_id === userId) : mappings;
+    },
+
+    getMappedVendorIdsForUser: async (userId) => {
+        const mappings = await db.getUserVendorMappings(userId);
+        return mappings.map(m => m.vendor_id);
+    },
+
+    addUserVendorMapping: async (userId, vendorId) => {
+        const existing = (inMemoryDb.user_vendor_mappings || []).find(
+            m => m.user_id === userId && m.vendor_id === vendorId
+        );
+        if (existing) return existing;
+
+        const mapping = {
+            id: Date.now(),
+            user_id: userId,
+            vendor_id: vendorId,
+            created_at: new Date()
+        };
+
+        inMemoryDb.user_vendor_mappings = inMemoryDb.user_vendor_mappings || [];
+        inMemoryDb.user_vendor_mappings.push(mapping);
+
+        if (DB_TYPE === 'mysql') {
+            try {
+                if (getPool()) {
+                    await ensureUserVendorMappingTable();
+                    await getPool().query(
+                        'INSERT INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())',
+                        [userId, vendorId]
+                    );
+                }
+            } catch (err) {
+                LOG.error('MySQL addUserVendorMapping failed, in-memory write kept', err.message);
+            }
+        }
+        await stampUserUpdatedAt(userId);
+        return mapping;
+    },
+
+    removeUserVendorMapping: async (userId, vendorId) => {
+        inMemoryDb.user_vendor_mappings = (inMemoryDb.user_vendor_mappings || []).filter(
+            m => !(m.user_id === userId && m.vendor_id === vendorId)
+        );
+        if (DB_TYPE === 'mysql') {
+            try {
+                if (getPool()) {
+                    await ensureUserVendorMappingTable();
+                    await getPool().query(
+                        'DELETE FROM user_vendor_mappings WHERE user_id = ? AND vendor_id = ?',
+                        [userId, vendorId]
+                    );
+                }
+            } catch (err) {
+                LOG.error('MySQL removeUserVendorMapping failed, in-memory write kept', err.message);
+            }
+        }
+        await stampUserUpdatedAt(userId);
+        return true;
+    },
+
+    getUsersWithVendorMappings: async () => {
+        const users = await db.getUsers();
+        const mappings = await db.getUserVendorMappings();
+        const vendors = await db.getVendors(false, 1, 1000, 'newest', '', true);
+        const vendorList = Array.isArray(vendors) ? vendors : (vendors.vendors || vendors.rows || []);
+
+        const vendorMap = {};
+        vendorList.forEach(v => { vendorMap[v.id] = v; });
+
+        const usersWithMappings = users.map(user => {
+            const mappedIds = mappings.filter(m => m.user_id === user.id).map(m => m.vendor_id);
+            return {
+                ...user,
+                mapped_vendors: mappedIds
+                    .map(id => vendorMap[id])
+                    .filter(Boolean)
+                    .map(v => ({ id: v.id, shop_name: v.shop_name, category: v.category }))
+            };
+        });
+
+        return {
+            users: usersWithMappings,
+            vendors: vendorList.map(v => ({ id: v.id, shop_name: v.shop_name, category: v.category, owner_id: v.owner_id }))
+        };
+    },
+
+    getMappedVendorsForUser: async (userId) => {
+        const mappedIds = await db.getMappedVendorIdsForUser(userId);
+        if (!mappedIds.length) {
+            return { vendors: [], hasMappings: false };
+        }
+
+        const vendorsResult = await db.getVendors(false, 1, 1000, 'newest', '', true);
+        const allVendors = Array.isArray(vendorsResult) ? vendorsResult : (vendorsResult.vendors || []);
+        const mappedSet = new Set(mappedIds);
+        const vendors = allVendors.filter(v => mappedSet.has(v.id) && v.is_active !== false && v.visibility_list !== false);
+
+        return { vendors, hasMappings: true };
     },
 
     // OTPs
@@ -1649,12 +1430,12 @@ const db = {
             mobile: otpData.mobile.toString().replace(/\D/g, '').slice(-10)
         };
         try {
-            if (pool) {
+            if (getPool()) {
                 // Use formatted string to prevent timezone shifts by the driver
                 const expiresAt = toMysqlDateTime(otpData.expires_at);
                 const createdAt = toMysqlDateTime(otpData.created_at || new Date());
                 
-                await pool.query(
+                await getPool().query(
                     'INSERT INTO otps (mobile, otp, expires_at, created_at) VALUES (?, ?, ?, ?)', 
                     [otpData.mobile, otpData.otp, expiresAt, createdAt]
                 );
@@ -1675,9 +1456,9 @@ const db = {
         const cleanMobile = mobile.toString().replace(/\D/g, '').slice(-10);
         
         try {
-            if (pool) {
+            if (getPool()) {
                 // Fetch latest OTP record regardless of expiry to debug/validate
-                const [rows] = await pool.query('SELECT * FROM otps WHERE mobile = ? AND otp = ? ORDER BY created_at DESC LIMIT 1', [cleanMobile, cleanOtp]);
+                const [rows] = await getPool().query('SELECT * FROM otps WHERE mobile = ? AND otp = ? ORDER BY created_at DESC LIMIT 1', [cleanMobile, cleanOtp]);
                 
                 if (rows && rows.length > 0) {
                     const record = rows[0];
@@ -1694,7 +1475,7 @@ const db = {
                     }
                 } else {
                     // DEBUG: Check if ANY otp exists for this mobile (mismatch code?)
-                    const [anyRows] = await pool.query('SELECT otp, created_at FROM otps WHERE mobile = ? ORDER BY created_at DESC LIMIT 1', [cleanMobile]);
+                    const [anyRows] = await getPool().query('SELECT otp, created_at FROM otps WHERE mobile = ? ORDER BY created_at DESC LIMIT 1', [cleanMobile]);
                     if (anyRows.length > 0) {
                         LOG.warning(`[MySQL] OTP Code Mismatch for ${mobile}. Input: ${cleanOtp}, Latest in DB: ${anyRows[0].otp} (Created: ${anyRows[0].created_at})`);
                     } else {
@@ -1715,8 +1496,8 @@ const db = {
     getLatestValidOtpByMobile: async (mobile) => {
         const cleanMobile = mobile.toString().replace(/\D/g, '').slice(-10);
         try {
-            if (pool) {
-                const [rows] = await pool.query(
+            if (getPool()) {
+                const [rows] = await getPool().query(
                     'SELECT * FROM otps WHERE mobile = ? ORDER BY created_at DESC, id DESC LIMIT 1',
                     [cleanMobile]
                 );
@@ -1743,8 +1524,8 @@ const db = {
     deleteOtpsByMobile: async (mobile) => {
         const cleanMobile = mobile.toString().replace(/\D/g, '').slice(-10);
         try {
-            if (pool) {
-                await pool.query('DELETE FROM otps WHERE mobile = ?', [cleanMobile]);
+            if (getPool()) {
+                await getPool().query('DELETE FROM otps WHERE mobile = ?', [cleanMobile]);
             }
         } catch (err) {
             LOG.error(`MySQL deleteOtpsByMobile failed for ${mobile}, falling back to local`, err.message);
@@ -1757,9 +1538,12 @@ const db = {
     },
 
     // Vendors
-    getVendors: async (activeOnly = true, page = 1, limit = 10, sortBy = 'newest', searchQuery = '', includeTradeOffer = false) => {
+    getVendors: async (activeOnly = true, page = 1, limit = 10, sortBy = 'newest', searchQuery = '', includeTradeOffer = false, feature = '') => {
+        const featureKey = SERVICE_FEATURES.includes(String(feature || '').toLowerCase())
+            ? String(feature).toLowerCase()
+            : '';
         try {
-            if (pool) {
+            if (DB_TYPE === 'mysql' && getPool()) {
                 // Determine today's date in YYYY-MM-DD format for MySQL comparison
                 const now = new Date();
                 const year = now.getFullYear();
@@ -1784,39 +1568,43 @@ const db = {
 
                 // Build WHERE clause properly
                 const baseWhere = activeOnly ? 'v.is_active = TRUE' : '1=1';
-                // Exclude service-specific vendors (Trade, Offer, QLess, Fleet, Realestate, Cyber, Trust Score) unless includeTradeOffer is true
-                // Note: includeTradeOffer is used as a catch-all for including service vendors (including cyber and trust score)
-                const excludeServiceVendors = includeTradeOffer ? '' : 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)';
-                // Build WHERE clause parts
+                const featureOnly = featureKey ? `AND IFNULL(v.features_${featureKey}, 0) = 1` : '';
+                const excludeServiceVendors = (!featureKey && !includeTradeOffer)
+                    ? 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)'
+                    : '';
                 const whereParts = [baseWhere];
+                if (featureOnly) whereParts.push(featureOnly);
                 if (excludeServiceVendors) whereParts.push(excludeServiceVendors);
                 if (searchClause) whereParts.push(searchClause);
                 const whereClause = 'WHERE ' + whereParts.join(' ');
 
                 const query = `
-                    SELECT v.*, 
-                    COALESCE(q_counts.q_count, 0) + COALESCE(a_counts.a_count, 0) as appointmentCount,
-                    COALESCE(q_live.live_count, 0) as live_queue_count,
-                    COALESCE(a_today_pending.pending_count, 0) as today_pending_appointments,
-                    COALESCE(a_today_completed.completed_count, 0) as today_completed_appointments
+                    SELECT v.*,
+                    (SELECT COUNT(*) FROM queues WHERE vendor_id = v.id AND status = 'waiting') as q_count_raw,
+                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND status IN ('confirmed', 'pending')) as a_count_raw,
+                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND date = '${todayStr}' AND status IN ('pending', 'confirmed')) as today_pending_appointments,
+                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND date = '${todayStr}' AND status = 'completed') as today_completed_appointments
                     FROM vendors v
-                    LEFT JOIN (SELECT vendor_id, COUNT(*) as q_count FROM queues WHERE status = 'waiting' GROUP BY vendor_id) q_counts ON v.id = q_counts.vendor_id
-                    LEFT JOIN (SELECT vendor_id, COUNT(*) as a_count FROM appointments WHERE status = 'confirmed' OR status = 'pending' GROUP BY vendor_id) a_counts ON v.id = a_counts.vendor_id
-                    
-                    -- New Metrics
-                    LEFT JOIN (SELECT vendor_id, COUNT(*) as live_count FROM queues WHERE status = 'waiting' GROUP BY vendor_id) q_live ON v.id = q_live.vendor_id
-                    LEFT JOIN (SELECT vendor_id, COUNT(*) as pending_count FROM appointments WHERE date = '${todayStr}' AND status IN ('pending', 'confirmed') GROUP BY vendor_id) a_today_pending ON v.id = a_today_pending.vendor_id
-                    LEFT JOIN (SELECT vendor_id, COUNT(*) as completed_count FROM appointments WHERE date = '${todayStr}' AND status = 'completed' GROUP BY vendor_id) a_today_completed ON v.id = a_today_completed.vendor_id
-
                     ${whereClause}
-                    ORDER BY ${orderBy}
+                    ORDER BY ${orderBy.replace('appointmentCount', '(q_count_raw + a_count_raw)').replace('live_queue_count', 'q_count_raw')}
                     LIMIT ${limit} OFFSET ${offset}
                 `;
                 
-                LOG.info(`[getVendors] Query: includeTradeOffer=${includeTradeOffer}, activeOnly=${activeOnly}, searchQuery="${searchQuery}"`);
+                LOG.info(`[getVendors] Query: feature=${featureKey || 'none'}, includeTradeOffer=${includeTradeOffer}, activeOnly=${activeOnly}`);
                 LOG.info(`[getVendors] WHERE clause: ${whereClause}`);
                 
-                const [rows] = await pool.query(query, params);
+                const [rawRows] = await getPool().query(query, params);
+                
+                // Add calculated fields to match previous schema exactly
+                const rows = rawRows.map(row => {
+                    const q_count = row.q_count_raw || 0;
+                    const a_count = row.a_count_raw || 0;
+                    return {
+                        ...row,
+                        appointmentCount: q_count + a_count,
+                        live_queue_count: q_count
+                    };
+                });
                 LOG.info(`[getVendors] MySQL returned ${rows.length} vendors`);
                 
                 // Debug: Log service vendors if any
@@ -1852,20 +1640,16 @@ const db = {
         const day = String(now.getDate()).padStart(2, '0');
         const todayStr = `${year}-${month}-${day}`;
 
-        LOG.info(`[getVendors] Using in-memory fallback - includeTradeOffer: ${includeTradeOffer}`);
+        LOG.info(`[getVendors] Using in-memory fallback - feature: ${featureKey || 'none'}, includeTradeOffer: ${includeTradeOffer}`);
         let filtered = activeOnly ? inMemoryDb.vendors.filter(v => v.is_active) : inMemoryDb.vendors;
         LOG.info(`[getVendors] In-memory vendors before filtering: ${filtered.length}`);
-        
-        // Filter out service-specific vendors (Trade, Offer, QLess, Fleet, Realestate, Cyber, Trust Score) from main vendor list (unless includeTradeOffer is true)
-        if (!includeTradeOffer) {
-            filtered = filtered.filter(v => 
-                v.features_trade !== true && 
-                v.features_offer !== true &&
-                v.features_qless !== true &&
-                v.features_fleet !== true &&
-                v.features_realestate !== true &&
-                v.features_cyber !== true &&
-                v.features_trust_score !== true
+
+        if (featureKey) {
+            filtered = filtered.filter(v => isFeatureFlagOn(v, featureKey));
+            LOG.info(`[getVendors] After feature=${featureKey} filter: ${filtered.length}`);
+        } else if (!includeTradeOffer) {
+            filtered = filtered.filter(v =>
+                !SERVICE_FEATURES.some(f => isFeatureFlagOn(v, f))
             );
             LOG.info(`[getVendors] After excluding service vendors: ${filtered.length}`);
         } else {
@@ -1946,8 +1730,8 @@ const db = {
 
     getVendorByOwnerId: async (ownerId) => {
         try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM vendors WHERE owner_id = ?', [ownerId]);
+            if (getPool()) {
+                const [rows] = await getPool().query('SELECT * FROM vendors WHERE owner_id = ?', [ownerId]);
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1958,8 +1742,8 @@ const db = {
 
     getVendorById: async (vendorId) => {
         try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM vendors WHERE id = ?', [vendorId]);
+            if (getPool()) {
+                const [rows] = await getPool().query('SELECT * FROM vendors WHERE id = ?', [vendorId]);
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1970,8 +1754,8 @@ const db = {
 
     updateVendor: async (vendorId, field, value) => {
         try {
-            if (pool) {
-                await pool.query(`UPDATE vendors SET ${field} = ? WHERE id = ?`, [value, vendorId]);
+            if (getPool()) {
+                await getPool().query(`UPDATE vendors SET ${field} = ? WHERE id = ?`, [value, vendorId]);
                 return true;
             }
         } catch (err) {
@@ -2002,8 +1786,8 @@ const db = {
             ...vendorData
         };
         try {
-            if (pool) {
-                await pool.query('INSERT INTO vendors SET ?', [normalizedVendor]);
+            if (getPool()) {
+                await getPool().query('INSERT INTO vendors SET ?', [normalizedVendor]);
                 return normalizedVendor;
             }
         } catch (err) {
@@ -2011,483 +1795,6 @@ const db = {
         }
         inMemoryDb.vendors.push(normalizedVendor);
         return normalizedVendor;
-    },
-
-    // Queues
-    getQueueByVendor: async (vendorId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT q.*, u.name as userName, u.mobile as userMobile FROM queues q JOIN users u ON q.user_id = u.id WHERE q.vendor_id = ? AND q.status = "waiting" ORDER BY q.joined_at ASC', [vendorId]);
-                if (rows) return rows;
-            }
-        } catch (err) {
-            LOG.error(`MySQL getQueueByVendor failed for ${vendorId}, falling back to local`, err.message);
-        }
-        if (!inMemoryDb.queues || !Array.isArray(inMemoryDb.queues)) {
-            return [];
-        }
-        return inMemoryDb.queues.filter(q => q.vendor_id === vendorId && q.status === "waiting")
-            .map(q => {
-                const u = inMemoryDb.users.find(u => u.id === q.user_id);
-                return { ...q, userName: u ? u.name : 'Unknown', userMobile: u ? u.mobile : '' };
-            }).sort((a, b) => {
-                // Handle cases where joined_at might be undefined or not a number
-                const aTime = a.joined_at || 0;
-                const bTime = b.joined_at || 0;
-                return aTime - bTime;
-            });
-    },
-
-    addQueueItem: async (item) => {
-        try {
-            if (pool) {
-                await pool.query('INSERT INTO queues SET ?', [item]);
-                return true;
-            }
-        } catch (err) {
-            LOG.error("MySQL addQueueItem failed, falling back to local", err.message);
-        }
-        inMemoryDb.queues.push({ ...item, id: inMemoryDb.queues.length + 1 });
-        return true;
-    },
-
-    removeQueueItem: async (userId, vendorId) => {
-        try {
-            if (pool) {
-                const [result] = await pool.query('DELETE FROM queues WHERE user_id = ? AND vendor_id = ? AND status = "waiting"', [userId, vendorId]);
-                return result.affectedRows > 0;
-            }
-        } catch (err) {
-            LOG.error("MySQL removeQueueItem failed, falling back to local", err.message);
-        }
-        const initialLength = inMemoryDb.queues.length;
-        inMemoryDb.queues = inMemoryDb.queues.filter(q => !(q.user_id === userId && q.vendor_id === vendorId && q.status === "waiting"));
-        return inMemoryDb.queues.length < initialLength;
-    },
-
-    deleteQueueItemById: async (queueId) => {
-        try {
-            if (pool) {
-                // Get details before delete for sync
-                const [rows] = await pool.query('SELECT vendor_id, user_id FROM queues WHERE id = ?', [queueId]);
-                const [result] = await pool.query('DELETE FROM queues WHERE id = ?', [queueId]);
-                
-                // Sync: Delete related appointment
-                if (result.affectedRows > 0 && rows[0]) {
-                    const { vendor_id, user_id } = rows[0];
-                    await pool.query('DELETE FROM appointments WHERE user_id = ? AND vendor_id = ? AND status IN ("pending", "confirmed")', [user_id, vendor_id]);
-                    LOG.info(`[SYNC] Queue Delete -> Appointment Delete for user ${user_id}`);
-                }
-                return result.affectedRows > 0;
-            }
-        } catch (err) {
-            LOG.error("MySQL deleteQueueItemById failed, falling back to local", err.message);
-        }
-        
-        const item = inMemoryDb.queues.find(q => q.id === parseInt(queueId));
-        if (item) {
-            // Sync: Delete related appointment
-            const initialApptLen = inMemoryDb.appointments.length;
-            inMemoryDb.appointments = inMemoryDb.appointments.filter(a => 
-                !(a.user_id === item.user_id && a.vendor_id === item.vendor_id && (a.status === 'pending' || a.status === 'confirmed'))
-            );
-            if (inMemoryDb.appointments.length < initialApptLen) {
-                LOG.info(`[SYNC] Queue Delete -> Appointment Delete for user ${item.user_id}`);
-            }
-        }
-
-        const initialLength = inMemoryDb.queues.length;
-        inMemoryDb.queues = inMemoryDb.queues.filter(q => q.id !== parseInt(queueId));
-        return inMemoryDb.queues.length < initialLength;
-    },
-
-    deleteAppointmentById: async (appointmentId) => {
-        try {
-            if (pool) {
-                // Get details before delete for sync
-                const [rows] = await pool.query('SELECT vendor_id, user_id FROM appointments WHERE id = ?', [appointmentId]);
-                const [result] = await pool.query('DELETE FROM appointments WHERE id = ?', [appointmentId]);
-                
-                // Sync: Delete related queue item
-                if (result.affectedRows > 0 && rows[0]) {
-                    const { vendor_id, user_id } = rows[0];
-                    await pool.query('DELETE FROM queues WHERE user_id = ? AND vendor_id = ? AND status = "waiting"', [user_id, vendor_id]);
-                    LOG.info(`[SYNC] Appointment Delete -> Queue Delete for user ${user_id}`);
-                }
-                return result.affectedRows > 0;
-            }
-        } catch (err) {
-            LOG.error("MySQL deleteAppointmentById failed, falling back to local", err.message);
-        }
-
-        const app = inMemoryDb.appointments.find(a => a.id === parseInt(appointmentId));
-        if (app) {
-            // Sync: Delete related queue item
-            const initialQueueLen = inMemoryDb.queues.length;
-            inMemoryDb.queues = inMemoryDb.queues.filter(q => 
-                !(q.user_id === app.user_id && q.vendor_id === app.vendor_id && q.status === 'waiting')
-            );
-            if (inMemoryDb.queues.length < initialQueueLen) {
-                LOG.info(`[SYNC] Appointment Delete -> Queue Delete for user ${app.user_id}`);
-            }
-        }
-
-        const initialLength = inMemoryDb.appointments.length;
-        inMemoryDb.appointments = inMemoryDb.appointments.filter(a => a.id !== parseInt(appointmentId));
-        return inMemoryDb.appointments.length < initialLength;
-    },
-
-    updateQueueStatus: async (queueId, status) => {
-        try {
-            let vendorId = null;
-            let userId = null;
-
-            if (pool) {
-                // MySQL Implementation with Sync
-                await pool.query('UPDATE queues SET status = ? WHERE id = ?', [status, queueId]);
-                const [rows] = await pool.query('SELECT vendor_id, user_id FROM queues WHERE id = ?', [queueId]);
-                if (rows[0]) {
-                    vendorId = rows[0].vendor_id;
-                    userId = rows[0].user_id;
-                    
-                    // Sync: Update related appointment
-                    if (userId && (status === 'done' || status === 'cancelled')) {
-                        const apptStatus = status === 'done' ? 'completed' : 'cancelled';
-                        await pool.query(
-                            'UPDATE appointments SET status = ? WHERE user_id = ? AND vendor_id = ? AND status IN ("pending", "confirmed")',
-                            [apptStatus, userId, vendorId]
-                        );
-                        LOG.info(`[SYNC] Queue ${status} -> Appointment ${apptStatus} for user ${userId}`);
-                    }
-                }
-                return vendorId;
-            }
-        } catch (err) {
-            LOG.error(`MySQL updateQueueStatus failed for ${queueId}, falling back to local`, err.message);
-        }
-
-        // In-Memory Implementation with Sync
-        const item = inMemoryDb.queues.find(q => q.id === parseInt(queueId));
-        if (item) {
-            item.status = status;
-            
-            // Sync with Appointments
-            if (status === 'done' || status === 'cancelled') {
-                const targetApptStatus = status === 'done' ? 'completed' : 'cancelled';
-                const relatedAppt = inMemoryDb.appointments.find(a => 
-                    a.user_id === item.user_id && 
-                    a.vendor_id === item.vendor_id && 
-                    (a.status === 'pending' || a.status === 'confirmed')
-                );
-                if (relatedAppt) {
-                    relatedAppt.status = targetApptStatus;
-                    LOG.info(`[SYNC] Queue ${status} -> Appointment ${targetApptStatus} for user ${item.user_id}`);
-                }
-            }
-            return item.vendor_id;
-        }
-        return null;
-    },
-
-    getUserHistory: async (userId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query(`
-                    WITH QueueStats AS (
-                        SELECT q.*, v.shop_name,
-                               COUNT(*) OVER(PARTITION BY q.vendor_id, q.status) as total_waiting_calc,
-                               RANK() OVER(PARTITION BY q.vendor_id, q.status ORDER BY q.joined_at ASC) as queue_position_calc
-                        FROM queues q
-                        JOIN vendors v ON q.vendor_id = v.id
-                        WHERE q.user_id = ? OR q.status = 'waiting'
-                    )
-                    SELECT * FROM QueueStats WHERE user_id = ? ORDER BY joined_at DESC`, [userId, userId]);
-                
-                // Map the window function results to the expected property names
-                if (rows) {
-                    return rows.map(r => ({
-                        ...r,
-                        total_waiting: r.status === 'waiting' ? r.total_waiting_calc : 0,
-                        queue_position: r.status === 'waiting' ? r.queue_position_calc : 0
-                    }));
-                }
-            }
-        } catch (err) {
-            LOG.error(`MySQL getUserHistory failed for ${userId}, falling back to local`, err.message);
-        }
-        if (!userId) return [];
-        return inMemoryDb.queues.filter(q => q.user_id === userId)
-            .map(q => {
-                const v = inMemoryDb.vendors.find(v => v.id === q.vendor_id);
-                const sameVendorWaiting = inMemoryDb.queues.filter(x => x.vendor_id === q.vendor_id && x.status === 'waiting');
-                return { 
-                    ...q, 
-                    shop_name: v ? v.shop_name : 'Unknown Shop',
-                    total_waiting: sameVendorWaiting.length,
-                    queue_position: sameVendorWaiting.filter(x => x.joined_at < q.joined_at).length + 1
-                };
-            }).sort((a, b) => b.joined_at - a.joined_at);
-    },
-
-    getVendorHistory: async (vendorId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT q.*, u.name as userName FROM queues q JOIN users u ON q.user_id = u.id WHERE q.vendor_id = ? AND q.status IN ("done", "cancelled") ORDER BY q.joined_at DESC', [vendorId]);
-                if (rows) return rows;
-            }
-        } catch (err) {
-            LOG.error(`MySQL getVendorHistory failed for ${vendorId}, falling back to local`, err.message);
-        }
-        if (!vendorId) return [];
-        return inMemoryDb.queues.filter(q => q.vendor_id === vendorId && ["done", "cancelled"].includes(q.status))
-            .map(q => ({ ...q, userName: inMemoryDb.users.find(u => u.id === q.user_id)?.name || 'Unknown' }))
-            .sort((a, b) => b.joined_at - a.joined_at);
-    },
-
-    // Appointments
-    getAppointmentsByUser: async (userId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query(`
-                    WITH AppStats AS (
-                        SELECT a.*, v.shop_name,
-                               COUNT(*) OVER(PARTITION BY a.vendor_id, a.date) as total_at_shop_on_day_calc,
-                               RANK() OVER(PARTITION BY a.vendor_id, a.date ORDER BY a.created_at ASC) as appointment_number_calc
-                        FROM appointments a
-                        JOIN vendors v ON a.vendor_id = v.id
-                    )
-                    SELECT * FROM AppStats WHERE user_id = ? ORDER BY date ASC, time ASC`, [userId]);
-                
-                if (rows) {
-                    return rows.map(r => ({
-                        ...r,
-                        total_at_shop_on_day: r.total_at_shop_on_day_calc,
-                        appointment_number: r.appointment_number_calc
-                    }));
-                }
-            }
-        } catch (err) {
-            LOG.error(`MySQL getAppointmentsByUser failed for ${userId}, falling back to local`, err.message);
-        }
-        if (!userId) return [];
-        return inMemoryDb.appointments
-            .filter(a => a.user_id === userId)
-            .map(a => {
-                const sameDay = inMemoryDb.appointments.filter(x => x.vendor_id === a.vendor_id && x.date === a.date && x.status !== 'cancelled');
-                return {
-                    ...a,
-                    shop_name: inMemoryDb.vendors.find(v => v.id === a.vendor_id)?.shop_name || 'Unknown',
-                    total_at_shop_on_day: sameDay.length,
-                    appointment_number: sameDay.filter(x => x.created_at < a.created_at).length + 1
-                };
-            })
-            .sort((a, b) => a.date.localeCompare(b.date) || a.time.localeCompare(b.time));
-    },
-
-    addAppointment: async (appData) => {
-        try {
-            if (pool) {
-                await pool.query('INSERT INTO appointments SET ?', [appData]);
-                return true;
-            }
-        } catch (err) {
-            LOG.error("MySQL addAppointment failed, falling back to local", err.message);
-        }
-        inMemoryDb.appointments.push({ ...appData, id: inMemoryDb.appointments.length + 1 });
-        return true;
-    },
-
-    updateAppointmentStatus: async (appointmentId, status) => {
-        try {
-            if (pool) {
-                await pool.query('UPDATE appointments SET status = ? WHERE id = ?', [status, appointmentId]);
-                
-                // Sync: If appointment cancelled/completed, update queue
-                if (status === 'cancelled' || status === 'completed') {
-                    const [rows] = await pool.query('SELECT vendor_id, user_id FROM appointments WHERE id = ?', [appointmentId]);
-                    if (rows[0]) {
-                        const targetQueueStatus = status === 'completed' ? 'done' : 'cancelled';
-                        await pool.query(
-                            'UPDATE queues SET status = ? WHERE user_id = ? AND vendor_id = ? AND status = "waiting"',
-                            [targetQueueStatus, rows[0].user_id, rows[0].vendor_id]
-                        );
-                        LOG.info(`[SYNC] Appointment ${status} -> Queue ${targetQueueStatus} for user ${rows[0].user_id}`);
-                    }
-                }
-                return true;
-            }
-        } catch (err) {
-            LOG.error(`MySQL updateAppointmentStatus failed for ${appointmentId}, falling back to local`, err.message);
-        }
-        
-        const app = inMemoryDb.appointments.find(a => a.id === parseInt(appointmentId));
-        if (app) {
-            app.status = status;
-            
-            // Sync with Queue
-            if (status === 'cancelled' || status === 'completed') {
-                const targetQueueStatus = status === 'completed' ? 'done' : 'cancelled';
-                const relatedQueue = inMemoryDb.queues.find(q => 
-                    q.user_id === app.user_id && 
-                    q.vendor_id === app.vendor_id && 
-                    q.status === 'waiting'
-                );
-                if (relatedQueue) {
-                    relatedQueue.status = targetQueueStatus;
-                    LOG.info(`[SYNC] Appointment ${status} -> Queue ${targetQueueStatus} for user ${app.user_id}`);
-                }
-            }
-            return true;
-        }
-        return !!app;
-    },
-
-    getAppointmentsByVendor: async (vendorId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query(`
-                    SELECT a.*, u.name as userName, u.mobile as userMobile
-                    FROM appointments a 
-                    JOIN users u ON a.user_id = u.id 
-                    WHERE a.vendor_id = ? 
-                    ORDER BY a.date ASC, a.time ASC`, [vendorId]);
-                if (rows) return rows;
-            }
-        } catch (err) {
-            LOG.error(`MySQL getAppointmentsByVendor failed for ${vendorId}, falling back to local`, err.message);
-        }
-        if (!vendorId) return [];
-        if (!inMemoryDb.appointments || !Array.isArray(inMemoryDb.appointments)) {
-            return [];
-        }
-        return inMemoryDb.appointments
-            .filter(a => a.vendor_id === vendorId)
-            .map(a => {
-                const u = inMemoryDb.users.find(u => u.id === a.user_id);
-                return { ...a, userName: u ? u.name : 'Unknown', userMobile: u ? u.mobile : '' };
-            })
-            .sort((a, b) => {
-                // Handle cases where date/time might be undefined
-                const aDate = a.date || '';
-                const bDate = b.date || '';
-                const dateCompare = aDate.localeCompare(bDate);
-                if (dateCompare !== 0) return dateCompare;
-                const aTime = a.time || '';
-                const bTime = b.time || '';
-                return aTime.localeCompare(bTime);
-            });
-    },
-
-    // Products
-    getProductsByVendor: async (vendorId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM products WHERE vendor_id = ? ORDER BY id DESC', [vendorId]);
-                if (rows) return rows.map(normalizeProductRow);
-            }
-        } catch (err) {
-            LOG.error(`MySQL getProductsByVendor failed for ${vendorId}, falling back to local`, err.message);
-        }
-        return inMemoryDb.products.filter(p => p.vendor_id === vendorId).map(normalizeProductRow);
-    },
-
-    getProductById: async (id) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM products WHERE id = ?', [id]);
-                if (rows && rows.length > 0) return normalizeProductRow(rows[0]);
-            }
-        } catch (err) {
-            LOG.error(`MySQL getProductById failed for ${id}, falling back to local`, err.message);
-        }
-        const item = inMemoryDb.products.find(p => String(p.id) === String(id));
-        return item ? normalizeProductRow(item) : null;
-    },
-
-    getAllProductsWithVendors: async () => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query(
-                    `SELECT p.*, v.shop_name, v.features_payments, v.features_products
-                     FROM products p
-                     JOIN vendors v ON p.vendor_id = v.id
-                     WHERE v.is_active = TRUE AND v.features_products = TRUE
-                     ORDER BY p.id DESC`
-                );
-                if (rows) return rows.map(normalizeProductRow);
-            }
-        } catch (err) {
-            LOG.error("MySQL getAllProductsWithVendors failed, falling back to local", err.message);
-        }
-        return inMemoryDb.products
-            .filter((p) => (inMemoryDb.vendors.find((x) => x.id === p.vendor_id)?.features_products !== false))
-            .map((p) => {
-            const v = inMemoryDb.vendors.find((x) => x.id === p.vendor_id) || {};
-            return {
-                ...normalizeProductRow(p),
-                shop_name: v.shop_name || 'Unknown Shop',
-                features_payments: v.features_payments !== false,
-                features_products: v.features_products !== false
-            };
-        });
-    },
-
-    addProduct: async (productData) => {
-        const imageUrls = Array.isArray(productData.image_urls) ? productData.image_urls.filter(Boolean) : [];
-        try {
-            if (pool) {
-                const payload = {
-                    ...productData,
-                    image_urls_json: JSON.stringify(imageUrls)
-                };
-                delete payload.image_urls;
-                await pool.query('INSERT INTO products SET ?', [payload]);
-                const [rows] = await pool.query('SELECT * FROM products WHERE id = LAST_INSERT_ID()');
-                if (rows && rows[0]) return normalizeProductRow(rows[0]);
-            }
-        } catch (err) {
-            LOG.error("MySQL addProduct failed, falling back to local", err.message);
-        }
-        const newId = (inMemoryDb.products[inMemoryDb.products.length - 1]?.id || 0) + 1;
-        const item = { id: newId, ...productData, image_urls: imageUrls };
-        inMemoryDb.products.push(item);
-        return normalizeProductRow(item);
-    },
-
-    updateProduct: async (productId, updateData) => {
-        const imageUrls = Array.isArray(updateData.image_urls) ? updateData.image_urls.filter(Boolean) : null;
-        try {
-            if (pool) {
-                const payload = { ...updateData };
-                if (imageUrls) payload.image_urls_json = JSON.stringify(imageUrls);
-                delete payload.image_urls;
-                await pool.query('UPDATE products SET ? WHERE id = ?', [payload, productId]);
-                return db.getProductById(productId);
-            }
-        } catch (err) {
-            LOG.error(`MySQL updateProduct failed for ${productId}, falling back to local`, err.message);
-        }
-        const item = inMemoryDb.products.find(p => String(p.id) === String(productId));
-        if (!item) return null;
-        Object.assign(item, updateData);
-        if (imageUrls) item.image_urls = imageUrls;
-        return normalizeProductRow(item);
-    },
-
-    // Orders
-    addOrder: async (orderData) => {
-        try {
-            if (pool) {
-                await pool.query('INSERT INTO orders SET ?', [orderData]);
-                return orderData;
-            }
-        } catch (err) {
-            LOG.error("MySQL addOrder failed, falling back to local", err.message);
-        }
-        const newId = (inMemoryDb.orders[inMemoryDb.orders.length - 1]?.id || 0) + 1;
-        const item = { id: newId, ...orderData };
-        inMemoryDb.orders.push(item);
-        return item;
     },
 
     // Notifications (in-app)
@@ -2502,8 +1809,8 @@ const db = {
             created_at: notification.created_at || new Date()
         };
         try {
-            if (pool) {
-                await pool.query(`
+            if (getPool()) {
+                await getPool().query(`
                     CREATE TABLE IF NOT EXISTS notifications (
                         id INT AUTO_INCREMENT PRIMARY KEY,
                         user_id VARCHAR(64),
@@ -2515,7 +1822,7 @@ const db = {
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     )
                 `);
-                const [res] = await pool.query('INSERT INTO notifications SET ?', [payload]);
+                const [res] = await getPool().query('INSERT INTO notifications SET ?', [payload]);
                 return { id: res.insertId, ...payload };
             }
         } catch (err) {
@@ -2529,8 +1836,8 @@ const db = {
 
     getNotificationsByUser: async (userId, limit = 50) => {
         try {
-            if (pool) {
-                const [rows] = await pool.query(
+            if (getPool()) {
+                const [rows] = await getPool().query(
                     'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
                     [userId, Number(limit) || 50]
                 );
@@ -2547,8 +1854,8 @@ const db = {
 
     markNotificationRead: async (notificationId, userId) => {
         try {
-            if (pool) {
-                await pool.query('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?', [notificationId, userId]);
+            if (getPool()) {
+                await getPool().query('UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?', [notificationId, userId]);
                 return { success: true };
             }
         } catch (err) {
@@ -2561,8 +1868,8 @@ const db = {
 
     deleteNotification: async (notificationId, userId) => {
         try {
-            if (pool) {
-                await pool.query('DELETE FROM notifications WHERE id = ? AND user_id = ?', [notificationId, userId]);
+            if (getPool()) {
+                await getPool().query('DELETE FROM notifications WHERE id = ? AND user_id = ?', [notificationId, userId]);
                 return { success: true };
             }
         } catch (err) {
@@ -2574,43 +1881,15 @@ const db = {
         return { success: true };
     },
 
-    getOrdersByVendorOwner: async (ownerId) => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query(
-                    `SELECT o.*, v.shop_name, u.name as user_name
-                     FROM orders o
-                     JOIN vendors v ON o.vendor_id = v.id
-                     LEFT JOIN users u ON o.user_id = u.id
-                     WHERE v.owner_id = ?
-                     ORDER BY o.created_at DESC`,
-                    [ownerId]
-                );
-                if (rows) return rows;
-            }
-        } catch (err) {
-            LOG.error(`MySQL getOrdersByVendorOwner failed for ${ownerId}, falling back to local`, err.message);
-        }
-        const ownedVendorIds = inMemoryDb.vendors.filter(v => v.owner_id === ownerId).map(v => v.id);
-        return inMemoryDb.orders
-            .filter(o => ownedVendorIds.includes(o.vendor_id))
-            .map(o => ({
-                ...o,
-                shop_name: inMemoryDb.vendors.find(v => v.id === o.vendor_id)?.shop_name || 'Unknown Shop',
-                user_name: inMemoryDb.users.find(u => u.id === o.user_id)?.name || 'User'
-            }))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
-    },
-
     // Activities
     getActivities: async (limit = 20) => {
         try {
-            if (pool) {
+            if (getPool()) {
                 // Try to join with vendors to check visibility_feed
                 // Note: Assuming activities table has vendor_id. If not, this might fail or need adjustment.
                 // For robustness, we'll try a LEFT JOIN if possible, or just select all.
                 try {
-                    const [rows] = await pool.query(`
+                    const [rows] = await getPool().query(`
                         SELECT a.* 
                         FROM activities a
                         LEFT JOIN vendors v ON a.vendor_id = v.id
@@ -2638,7 +1917,7 @@ const db = {
                 } catch (e) {
                     // Fallback if vendor_id column missing in activities
                     LOG.warning("MySQL getActivities join failed (schema mismatch?), falling back to simple select", e.message);
-                    const [rows] = await pool.query('SELECT * FROM activities ORDER BY timestamp DESC LIMIT ?', [limit]);
+                    const [rows] = await getPool().query('SELECT * FROM activities ORDER BY timestamp DESC LIMIT ?', [limit]);
                     return rows; 
                 }
             }
@@ -2657,9 +1936,9 @@ const db = {
 
     createActivity: async (activityData) => {
         try {
-            if (pool) {
+            if (getPool()) {
                 const { type, user_id, user_name, message, metadata } = activityData;
-                const [result] = await pool.query(
+                const [result] = await getPool().query(
                     `INSERT INTO activities (type, user_id, user_name, message, metadata, timestamp) 
                      VALUES (?, ?, ?, ?, ?, NOW())`,
                     [type, user_id, user_name, message, JSON.stringify(metadata || {})]
@@ -2680,284 +1959,34 @@ const db = {
         return newActivity;
     },
 
-    // Matchmaking
-    getMatchmakingPresets: async () => {
-        return deepClone(MATCHMAKING_PRESETS);
-    },
-
-    getVendorMatchmakingTemplate: async (vendorId) => {
-        try {
-            if (pool) {
-                await ensureMatchmakingTables();
-                const [rows] = await pool.query(
-                    'SELECT * FROM matchmaking_templates WHERE vendor_id = ? LIMIT 1',
-                    [vendorId]
-                );
-                if (rows && rows.length) {
-                    const row = rows[0];
-                    return {
-                        vendor_id: row.vendor_id,
-                        template_name: row.template_name,
-                        selected_preset: row.selected_preset,
-                        questions: JSON.parse(row.template_json || '[]'),
-                        scoring: JSON.parse(row.scoring_json || '{"pass":50,"good":70,"best":90}'),
-                        is_active: row.is_active !== 0
-                    };
-                }
-            }
-        } catch (err) {
-            LOG.error(`MySQL getVendorMatchmakingTemplate failed for ${vendorId}, falling back to local`, err.message);
-        }
-        return inMemoryDb.matchmaking_templates.find((x) => x.vendor_id === vendorId) || null;
-    },
-
-    saveVendorMatchmakingTemplate: async (vendorId, payload) => {
-        const normalized = normalizeTemplate(payload || {});
-        const finalTemplate = {
-            vendor_id: vendorId,
-            template_name: normalized.template_name,
-            selected_preset: normalized.selected_preset,
-            questions: normalized.questions,
-            scoring: normalized.scoring,
-            is_active: payload?.is_active !== false
-        };
-        try {
-            if (pool) {
-                await ensureMatchmakingTables();
-                await pool.query(
-                    `INSERT INTO matchmaking_templates (vendor_id, template_name, selected_preset, template_json, scoring_json, is_active)
-                     VALUES (?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                     template_name = VALUES(template_name),
-                     selected_preset = VALUES(selected_preset),
-                     template_json = VALUES(template_json),
-                     scoring_json = VALUES(scoring_json),
-                     is_active = VALUES(is_active)`,
-                    [
-                        vendorId,
-                        finalTemplate.template_name,
-                        finalTemplate.selected_preset,
-                        JSON.stringify(finalTemplate.questions || []),
-                        JSON.stringify(finalTemplate.scoring || { pass: 50, good: 70, best: 90 }),
-                        finalTemplate.is_active ? 1 : 0
-                    ]
-                );
-                return finalTemplate;
-            }
-        } catch (err) {
-            LOG.error(`MySQL saveVendorMatchmakingTemplate failed for ${vendorId}, falling back to local`, err.message);
-        }
-        const idx = inMemoryDb.matchmaking_templates.findIndex((x) => x.vendor_id === vendorId);
-        if (idx >= 0) inMemoryDb.matchmaking_templates[idx] = finalTemplate;
-        else inMemoryDb.matchmaking_templates.push(finalTemplate);
-        return finalTemplate;
-    },
-
-    submitMatchmakingAnswers: async ({ vendor_id, user_id, answers, user_name }) => {
-        const tpl = await db.getVendorMatchmakingTemplate(vendor_id);
-        if (!tpl || tpl.is_active === false || !Array.isArray(tpl.questions) || !tpl.questions.length) {
-            throw new Error('Matchmaking template not configured for this vendor');
-        }
-
-        const computed = calculateMatchmakingScore(tpl, answers || {});
-        const allSubs = await db.getVendorMatchmakingResults(vendor_id, { includeInsights: false });
-        const insight = buildAiInsight({
-            score: computed.totalScore,
-            percentage: computed.percentage,
-            band: computed.band,
-            tags: computed.tags,
-            currentUserId: user_id,
-            allSubmissions: allSubs
-        });
-
-        const payload = {
-            vendor_id,
-            user_id,
-            user_name: user_name || '',
-            answers: answers || {},
-            score: computed.totalScore,
-            percentage: computed.percentage,
-            band: computed.band,
-            tags: computed.tags,
-            insight
-        };
-
-        try {
-            if (pool) {
-                await ensureMatchmakingTables();
-                await pool.query(
-                    `INSERT INTO matchmaking_submissions (vendor_id, user_id, answers_json, score, percentage, band, tags_json, insight_json)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                     answers_json = VALUES(answers_json),
-                     score = VALUES(score),
-                     percentage = VALUES(percentage),
-                     band = VALUES(band),
-                     tags_json = VALUES(tags_json),
-                     insight_json = VALUES(insight_json)`,
-                    [
-                        payload.vendor_id,
-                        payload.user_id,
-                        JSON.stringify(payload.answers || {}),
-                        payload.score,
-                        payload.percentage,
-                        payload.band,
-                        JSON.stringify(payload.tags || []),
-                        JSON.stringify(payload.insight || {})
-                    ]
-                );
-                return payload;
-            }
-        } catch (err) {
-            LOG.error(`MySQL submitMatchmakingAnswers failed for vendor ${vendor_id}, falling back to local`, err.message);
-        }
-
-        const idx = inMemoryDb.matchmaking_submissions.findIndex((x) => x.vendor_id === vendor_id && x.user_id === user_id);
-        if (idx >= 0) inMemoryDb.matchmaking_submissions[idx] = payload;
-        else inMemoryDb.matchmaking_submissions.push(payload);
-        return payload;
-    },
-
-    getUserMatchmakingSubmissions: async (userId) => {
-        try {
-            if (pool) {
-                await ensureMatchmakingTables();
-                const [rows] = await pool.query(
-                    `SELECT s.*, v.shop_name
-                     FROM matchmaking_submissions s
-                     LEFT JOIN vendors v ON v.id = s.vendor_id
-                     WHERE s.user_id = ?
-                     ORDER BY s.updated_at DESC`,
-                    [userId]
-                );
-                return (rows || []).map((r) => ({
-                    id: r.id,
-                    vendor_id: r.vendor_id,
-                    shop_name: r.shop_name || 'Vendor',
-                    user_id: r.user_id,
-                    answers: JSON.parse(r.answers_json || '{}'),
-                    score: Number(r.score || 0),
-                    percentage: Number(r.percentage || 0),
-                    band: r.band || 'needs_improvement',
-                    tags: JSON.parse(r.tags_json || '[]'),
-                    insight: JSON.parse(r.insight_json || '{}'),
-                }));
-            }
-        } catch (err) {
-            LOG.error(`MySQL getUserMatchmakingSubmissions failed for ${userId}, falling back to local`, err.message);
-        }
-
-        return inMemoryDb.matchmaking_submissions
-            .filter((s) => s.user_id === userId)
-            .map((s, index) => ({
-                id: index + 1,
-                ...s,
-                shop_name: inMemoryDb.vendors.find((v) => v.id === s.vendor_id)?.shop_name || 'Vendor'
-            }));
-    },
-
-    getVendorMatchmakingResults: async (vendorId, options = {}) => {
-        const includeInsights = options?.includeInsights !== false;
-        try {
-            if (pool) {
-                await ensureMatchmakingTables();
-                const [rows] = await pool.query(
-                    `SELECT s.*, u.name as user_name, u.mobile as user_mobile
-                     FROM matchmaking_submissions s
-                     LEFT JOIN users u ON u.id = s.user_id
-                     WHERE s.vendor_id = ?
-                     ORDER BY s.percentage DESC, s.updated_at DESC`,
-                    [vendorId]
-                );
-                return (rows || []).map((r) => ({
-                    id: r.id,
-                    vendor_id: r.vendor_id,
-                    user_id: r.user_id,
-                    user_name: r.user_name || 'User',
-                    user_mobile: r.user_mobile || '',
-                    answers: JSON.parse(r.answers_json || '{}'),
-                    score: Number(r.score || 0),
-                    percentage: Number(r.percentage || 0),
-                    band: r.band || 'needs_improvement',
-                    tags: JSON.parse(r.tags_json || '[]'),
-                    insight: includeInsights ? JSON.parse(r.insight_json || '{}') : {}
-                }));
-            }
-        } catch (err) {
-            LOG.error(`MySQL getVendorMatchmakingResults failed for ${vendorId}, falling back to local`, err.message);
-        }
-
-        return inMemoryDb.matchmaking_submissions
-            .filter((s) => s.vendor_id === vendorId)
-            .map((s, index) => {
-                const user = inMemoryDb.users.find((u) => u.id === s.user_id) || {};
-                return {
-                    id: index + 1,
-                    ...s,
-                    user_name: user.name || s.user_name || 'User',
-                    user_mobile: user.mobile || ''
-                };
-            })
-            .sort((a, b) => (b.percentage || 0) - (a.percentage || 0));
-    },
-
-    // --- ANALYTICS HELPERS ---
-    getAllAppointments: async () => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM appointments');
-                return rows;
-            }
-        } catch (err) {
-            LOG.error("MySQL getAllAppointments failed", err.message);
-        }
-        return inMemoryDb.appointments;
-    },
-
-    getAllOrders: async () => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM orders');
-                return rows;
-            }
-        } catch (err) {
-            LOG.error("MySQL getAllOrders failed", err.message);
-        }
-        return inMemoryDb.orders;
-    },
-
-    getAllProducts: async () => {
-        try {
-            if (pool) {
-                const [rows] = await pool.query('SELECT * FROM products');
-                return rows;
-            }
-        } catch (err) {
-            LOG.error("MySQL getAllProducts failed", err.message);
-        }
-        return inMemoryDb.products;
-    },
-
     // --- SYSTEM SETTINGS ---
     getSettings: async () => {
+        // Use in-memory settings unless MySQL mode is explicitly enabled
+        if (DB_TYPE !== 'mysql') {
+            return inMemoryDb.settings;
+        }
         try {
-            if (pool) {
+            if (getPool()) {
+                // Return cached settings if they exist and are fresh (within last 5 seconds)
+                if (inMemoryDb.lastSettingsFetch && Date.now() - inMemoryDb.lastSettingsFetch < 5000) {
+                    return inMemoryDb.settings;
+                }
                 // Try to fetch from a settings table, or return defaults if not exists
                 // We'll assume a table 'system_settings' with columns key_name, is_enabled
                 try {
-                    const [rows] = await pool.query('SELECT * FROM system_settings');
+                    const [rows] = await getPool().query('SELECT * FROM system_settings LIMIT 100');
                     const settings = {
-                        enable_queue: false,
-                        enable_appointments: false,
-                        enable_shopping: false,
-                        enable_matchmaking: false,
-                        enable_offer: false,
+                        enable_queue: true,
+                        enable_appointments: true,
+                        enable_shopping: true,
+                        enable_matchmaking: true,
+                        enable_offer: true,
                         enable_trade: true,
-                        enable_qless: false,
-                        enable_fleet: false,
-                        enable_realestate: false,
-                        enable_cyber: false,
-                        enable_trust_score: false,
+                        enable_qless: true,
+                        enable_fleet: true,
+                        enable_realestate: true,
+                        enable_cyber: true,
+                        enable_trust_score: true,
                         theme_position: 'auto',
                         auto_validate_calls: false,
                         auto_validate_links: false,
@@ -3057,19 +2086,21 @@ const db = {
                             settings.enable_news = r.value === 'true' || r.value === 1 || r.value === true;
                         }
                     });
+                    inMemoryDb.settings = settings;
+                    inMemoryDb.lastSettingsFetch = Date.now();
                     return settings;
                 } catch (e) {
                     // Table might not exist, return defaults
                     return { 
-                        enable_queue: false, 
-                        enable_appointments: false, 
-                        enable_shopping: false, 
-                        enable_matchmaking: false, 
-                        enable_offer: false, 
+                        enable_queue: true, 
+                        enable_appointments: true, 
+                        enable_shopping: true, 
+                        enable_matchmaking: true, 
+                        enable_offer: true, 
                         enable_trade: true,
-                        enable_qless: false,
+                        enable_qless: true,
                         enable_fleet: true,
-                        enable_realestate: false,
+                        enable_realestate: true,
                         enable_cyber: true,
                         enable_trust_score: true,
                         theme_position: 'auto',
@@ -3165,15 +2196,15 @@ const db = {
         }
         // Merge with defaults to ensure all settings are present
         const defaultSettings = {
-            enable_queue: false,
-            enable_appointments: false,
-            enable_shopping: false,
-            enable_matchmaking: false,
-            enable_offer: false,
+            enable_queue: true,
+            enable_appointments: true,
+            enable_shopping: true,
+            enable_matchmaking: true,
+            enable_offer: true,
             enable_trade: true,
-            enable_qless: false,
+            enable_qless: true,
             enable_fleet: true,
-            enable_realestate: false,
+            enable_realestate: true,
             enable_cyber: true,
             enable_trust_score: true,
             theme_position: 'auto',
@@ -3325,24 +2356,24 @@ const db = {
 
     updateSettings: async (newSettings) => {
         try {
-            if (pool) {
+            if (getPool()) {
                 // Upsert logic for MySQL
                 // CREATE TABLE IF NOT EXISTS system_settings (key_name VARCHAR(50) PRIMARY KEY, value VARCHAR(10));
                 try {
-                    await pool.query(`
+                    await getPool().query(`
                         CREATE TABLE IF NOT EXISTS system_settings (
                             key_name VARCHAR(50) PRIMARY KEY, 
                             value TEXT
                         )
                     `);
                     try {
-                        await pool.query('ALTER TABLE system_settings MODIFY value TEXT');
+                        await getPool().query('ALTER TABLE system_settings MODIFY value TEXT');
                     } catch (e) {
                         LOG.warning('system_settings ALTER value TEXT skipped', e.message);
                     }
                     
                     for (const [key, val] of Object.entries(newSettings)) {
-                        await pool.query(
+                        await getPool().query(
                             'INSERT INTO system_settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?',
                             [key, String(val), String(val)]
                         );
@@ -3361,8 +2392,8 @@ const db = {
     }
     ,
     ensureNewsCacheTable: async () => {
-        if (!pool) return;
-        await pool.query(`
+        if (!getPool()) return;
+        await getPool().query(`
             CREATE TABLE IF NOT EXISTS news_cache (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 unique_key VARCHAR(255) UNIQUE,
@@ -3382,11 +2413,11 @@ const db = {
     },
     saveNewsItems: async (items) => {
         if (!Array.isArray(items) || items.length === 0) return { saved: 0 };
-        if (pool) {
+        if (getPool()) {
             try {
                 await db.ensureNewsCacheTable();
                 for (const item of items) {
-                    await pool.query(
+                    await getPool().query(
                         `INSERT INTO news_cache 
                         (unique_key, text, link, source, category, country, city, locality, image, published_at)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -3433,10 +2464,10 @@ const db = {
         return { saved: items.length };
     },
     getNewsItems: async (limit = 100) => {
-        if (pool) {
+        if (getPool()) {
             try {
                 await db.ensureNewsCacheTable();
-                const [rows] = await pool.query(
+                const [rows] = await getPool().query(
                     `SELECT unique_key, text, link, source, category, country, city, locality, image, published_at 
                      FROM news_cache 
                      ORDER BY published_at DESC 
@@ -3470,10 +2501,10 @@ const db = {
     }
     ,
     clearNewsCache: async () => {
-        if (pool) {
+        if (getPool()) {
             try {
                 await db.ensureNewsCacheTable();
-                await pool.query('TRUNCATE TABLE news_cache');
+                await getPool().query('TRUNCATE TABLE news_cache');
                 return { success: true };
             } catch (err) {
                 LOG.error('MySQL clearNewsCache failed', err.message);
@@ -3483,6 +2514,8 @@ const db = {
         return { success: true };
     }
 };
+
+dbContext.db = db;
 
 // Performance Wrapper
 const measuredDb = { LOG_CONFIG }; // Export config
@@ -3551,29 +2584,22 @@ if (!measuredDb.threatIntelligence) {
     measuredDb.threatIntelligence = inMemoryDb.threatIntelligence;
 }
 
-// Merge test data from data.js into inMemoryDb
-if (testData && typeof testData === 'object') {
-    Object.keys(testData).forEach(key => {
-        if (Array.isArray(testData[key]) && Array.isArray(inMemoryDb[key])) {
-            // Merge arrays: use test data if inMemoryDb array is empty, otherwise merge
-            if (inMemoryDb[key].length === 0) {
-                inMemoryDb[key] = [...testData[key]];
-            } else {
-                // Merge unique items based on id
-                const existingIds = new Set(inMemoryDb[key].map(item => item.id));
-                testData[key].forEach(item => {
-                    if (!existingIds.has(item.id)) {
-                        inMemoryDb[key].push(item);
-                    }
-                });
-            }
-        } else if (testData[key] && !inMemoryDb[key]) {
-            // Copy if inMemoryDb doesn't have this key
-            inMemoryDb[key] = testData[key];
-        }
-    });
-    LOG.info(`Loaded test data: ${Object.keys(testData).filter(k => Array.isArray(testData[k])).map(k => `${k}(${testData[k].length})`).join(', ')}`);
-}
+const CORE_DATA_KEYS = new Set([
+    'users',
+    'vendors',
+    'products',
+    'orders',
+    'queues',
+    'otps',
+    'appointments',
+    'activities',
+    'settings',
+    'user_vendor_mappings',
+    'subscriptions',
+]);
+
+// Core seed lives in this file. data.js feature collections load on first feature open.
+LOG.info('Core in-memory seed ready (feature seed/jobs deferred until first open)');
 
 // Copy all inMemoryDb properties directly (for arrays like cyberThreats, threatAlerts, etc.)
 Object.keys(inMemoryDb).forEach(key => {
@@ -3582,20 +2608,13 @@ Object.keys(inMemoryDb).forEach(key => {
     }
 });
 
-// Explicitly ensure cyberThreats is exported (for analytics)
+// Feature arrays stay empty until ensureFeature() copies seed from data.js
 if (inMemoryDb.cyberThreats) {
     measuredDb.cyberThreats = inMemoryDb.cyberThreats;
-    LOG.info(`Exported cyberThreats: ${measuredDb.cyberThreats.length} threats`);
-} else {
-    LOG.warning('cyberThreats not found in inMemoryDb');
 }
 
-// Explicitly ensure threatIntelligence is exported
 if (inMemoryDb.threatIntelligence) {
     measuredDb.threatIntelligence = inMemoryDb.threatIntelligence;
-    LOG.info(`Exported threatIntelligence: ${measuredDb.threatIntelligence.length} threats`);
-} else {
-    LOG.warning('threatIntelligence not found in inMemoryDb');
 }
 
 for (const key in db) {
@@ -3605,15 +2624,15 @@ for (const key in db) {
         } else {
             measuredDb[key] = async (...args) => {
                 if (!LOG_CONFIG.ENABLED) return await db[key](...args);
-                
+
                 const start = Date.now();
                 try {
                     return await db[key](...args);
                 } finally {
                     const duration = Date.now() - start;
-                    if (duration > LOG_CONFIG.PERF_THRESHOLD) {
-                        console.log(`[DB PERF] ${key} took ${duration}ms`);
-                    }
+                    const usedMysql = DB_TYPE === 'mysql' && !!getPool();
+                    const source = usedMysql ? 'MYSQL' : 'INMEMORY';
+                    logDbAccess(source, key, duration);
                 }
             };
         }
@@ -3623,9 +2642,31 @@ for (const key in db) {
 }
 
 // Export pool for use in other modules (like dealsService)
-measuredDb.getPool = () => pool;
-measuredDb.pool = pool; // Direct access
+measuredDb.getPool = () => getPool();
+measuredDb.pool = null; // Lazy — use getPool() or featureConnectionManager
+measuredDb.featureConnectionManager = featureConnectionManager;
 measuredDb.inMemoryDb = inMemoryDb; // Export in-memory DB for trading data service
+measuredDb.loadFeatureSeed = (keys = []) => {
+    const source = getTestData();
+    let loaded = 0;
+    keys.forEach((key) => {
+        if (CORE_DATA_KEYS.has(key)) return;
+        if (Array.isArray(inMemoryDb[key]) && inMemoryDb[key].length > 0) {
+            measuredDb[key] = inMemoryDb[key];
+            return;
+        }
+        if (source[key] != null) {
+            inMemoryDb[key] = Array.isArray(source[key]) ? source[key].slice() : source[key];
+            loaded += Array.isArray(inMemoryDb[key]) ? inMemoryDb[key].length : 1;
+        } else if (!inMemoryDb[key]) {
+            inMemoryDb[key] = [];
+        }
+        measuredDb[key] = inMemoryDb[key];
+    });
+    if (loaded) {
+        LOG.info(`Loaded in-memory feature seed (${loaded} rows) for [${keys.join(', ')}]`);
+    }
+};
 measuredDb.ensureFleetTables = ensureFleetTables; // Export for fleetService
 measuredDb.ensureCyberThreatTables = ensureCyberThreatTables; // Export for cyberThreatService
 measuredDb.ensureAllUsersAndVendors = ensureAllUsersAndVendors; // Export for comprehensive sync

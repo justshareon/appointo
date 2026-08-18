@@ -11,7 +11,8 @@ CREATE TABLE IF NOT EXISTS users (
     mobile VARCHAR(20),
     location_name VARCHAR(255),
     loyalty_points INT DEFAULT 0,
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
 -- Vendors Table
@@ -111,6 +112,17 @@ CREATE TABLE IF NOT EXISTS otps (
     otp VARCHAR(6) NOT NULL,
     expires_at TIMESTAMP NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- User-Vendor Mappings (matches inMemoryDb.user_vendor_mappings)
+CREATE TABLE IF NOT EXISTS user_vendor_mappings (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    user_id VARCHAR(64) NOT NULL,
+    vendor_id VARCHAR(64) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY uniq_user_vendor (user_id, vendor_id),
+    INDEX idx_user (user_id),
+    INDEX idx_vendor (vendor_id)
 );
 
 -- Seed users with fixed roles/mobiles
