@@ -303,7 +303,7 @@ const syncUsers = async () => {
             u.mobile || '',
             u.role || 'user',
             u.location_name || '',
-            0, // loyalty_points
+            0,
             new Date()
         ]);
         
