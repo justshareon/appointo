@@ -9,6 +9,7 @@ module.exports = function createMatchmakingFeature(ctx) {
 
     return {
         feature: 'matchmaking',
+        ensureTables: async () => ctx.ensureMatchmakingTables(),
         getMatchmakingPresets: async () => ctx.deepClone(ctx.MATCHMAKING_PRESETS),
 
         getVendorMatchmakingTemplate: async (vendorId) => {

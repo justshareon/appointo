@@ -31,8 +31,10 @@ let inMemoryDb = {
         { id: 'usr_offer1vendor', name: 'Offer Vendor 1', email: 'offer1vendor@test.com', mobile: '8000000004', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_qlessuser1', name: 'QLess User 1', email: 'qlessuser1@test.com', mobile: '8000000005', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_qlessvendor1', name: 'QLess Vendor 1', email: 'qlessvendor1@test.com', mobile: '8000000006', role: 'vendor', location_name: 'Mumbai' },
-        { id: 'usr_fleetuser1', name: 'Fleet User 1', email: 'fleetuser1@test.com', mobile: '8000000007', role: 'user', location_name: 'Delhi' },
-        { id: 'usr_fleetvendor1', name: 'Fleet Vendor 1', email: 'fleetvendor1@test.com', mobile: '8000000008', role: 'vendor', location_name: 'Delhi' },
+        { id: 'usr_fleetuser1', name: 'Amit Sharma', email: 'fleetuser1@test.com', mobile: '8000000007', role: 'user', location_name: 'Bhiwandi' },
+        { id: 'usr_fleetuser2', name: 'Suresh Jadhav', email: 'fleetuser2@test.com', mobile: '8000000017', role: 'user', location_name: 'Panvel' },
+        { id: 'usr_fleetuser3', name: 'Priya Kulkarni', email: 'fleetuser3@test.com', mobile: '8000000027', role: 'user', location_name: 'Pune' },
+        { id: 'usr_fleetvendor1', name: 'Rajesh Patil', email: 'fleetvendor1@test.com', mobile: '8000000008', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_realuser1', name: 'Realestate User 1', email: 'realuser1@test.com', mobile: '8000000009', role: 'user', location_name: 'Bangalore' },
         { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
         { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
@@ -45,7 +47,7 @@ let inMemoryDb = {
             id: 'v_1',
             owner_id: 'usr_vendor',
             shop_name: 'Smile Dental Clinic',
-            category: 'Medical',
+            category: 'Hospital',
             is_active: true,
             is_promoted: true,
             latitude: 0,
@@ -256,12 +258,13 @@ let inMemoryDb = {
         {
             id: 'v_fleet1',
             owner_id: 'usr_fleetvendor1',
-            shop_name: 'Fleet Shop 1',
+            shop_name: 'Western Express Logistics',
             category: 'Fleet',
             is_active: true,
             is_promoted: false,
-            latitude: 0,
-            longitude: 0,
+            latitude: 19.076,
+            longitude: 72.8777,
+            location_name: 'Mumbai → Pune',
             appointmentCount: 0,
             google_link: '',
             instagram_handle: '',
@@ -418,6 +421,16 @@ let inMemoryDb = {
                 'https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?w=800',
                 'https://images.unsplash.com/photo-1554224155-6726b3ff858f?w=800'
             ]
+        },
+        {
+            id: 12, vendor_id: 'v_qless1', name: 'QLess Express Pass', price: 199, offer: 'Skip the line', offer_amount: 20,
+            validity_from: '2026-01-01', validity_to: '2026-12-31',
+            image_urls: ['https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800']
+        },
+        {
+            id: 13, vendor_id: 'v_qless1', name: 'Priority Token Pack', price: 499, offer: '3 tokens', offer_amount: 50,
+            validity_from: '2026-01-01', validity_to: '2026-12-31',
+            image_urls: ['https://images.unsplash.com/photo-1556742111-a301076d9d18?w=800']
         }
     ],
     orders: [
@@ -473,6 +486,9 @@ let inMemoryDb = {
         enable_trust_score: true,
         theme_position: 'auto',
         enable_news: true,
+        enable_trade_extra_tabs: false,
+        enable_lazy_loading: true,
+        ui_theme: 'facebook',
         news_user_emails: 'newsuser11',
         news_vendor_emails: 'newsvendor1',
         // Auto-validation settings

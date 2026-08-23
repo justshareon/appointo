@@ -20,7 +20,7 @@ class QueueService {
             throw new Error("You cannot join the queue of your own shop.");
         }
 
-        const alreadyIn = existing.some(q => q.user_id === userId);
+        const alreadyIn = existing.some(q => String(q.user_id) === String(userId));
         if (alreadyIn) {
             return { success: true, alreadyIn: true };
         }
@@ -32,6 +32,12 @@ class QueueService {
             status: "waiting",
             joined_at: new Date()
         });
+
+        try {
+            await db.addUserVendorMapping(userId, vendorId);
+        } catch (e) {
+            LOG.warning(`[Queue] mapping skip for ${userId}→${vendorId}: ${e.message}`);
+        }
 
         // Update socket room in background
         db.getQueueByVendor(vendorId).then(updatedQueue => {

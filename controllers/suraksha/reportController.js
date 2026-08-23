@@ -195,21 +195,29 @@ class ReportController {
     }
 
     /**
-     * Get user's reports
+     * Get reported fraud cases
      * GET /api/suraksha/reports
      */
     async getReports(req, res) {
         try {
+            const db = require('../../database');
             const userId = req.user?.id || req.userId;
             const limit = parseInt(req.query.limit) || 50;
-            
-            const db = require('../../database');
+
+            const users = typeof db.getUsers === 'function' ? await db.getUsers() : [];
+            const nameById = {};
+            (users || []).forEach((u) => { nameById[String(u.id)] = u.name; });
+
             if (db.surakshaReports) {
-                const reports = db.surakshaReports
-                    .filter(r => r.user_id === userId)
+                const reports = [...db.surakshaReports]
                     .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                    .slice(0, limit);
-                
+                    .slice(0, limit)
+                    .map((r) => ({
+                        ...r,
+                        reporter_name: nameById[String(r.user_id)] || r.user_id,
+                        is_mine: r.user_id === userId,
+                    }));
+
                 return res.json({
                     success: true,
                     count: reports.length,

@@ -15,6 +15,10 @@ class StockDataService {
             live_stock_data: [],
             stock_data_history: []
         };
+        // Avoid N+1 hammering stock_data_history (was 20–85s per symbol)
+        this._volumeCache = new Map(); // symbol -> { vol, at }
+        this._volumeCacheTtlMs = 5 * 60 * 1000;
+        this._volumeInflight = new Map(); // symbol -> Promise
     }
 
     /**
@@ -109,7 +113,6 @@ class StockDataService {
                 }
             }
 
-            // Create stock_data_history table with data_type support
             await pool.query(`
                 CREATE TABLE IF NOT EXISTS stock_data_history (
                     id INT AUTO_INCREMENT PRIMARY KEY,
@@ -124,9 +127,22 @@ class StockDataService {
                     archived_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     INDEX idx_symbol (symbol),
                     INDEX idx_data_type (data_type),
-                    INDEX idx_archived_at (archived_at)
+                    INDEX idx_archived_at (archived_at),
+                    INDEX idx_symbol_archived (symbol, archived_at)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
             `);
+
+            // Composite index critical for volume-ratio lookups (symbol + time)
+            try {
+                await pool.query(`
+                    CREATE INDEX idx_symbol_archived ON stock_data_history (symbol, archived_at)
+                `);
+            } catch (err) {
+                const msg = String(err.message || '');
+                if (!msg.includes('Duplicate') && !msg.includes('exists') && !/1061|42000/i.test(msg)) {
+                    LOG.warning('[Stock Data] idx_symbol_archived note:', err.message);
+                }
+            }
             
             // Add data_type column if table exists but column doesn't (migration)
             try {
@@ -210,42 +226,22 @@ class StockDataService {
         const pool = db.getPool();
 
         try {
-            // Get all current live data
-            const [liveData] = await pool.query('SELECT * FROM live_stock_data');
-            
-            if (liveData.length === 0) {
+            const [countRows] = await pool.query('SELECT COUNT(*) AS n FROM live_stock_data');
+            const n = Number(countRows?.[0]?.n || 0);
+            if (!n) {
                 LOG.info('[Stock Data] No live data to archive');
                 return 0;
             }
 
-            // Insert into history table (include all fields)
-            const archiveValues = liveData.map(row => [
-                row.symbol,
-                row.company_name,
-                row.last_price,
-                row.pchange,
-                row.per_change,
-                row.volume,
-                row.market_cap,
-                row.pe_ratio || null,
-                row.week_52_low || null,
-                row.week_52_high || null,
-                row.data_type || 'data',
-                row.additional_data ? (typeof row.additional_data === 'string' ? row.additional_data : JSON.stringify(row.additional_data)) : null
-            ]);
-
-            const placeholders = archiveValues.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-            const query = `
-                INSERT INTO stock_data_history 
+            await pool.query(`
+                INSERT INTO stock_data_history
                 (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
-                VALUES ${placeholders}
-            `;
+                SELECT symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, COALESCE(data_type, 'data'), additional_data
+                FROM live_stock_data
+            `);
 
-            const flatValues = archiveValues.flat();
-            await pool.query(query, flatValues);
-
-            LOG.success(`[Stock Data] Archived ${liveData.length} records to history table`);
-            return liveData.length;
+            LOG.success(`[Stock Data] Archived ${n} records to history table`);
+            return n;
         } catch (error) {
             LOG.error('[Stock Data] Error archiving data:', error.message);
             throw error;
@@ -388,29 +384,13 @@ class StockDataService {
         }
 
         if (!this.isMySQLAvailable()) {
-            // Use in-memory storage
             const inMemoryDb = this.getInMemoryDb();
             const upperSymbols = symbols.map(s => s.toUpperCase());
-            const stocks = inMemoryDb.live_stock_data.filter(s => 
+            const stocks = inMemoryDb.live_stock_data.filter(s =>
                 upperSymbols.includes(s.symbol)
             );
-            // Fetch volumes in batch
-            const volumeMap = new Map();
-            const volumePromises = stocks.map(async (stock) => {
-                if (stock.symbol) {
-                    const vol = await this.getLastWeekVolume(stock.symbol);
-                    return [stock.symbol.toUpperCase(), vol];
-                }
-                return null;
-            });
-            const volumes = await Promise.all(volumePromises);
-            volumes.forEach(result => {
-                if (result) volumeMap.set(result[0], result[1]);
-            });
-            
-            return await Promise.all(
-                stocks.map(stock => this.formatStockData(stock, volumeMap.get(stock.symbol?.toUpperCase()) || null))
-            );
+            const volumeMap = await this.getLastWeekVolumesBatch(stocks.map((s) => s.symbol));
+            return this.formatStocksWithVolumes(stocks, volumeMap);
         }
 
         const pool = db.getPool();
@@ -420,24 +400,8 @@ class StockDataService {
                 `SELECT * FROM live_stock_data WHERE symbol IN (${placeholders})`,
                 symbols.map(s => s.toUpperCase())
             );
-
-            // Fetch volumes in batch
-            const volumeMap = new Map();
-            if (rows.length > 0) {
-                const symbols = rows.map(r => r.symbol).filter(Boolean);
-                const volumePromises = symbols.map(async (symbol) => {
-                    const vol = await this.getLastWeekVolume(symbol);
-                    return [symbol.toUpperCase(), vol];
-                });
-                const volumes = await Promise.all(volumePromises);
-                volumes.forEach(([symbol, vol]) => {
-                    if (symbol) volumeMap.set(symbol, vol);
-                });
-            }
-            
-            return await Promise.all(
-                rows.map(row => this.formatStockData(row, volumeMap.get(row.symbol?.toUpperCase()) || null))
-            );
+            const volumeMap = await this.getLastWeekVolumesBatch(rows.map((r) => r.symbol));
+            return this.formatStocksWithVolumes(rows, volumeMap);
         } catch (error) {
             LOG.error('[Stock Data] Error getting quotes:', error.message);
             return [];
@@ -450,73 +414,28 @@ class StockDataService {
      */
     async getAllStocks() {
         if (!this.isMySQLAvailable()) {
-            LOG.info(`[Stock Data] getAllStocks in memory anuj`);
-
-            // Use in-memory storage
+            LOG.info(`[Stock Data] getAllStocks in memory`);
             const inMemoryDb = this.getInMemoryDb();
             const stocks = inMemoryDb.live_stock_data
                 .sort((a, b) => (a.symbol || '').localeCompare(b.symbol || ''));
-            
-            // Fetch volumes in batch for in-memory data too
-            const volumeMap = new Map();
-            if (stocks.length > 0) {
-                const symbols = stocks.map(s => s.symbol).filter(Boolean);
-                const volumePromises = symbols.map(async (symbol) => {
-                    const vol = await this.getLastWeekVolume(symbol);
-                    return [symbol.toUpperCase(), vol];
-                });
-                const volumes = await Promise.all(volumePromises);
-                volumes.forEach(([symbol, vol]) => {
-                    if (symbol) volumeMap.set(symbol, vol);
-                });
-            }
-            
-            // Format all stocks with their volumes
-            const formatted = await Promise.all(
-                stocks.map(stock => this.formatStockData(stock, volumeMap.get(stock.symbol?.toUpperCase()) || null))
-            );
-            
-            // Filter out null values (invalid stocks)
-            return formatted.filter(stock => stock !== null);
+            const volumeMap = await this.getLastWeekVolumesBatch(stocks.map((s) => s.symbol));
+            return this.formatStocksWithVolumes(stocks, volumeMap);
         }
 
         const pool = db.getPool();
         try {
             const [rows] = await pool.query('SELECT * FROM live_stock_data ORDER BY symbol');
-            LOG.info(`[Stock Data] getAllStocksanuj: Found ${rows.length} rows from database`);
-            
-            // Fetch volumes in batch
-            const volumeMap = new Map();
-            if (rows.length > 0) {
-                const symbols = rows.map(r => r.symbol).filter(Boolean);
-                LOG.info(`[Stock Data] getAllStocksanuj1: Fetching volumes for ${symbols.length} symbols`);
-                const volumePromises = symbols.map(async (symbol) => {
-                    const vol = await this.getLastWeekVolume(symbol);
-                    return [symbol.toUpperCase(), vol];
-                });
-                const volumes = await Promise.all(volumePromises);
-                volumes.forEach(([symbol, vol]) => {
-                    if (symbol) volumeMap.set(symbol, vol);
-                });
-            }
-            
-            // Format all rows with their volumes
-            const formatted = await Promise.all(
-                rows.map(row => this.formatStockData(row, volumeMap.get(row.symbol?.toUpperCase()) || null))
-            );
-            
-            // Filter out null values and log sample
-            const validStocks = formatted.filter(stock => stock !== null);
+            LOG.info(`[Stock Data] getAllStocks: Found ${rows.length} rows from database`);
+            const volumeMap = await this.getLastWeekVolumesBatch(rows.map((r) => r.symbol));
+            const validStocks = await this.formatStocksWithVolumes(rows, volumeMap);
             if (validStocks.length > 0) {
-                LOG.info(`[Stock Data] getAllStocksanuj2: Sample stock (first):`, {
+                LOG.info(`[Stock Data] getAllStocks sample:`, {
                     symbol: validStocks[0].symbol,
                     name: validStocks[0].name,
                     price: validStocks[0].price,
-                    pchange: validStocks[0].pchange,
-                    changePercent: validStocks[0].changePercent
+                    volumeRatio: validStocks[0].volumeRatio,
                 });
             }
-            
             return validStocks;
         } catch (error) {
             LOG.error('[Stock Data] Error getting all stocks:', error.message);
@@ -561,268 +480,302 @@ class StockDataService {
     }
     
     /**
-     * Get stocks by data type
-     * @param {string} dataType - Type: 'gainers', 'decliners', 'actives', 'data'
-     * @param {number} limit - Number of stocks to return
-     * @returns {Promise<Array>} Array of stocks
+     * Paginated live stocks — SQL LIMIT/OFFSET, volume optional (default off for fast UI).
      */
-    async getStocksByType(dataType, limit = 10) {
-        LOG.info(`[Stock Data] getStocksByType called: dataType=${dataType}, limit=${limit}`);
-        
+    async getLiveStocksPage({
+        dataType = null,
+        limit = 30,
+        offset = 0,
+        includeVolume = false,
+        sort = 'auto',
+    } = {}) {
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 200);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+
+        let orderBy = 'symbol ASC';
+        if (sort === 'auto') {
+            if (dataType === 'gainers') orderBy = 'per_change DESC';
+            else if (dataType === 'decliners') orderBy = 'per_change ASC';
+            else if (dataType === 'actives') orderBy = 'volume DESC';
+            else orderBy = 'symbol ASC';
+        } else if (sort === 'gainers') orderBy = 'per_change DESC';
+        else if (sort === 'losers' || sort === 'decliners') orderBy = 'per_change ASC';
+        else if (sort === 'volume') orderBy = 'volume DESC';
+
         if (!this.isMySQLAvailable()) {
-            // Use in-memory storage
-            LOG.info('[Stock Data] Using in-memory storage');
-            const inMemoryDb = this.getInMemoryDb();
-            const allStocks = inMemoryDb.live_stock_data || [];
-            LOG.info(`[Stock Data] In-memory total stocks: ${allStocks.length}`);
-            
-            const filtered = allStocks.filter(s => s.data_type === dataType);
-            LOG.info(`[Stock Data] Filtered by type '${dataType}': ${filtered.length} stocks`);
-            
-            const sorted = filtered.sort((a, b) => {
-                // For gainers/decliners, sort by per_change
-                if (dataType === 'gainers' || dataType === 'decliners') {
-                    const aChange = a.per_change || 0;
-                    const bChange = b.per_change || 0;
-                    return dataType === 'gainers' 
-                        ? bChange - aChange 
-                        : aChange - bChange;
+            const all = this.getInMemoryDb().live_stock_data || [];
+            let filtered = dataType ? all.filter((s) => s.data_type === dataType) : all;
+            // Fallback: typed sheet empty → derive from all rows
+            if (dataType && filtered.length === 0 && all.length > 0) {
+                filtered = [...all];
+                if (dataType === 'gainers') {
+                    filtered = filtered.filter((s) => (s.per_change || 0) > 0)
+                        .sort((a, b) => (b.per_change || 0) - (a.per_change || 0));
+                } else if (dataType === 'decliners') {
+                    filtered = filtered.filter((s) => (s.per_change || 0) < 0)
+                        .sort((a, b) => (a.per_change || 0) - (b.per_change || 0));
+                } else if (dataType === 'actives') {
+                    filtered = filtered.sort((a, b) => (b.volume || 0) - (a.volume || 0));
                 }
-                // For actives, sort by volume
-                if (dataType === 'actives') {
-                    return (b.volume || 0) - (a.volume || 0);
-                }
-                // For data, sort by symbol
-                return (a.symbol || '').localeCompare(b.symbol || '');
-            });
-            
-            const limited = sorted.slice(0, limit);
-            LOG.info(`[Stock Data] Returning ${limited.length} stocks after sorting and limiting`);
-            
-            if (limited.length > 0) {
-                LOG.info(`[Stock Data] Sample stock:`, {
-                    symbol: limited[0].symbol,
-                    data_type: limited[0].data_type,
-                    per_change: limited[0].per_change
+            } else {
+                filtered = [...filtered].sort((a, b) => {
+                    if (orderBy.includes('per_change DESC')) return (b.per_change || 0) - (a.per_change || 0);
+                    if (orderBy.includes('per_change ASC')) return (a.per_change || 0) - (b.per_change || 0);
+                    if (orderBy.includes('volume')) return (b.volume || 0) - (a.volume || 0);
+                    return String(a.symbol || '').localeCompare(String(b.symbol || ''));
                 });
             }
-            
-            // Fetch volumes in batch
-            const volumeMap = new Map();
-            const volumePromises = limited.map(async (stock) => {
-                if (stock.symbol) {
-                    const vol = await this.getLastWeekVolume(stock.symbol);
-                    return [stock.symbol.toUpperCase(), vol];
-                }
-                return null;
-            });
-            const volumes = await Promise.all(volumePromises);
-            volumes.forEach(result => {
-                if (result) volumeMap.set(result[0], result[1]);
-            });
-            
-            return await Promise.all(
-                limited.map(stock => this.formatStockData(stock, volumeMap.get(stock.symbol?.toUpperCase()) || null))
-            );
+            const slice = filtered.slice(safeOffset, safeOffset + safeLimit);
+            const volumeMap = includeVolume
+                ? await this.getLastWeekVolumesBatch(slice.map((s) => s.symbol))
+                : new Map(slice.map((s) => [String(s.symbol || '').toUpperCase(), null]));
+            const data = await this.formatStocksWithVolumes(slice, volumeMap);
+            return {
+                data,
+                limit: safeLimit,
+                offset: safeOffset,
+                hasMore: safeOffset + data.length < filtered.length,
+                total: filtered.length,
+            };
         }
 
         const pool = db.getPool();
         try {
-            // First check total count
-            const [countResult] = await pool.query('SELECT COUNT(*) as total FROM live_stock_data');
-            const totalCount = countResult[0].total;
-            LOG.info(`[Stock Data] MySQL total stocks: ${totalCount}`);
-            
-            // Check count by type
-            const [typeCountResult] = await pool.query(
-                'SELECT COUNT(*) as count FROM live_stock_data WHERE data_type = ?',
-                [dataType]
-            );
-            const typeCount = typeCountResult[0].count;
-            LOG.info(`[Stock Data] Stocks with data_type='${dataType}': ${typeCount}`);
-            
-            let orderBy = 'symbol';
-            if (dataType === 'gainers' || dataType === 'decliners') {
-                orderBy = dataType === 'gainers' 
-                    ? 'per_change DESC' 
-                    : 'per_change ASC';
-            } else if (dataType === 'actives') {
-                orderBy = 'volume DESC';
-            }
-            
-            const [rows] = await pool.query(
-                `SELECT * FROM live_stock_data 
-                 WHERE data_type = ? 
-                 ORDER BY ${orderBy} 
-                 LIMIT ?`,
-                [dataType, limit]
-            );
+            let rows = [];
+            let total = 0;
 
-            LOG.info(`[Stock Data] Query returned ${rows.length} rows`);
-            if (rows.length > 0) {
-                LOG.info(`[Stock Data] Sample row:`, {
-                    symbol: rows[0].symbol,
-                    data_type: rows[0].data_type,
-                    per_change: rows[0].per_change,
-                    company_name: rows[0].company_name
-                });
+            if (dataType) {
+                const [countRows] = await pool.query(
+                    'SELECT COUNT(*) AS c FROM live_stock_data WHERE data_type = ?',
+                    [dataType]
+                );
+                total = countRows[0]?.c || 0;
+
+                if (total > 0) {
+                    const [typed] = await pool.query(
+                        `SELECT * FROM live_stock_data WHERE data_type = ? ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+                        [dataType, safeLimit, safeOffset]
+                    );
+                    rows = typed;
+                } else {
+                    // Fallback when Excel sync stored everything as data_type='data'
+                    let where = '1=1';
+                    if (dataType === 'gainers') {
+                        where = 'per_change > 0';
+                        orderBy = 'per_change DESC';
+                    } else if (dataType === 'decliners') {
+                        where = 'per_change < 0';
+                        orderBy = 'per_change ASC';
+                    } else if (dataType === 'actives') {
+                        orderBy = 'volume DESC';
+                    }
+                    const [countAll] = await pool.query(
+                        `SELECT COUNT(*) AS c FROM live_stock_data WHERE ${where}`
+                    );
+                    total = countAll[0]?.c || 0;
+                    const [fallback] = await pool.query(
+                        `SELECT * FROM live_stock_data WHERE ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+                        [safeLimit, safeOffset]
+                    );
+                    rows = fallback;
+                }
+            } else {
+                const [countRows] = await pool.query('SELECT COUNT(*) AS c FROM live_stock_data');
+                total = countRows[0]?.c || 0;
+                const [all] = await pool.query(
+                    `SELECT * FROM live_stock_data ORDER BY ${orderBy} LIMIT ? OFFSET ?`,
+                    [safeLimit, safeOffset]
+                );
+                rows = all;
             }
 
-            // Fetch last week volumes in batch for all symbols
-            const volumeMap = new Map();
-            if (rows.length > 0) {
-                const symbols = rows.map(r => r.symbol).filter(Boolean);
-                const volumePromises = symbols.map(async (symbol) => {
-                    const vol = await this.getLastWeekVolume(symbol);
-                    return [symbol, vol];
-                });
-                const volumes = await Promise.all(volumePromises);
-                volumes.forEach(([symbol, vol]) => {
-                    if (symbol) volumeMap.set(symbol.toUpperCase(), vol);
-                });
-            }
-            
-            // Format rows with last week volumes
-            const formatted = await Promise.all(
-                rows.map(row => this.formatStockData(row, volumeMap.get(row.symbol?.toUpperCase()) || null))
-            );
-            LOG.info(`[Stock Data] Formatted ${formatted.length} stocks`);
-            
-            return formatted;
+            const volumeMap = includeVolume
+                ? await this.getLastWeekVolumesBatch(rows.map((r) => r.symbol))
+                : new Map(rows.map((r) => [String(r.symbol || '').toUpperCase(), null]));
+            const data = await this.formatStocksWithVolumes(rows, volumeMap);
+            return {
+                data,
+                limit: safeLimit,
+                offset: safeOffset,
+                hasMore: safeOffset + rows.length < total,
+                total,
+            };
         } catch (error) {
-            LOG.error(`[Stock Data] Error getting ${dataType}:`, error.message);
-            LOG.error(`[Stock Data] Error stack:`, error.stack);
-            return [];
+            LOG.error('[Stock Data] getLiveStocksPage error:', error.message);
+            return { data: [], limit: safeLimit, offset: safeOffset, hasMore: false, total: 0 };
         }
+    }
+
+    /**
+     * Get stocks by data type
+     * @param {string} dataType - Type: 'gainers', 'decliners', 'actives', 'data'
+     * @param {number} limit - Number of stocks to return
+     * @param {object} [opts]
+     * @returns {Promise<Array>} Array of stocks
+     */
+    async getStocksByType(dataType, limit = 10, opts = {}) {
+        const includeVolume = opts.includeVolume === true;
+        const page = await this.getLiveStocksPage({
+            dataType: dataType === 'data' ? null : dataType,
+            limit,
+            offset: opts.offset || 0,
+            includeVolume,
+        });
+        return page.data;
     }
 
 
     /**
-     * Get last week's volume for a symbol from history
-     * Looks for archived records from approximately 7 days ago (last week)
-     * @param {string} symbol - Stock symbol
-     * @returns {Promise<number|null>} Last week's volume or null
+     * Get last week's (or recent) volume for many symbols in ONE query.
+     * Stops the N+1 pattern that was firing 1–3 slow SELECTs per symbol.
+     * @param {string[]} symbols
+     * @returns {Promise<Map<string, number|null>>}
      */
-    async getLastWeekVolume(symbol) {
+    async getLastWeekVolumesBatch(symbols = []) {
+        const result = new Map();
+        const unique = [...new Set(
+            (symbols || [])
+                .map((s) => String(s || '').trim().toUpperCase())
+                .filter(Boolean)
+        )];
+        if (!unique.length) return result;
+
+        const now = Date.now();
+        const needFetch = [];
+        for (const sym of unique) {
+            const cached = this._volumeCache.get(sym);
+            if (cached && (now - cached.at) < this._volumeCacheTtlMs) {
+                result.set(sym, cached.vol);
+            } else {
+                needFetch.push(sym);
+            }
+        }
+        if (!needFetch.length) return result;
+
+        const thirtyDaysAgo = new Date(now - 30 * 24 * 60 * 60 * 1000);
+
         if (!this.isMySQLAvailable()) {
-            // Use in-memory storage
-            const inMemoryDb = this.getInMemoryDb();
-            const history = inMemoryDb.stock_data_history || [];
-            
-            // Calculate date range: 6-8 days ago (approximately last week)
-            const now = new Date();
-            const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
-            const sixDaysAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
-            
-            // Get records for this symbol within the date range (6-8 days ago)
-            const symbolHistory = history
-                .filter(h => {
-                    if (h.symbol !== symbol.toUpperCase()) return false;
-                    if (!h.archived_at) return false;
-                    const archivedDate = new Date(h.archived_at);
-                    return archivedDate >= eightDaysAgo && archivedDate <= sixDaysAgo;
-                })
-                .sort((a, b) => new Date(b.archived_at) - new Date(a.archived_at));
-            
-            // If found in ideal range, use it
-            if (symbolHistory.length > 0) {
-                return symbolHistory[0].volume || null;
+            const history = this.getInMemoryDb().stock_data_history || [];
+            for (const sym of needFetch) {
+                const rows = history
+                    .filter((h) => {
+                        if (h.symbol !== sym || !h.archived_at) return false;
+                        return new Date(h.archived_at) >= thirtyDaysAgo;
+                    })
+                    .sort((a, b) => new Date(b.archived_at) - new Date(a.archived_at));
+                const vol = rows[0]?.volume != null ? parseInt(rows[0].volume, 10) : null;
+                const value = Number.isFinite(vol) ? vol : null;
+                result.set(sym, value);
+                this._volumeCache.set(sym, { vol: value, at: now });
             }
-            
-            // Fallback 1: Try any record from last 30 days
-            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-            const recentHistory = history
-                .filter(h => {
-                    if (h.symbol !== symbol.toUpperCase()) return false;
-                    if (!h.archived_at) return false;
-                    const archivedDate = new Date(h.archived_at);
-                    return archivedDate >= thirtyDaysAgo;
-                })
-                .sort((a, b) => new Date(b.archived_at) - new Date(a.archived_at));
-            
-            if (recentHistory.length > 0) {
-                return recentHistory[0].volume || null;
-            }
-            
-            // Fallback 2: Get the oldest available record (any historical data is better than none)
-            const allSymbolHistory = history
-                .filter(h => h.symbol === symbol.toUpperCase() && h.archived_at)
-                .sort((a, b) => new Date(a.archived_at) - new Date(b.archived_at));
-            
-            if (allSymbolHistory.length > 0) {
-                return allSymbolHistory[0].volume || null;
-            }
-            
-            return null;
+            return result;
         }
 
         const pool = db.getPool();
         try {
-            // Calculate date range: 6-8 days ago (approximately last week)
-            const now = new Date();
-            const eightDaysAgo = new Date(now.getTime() - 8 * 24 * 60 * 60 * 1000);
-            const sixDaysAgo = new Date(now.getTime() - 6 * 24 * 60 * 60 * 1000);
-            
-            // First try to get a record from 6-8 days ago (last week) - ideal case
-            const [rows] = await pool.query(`
-                SELECT volume, archived_at
-                FROM stock_data_history 
-                WHERE symbol = ? 
-                  AND archived_at >= ? 
-                  AND archived_at <= ?
-                ORDER BY archived_at DESC 
-                LIMIT 1
-            `, [symbol.toUpperCase(), eightDaysAgo, sixDaysAgo]);
-            
-            if (rows.length > 0 && rows[0].volume) {
-                return parseInt(rows[0].volume);
+            const placeholders = needFetch.map(() => '?').join(', ');
+            // One indexed lookup: latest volume per symbol in the last 30 days.
+            // Skip "oldest ever" full-table scans (were ~85s each on TiDB).
+            const [rows] = await pool.query(
+                `
+                SELECT h.symbol, h.volume
+                FROM stock_data_history h
+                INNER JOIN (
+                    SELECT symbol, MAX(archived_at) AS max_at
+                    FROM stock_data_history
+                    WHERE symbol IN (${placeholders})
+                      AND archived_at >= ?
+                    GROUP BY symbol
+                ) latest
+                  ON h.symbol = latest.symbol
+                 AND h.archived_at = latest.max_at
+                `,
+                [...needFetch, thirtyDaysAgo]
+            );
+
+            const found = new Set();
+            for (const row of rows || []) {
+                const sym = String(row.symbol || '').toUpperCase();
+                if (!sym) continue;
+                const vol = row.volume != null ? parseInt(row.volume, 10) : null;
+                const value = Number.isFinite(vol) ? vol : null;
+                result.set(sym, value);
+                this._volumeCache.set(sym, { vol: value, at: now });
+                found.add(sym);
             }
-            
-            // Fallback 1: If no record in the ideal date range, try any record from last 30 days
-            const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
-            const [recentRows] = await pool.query(`
-                SELECT volume, archived_at
-                FROM stock_data_history 
-                WHERE symbol = ? 
-                  AND archived_at >= ?
-                ORDER BY archived_at DESC 
-                LIMIT 1
-            `, [symbol.toUpperCase(), thirtyDaysAgo]);
-            
-            if (recentRows.length > 0 && recentRows[0].volume) {
-                LOG.info(`[Stock Data] Using recent historical volume for ${symbol} from ${recentRows[0].archived_at} (not exactly last week, but best available)`);
-                return parseInt(recentRows[0].volume);
+            for (const sym of needFetch) {
+                if (!found.has(sym)) {
+                    result.set(sym, null);
+                    this._volumeCache.set(sym, { vol: null, at: now });
+                }
             }
-            
-            // Fallback 2: If no recent record, get the oldest available record (any historical data is better than none)
-            const [fallbackRows] = await pool.query(`
-                SELECT volume, archived_at
-                FROM stock_data_history 
-                WHERE symbol = ? 
-                ORDER BY archived_at ASC 
-                LIMIT 1
-            `, [symbol.toUpperCase()]);
-            
-            if (fallbackRows.length > 0 && fallbackRows[0].volume) {
-                LOG.info(`[Stock Data] Using oldest available volume for ${symbol} from ${fallbackRows[0].archived_at} (no recent data available)`);
-                return parseInt(fallbackRows[0].volume);
-            }
-            
-            // No historical data at all
-            return null;
+            LOG.info(`[Stock Data] Batch volume lookup: ${needFetch.length} symbols, ${found.size} with history`);
         } catch (error) {
-            LOG.warning(`[Stock Data] Error getting last week volume for ${symbol}:`, error.message);
-            return null;
+            LOG.warning('[Stock Data] Batch volume lookup failed:', error.message);
+            for (const sym of needFetch) {
+                if (!result.has(sym)) {
+                    result.set(sym, null);
+                    this._volumeCache.set(sym, { vol: null, at: now });
+                }
+            }
+        }
+        return result;
+    }
+
+    /**
+     * Format rows using a pre-fetched volume map (no per-row history queries).
+     */
+    async formatStocksWithVolumes(rows = [], volumeMap = new Map()) {
+        return (
+            await Promise.all(
+                (rows || []).map((row) => {
+                    const sym = row?.symbol ? String(row.symbol).toUpperCase() : '';
+                    // null = looked up, none — must NOT re-query (undefined would)
+                    const vol = volumeMap.has(sym) ? volumeMap.get(sym) : null;
+                    return this.formatStockData(row, vol);
+                })
+            )
+        ).filter(Boolean);
+    }
+
+    /**
+     * Get last week's volume for a symbol from history.
+     * Uses cache + a single 30-day lookup (no oldest-ever full scan).
+     * @param {string} symbol - Stock symbol
+     * @returns {Promise<number|null>} Last week's volume or null
+     */
+    async getLastWeekVolume(symbol) {
+        if (!symbol) return null;
+        const sym = String(symbol).toUpperCase();
+        const now = Date.now();
+        const cached = this._volumeCache.get(sym);
+        if (cached && (now - cached.at) < this._volumeCacheTtlMs) {
+            return cached.vol;
+        }
+        if (this._volumeInflight.has(sym)) {
+            return this._volumeInflight.get(sym);
+        }
+
+        const pending = (async () => {
+            const map = await this.getLastWeekVolumesBatch([sym]);
+            return map.has(sym) ? map.get(sym) : null;
+        })();
+
+        this._volumeInflight.set(sym, pending);
+        try {
+            return await pending;
+        } finally {
+            this._volumeInflight.delete(sym);
         }
     }
 
     /**
      * Format database row to application format
      * @param {Object} row - Database row or in-memory object
-     * @param {number|null} lastWeekVolume - Last week's volume (optional, will be fetched if not provided)
+     * @param {number|null|undefined} lastWeekVolume - undefined = fetch; null/number = already resolved
      * @returns {Promise<Object>} Formatted stock data
      */
-    async formatStockData(row, lastWeekVolume = null) {
+    async formatStockData(row, lastWeekVolume = undefined) {
         if (!row) return null;
         
         // Ensure we have a name - prioritize company_name, then name, then symbol
@@ -901,14 +854,14 @@ class StockDataService {
         // Get current volume
         const currentVolume = parseInt(row.volume || 0) || 0;
         
-        // Fetch last week's volume if not provided
+        // Fetch last week's volume only when caller did not resolve it (undefined).
+        // null means "looked up, none" — do not hit MySQL again.
         let lastWeekVol = lastWeekVolume;
-        if (lastWeekVol === null && row.symbol) {
+        if (lastWeekVol === undefined && row.symbol) {
             try {
                 lastWeekVol = await this.getLastWeekVolume(row.symbol);
                 if (lastWeekVol === null && row.symbol) {
-                    // Log when no historical data found (only for first few to avoid spam)
-                    if (Math.random() < 0.05) { // Log 5% of cases
+                    if (Math.random() < 0.05) {
                         LOG.info(`[Stock Data] No historical volume found for ${row.symbol} - volume ratio will not be calculated`);
                     }
                 }
@@ -997,6 +950,8 @@ class StockDataService {
             week_52_low: row.week_52_low !== null && row.week_52_low !== undefined ? parseFloat(row.week_52_low) : null,
             week_52_high: row.week_52_high !== null && row.week_52_high !== undefined ? parseFloat(row.week_52_high) : null,
             data_type: row.data_type || 'data',
+            lastUpdated: row.last_updated || row.lastUpdated || null,
+            last_updated: row.last_updated || row.lastUpdated || null,
             // Include filtered additional columns from Excel (no duplicates)
             ...filteredAdditionalData
         };

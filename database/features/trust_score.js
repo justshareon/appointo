@@ -5,4 +5,7 @@ module.exports = {
     getPool: () => fcm.getCachedPool('trust_score') || fcm.getPool(),
     acquire: () => fcm.acquire('trust_score'),
     release: () => fcm.release('trust_score'),
+    ensureTables: async (mainDb) => {
+        if (mainDb?.ensureFeatureSchema) await mainDb.ensureFeatureSchema('trust_score');
+    },
 };

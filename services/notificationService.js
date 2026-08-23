@@ -24,6 +24,28 @@ const buildMessage = (eventKey, payload) => {
         subject: 'New Order Created',
         text: `Order created by user ${payload.userId} for vendor ${payload.vendorId}. Total: ${payload.totalAmount || 0}. Items: ${payload.itemsCount || 0}.`
       };
+    case 'order_received':
+      return {
+        subject: 'Order Received',
+        text: `Order #${payload.orderId || ''} received at ${payload.currentLocation || 'shop'}. Tracking started.`
+      };
+    case 'order_status_updated':
+      return {
+        subject: 'Order Status Updated',
+        text: `Order #${payload.orderId || ''} is now "${payload.status || 'updated'}". Location: ${payload.currentLocation || 'N/A'}.`
+      };
+    case 'order_location_updated':
+      return {
+        subject: 'Order Location Updated',
+        text: `Order #${payload.orderId || ''} moved to "${payload.currentLocation || 'N/A'}". Status: ${payload.status || 'N/A'}.`
+      };
+    case 'chat_message':
+      return {
+        subject: 'New chat message',
+        text: payload.preview
+          ? `New message: ${payload.preview}`
+          : `You have a new chat message about vendor ${payload.vendorId || ''}.`
+      };
     case 'appointment_booked':
       return {
         subject: 'New Appointment Booked',
@@ -56,8 +78,10 @@ const buildMessage = (eventKey, payload) => {
       };
     case 'appointment_status_updated':
       return {
-        subject: 'Appointment Status Updated',
-        text: `Appointment ${payload.appointmentId} status updated to ${payload.status}.`
+        subject: payload.status === 'completed' ? 'Appointment Completed' : 'Appointment Status Updated',
+        text: payload.status === 'completed'
+          ? `Appointment ${payload.appointmentId} was marked complete. Queue moved to the next customer.`
+          : `Appointment ${payload.appointmentId} status updated to ${payload.status}.`
       };
     case 'appointment_deleted':
       return {
@@ -180,6 +204,9 @@ class NotificationService {
 
     const featureFlagMap = {
       order_created: 'notify_on_orders',
+      order_received: 'notify_on_orders',
+      order_status_updated: 'notify_on_orders',
+      order_location_updated: 'notify_on_orders',
       appointment_booked: 'notify_on_appointments',
       appointment_status_updated: 'notify_on_appointment_status',
       queue_joined: 'notify_on_queue',

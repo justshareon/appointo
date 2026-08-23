@@ -206,13 +206,19 @@ class VendorService {
         }
 
         const allowedFields = [
-            'shop_name', 'category', 'google_link', 'instagram_handle', 'facebook_link',
+            'shop_name', 'google_link', 'instagram_handle', 'facebook_link',
             'features_products', 'features_payments', 'features_appointments', 'features_queue',
             'features_matchmaking', 'features_trade', 'features_offer', 'features_qless',
             'features_fleet', 'features_realestate',
             'gateway_razorpay', 'gateway_sabpaisa',
             'visibility_top_rated', 'visibility_list', 'visibility_feed'
         ];
+
+        if (Object.prototype.hasOwnProperty.call(profileData, 'category')
+            && profileData.category
+            && String(profileData.category) !== String(vendor.category || '')) {
+            throw new Error('Category cannot be changed once the vendor is created');
+        }
 
         for (const field of allowedFields) {
             if (Object.prototype.hasOwnProperty.call(profileData, field)) {
@@ -247,8 +253,9 @@ class VendorService {
      */
     async getVendorProducts(vendorId) {
         const vendor = await db.getVendorById(vendorId);
-        if (!vendor || vendor.features_products === false) {
-            return [];
+        if (!vendor || vendor.features_products === false || vendor.features_products === 0 || vendor.features_products === '0') {
+            const existing = await db.getProductsByVendor(vendorId) || [];
+            return existing.length ? existing : [];
         }
         return await db.getProductsByVendor(vendorId) || [];
     }
@@ -267,19 +274,8 @@ class VendorService {
      */
     async getMyAppointments(userId) {
         const vendor = await db.getVendorByOwnerId(userId);
-        if (!vendor) return [];
-
-        // Return appointments for ALL vendors owned by this user
-        const ownedVendors = await db.getVendors(false);
-        const myVendorIds = ownedVendors.filter(v => v.owner_id === userId).map(v => v.id);
-
-        let allAppointments = [];
-        for (const vId of myVendorIds) {
-            const apps = await db.getAppointmentsByVendor(vId);
-            allAppointments = [...allAppointments, ...apps];
-        }
-
-        return allAppointments || [];
+        if (!vendor?.id) return [];
+        return await db.getAppointmentsByVendor(vendor.id) || [];
     }
 }
 

@@ -7,6 +7,23 @@ const db = require('../database');
 const LOG = require('../utils/logger');
 const { BOARD_CAP, capByDate } = require('../database/featureMemoryManager');
 
+function isHeaderLikeMeeting(meeting) {
+    const s = String(meeting?.symbol || meeting?.company_name || '')
+        .replace(/^[\s,]+/, '')
+        .trim()
+        .toUpperCase();
+    if (!s) return true;
+    return (
+        s === 'ATTACHMENT' ||
+        s === 'COMPANY NAME' ||
+        s === 'DETAILS' ||
+        s === 'PURPOSE' ||
+        s === 'SYMBOL' ||
+        s.includes('BROADCAST') ||
+        s.includes('ATTACHMENT')
+    );
+}
+
 class BoardMeetingsDataService {
     constructor() {
         this.initialized = false;
@@ -180,6 +197,7 @@ class BoardMeetingsDataService {
                 filtered = filtered.filter(m => m.meeting_date && new Date(m.meeting_date) <= new Date(meetingDateTo));
             }
 
+            filtered = filtered.filter((m) => !isHeaderLikeMeeting(m));
             if (limit) {
                 return filtered.slice(offset, offset + limit);
             }
@@ -187,7 +205,13 @@ class BoardMeetingsDataService {
             return filtered;
         }
         try {
-            let query = 'SELECT * FROM board_meetings WHERE 1=1';
+            let query = `SELECT * FROM board_meetings WHERE 1=1
+                AND UPPER(TRIM(BOTH ' ,' FROM COALESCE(symbol,''))) NOT IN (
+                    'ATTACHMENT','COMPANY NAME','DETAILS','PURPOSE','SYMBOL',
+                    'BROADCAST DATE/TIME','BROADCAST DATE','BROADCAST DATE TIME'
+                )
+                AND UPPER(COALESCE(symbol,'')) NOT LIKE '%ATTACHMENT%'
+                AND UPPER(COALESCE(symbol,'')) NOT LIKE '%BROADCAST%'`;
             const params = [];
 
             if (symbol) {

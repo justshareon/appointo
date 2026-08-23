@@ -3,6 +3,7 @@
  * Configure with FEATURE_IDLE_MINUTES (default 10) or FEATURE_IDLE_MS.
  */
 const { getFeatureIdleMs } = require('./featureIdle');
+const { getFeatureDataMap } = require('./featureRegistry');
 
 const LOG = {
     info: (msg) => console.log(`[FeatureMem] ${msg}`),
@@ -14,71 +15,7 @@ const BOARD_CAP = parseInt(process.env.FEATURE_MEM_BOARD_CAP || '2500', 10);
 const CA_CAP = parseInt(process.env.FEATURE_MEM_CA_CAP || '2000', 10);
 const HISTORY_CAP = parseInt(process.env.FEATURE_MEM_HISTORY_CAP || '2', 10);
 
-const FEATURE_DATA = {
-    trade: {
-        arrays: ['boardMeetings', 'corporateActions'],
-        nested: [
-            ['stockData', 'live_stock_data'],
-            ['stockData', 'stock_data_history'],
-            ['mutualFundData', 'mutual_funds'],
-            ['mutualFundData', 'mutual_fund_history'],
-        ],
-        seedKeys: [],
-    },
-    offer: { arrays: [], nested: [], seedKeys: [] },
-    qless: { arrays: [], nested: [], seedKeys: [] },
-    fleet: { arrays: [], nested: [], seedKeys: [] },
-    queue: { arrays: [], nested: [], seedKeys: [] },
-    appointments: { arrays: [], nested: [], seedKeys: [] },
-    realestate: {
-        arrays: ['trustScoreProjects', 'trustScoreFraudAlerts'],
-        nested: [],
-        seedKeys: ['trustScoreProjects', 'trustScoreFraudAlerts'],
-    },
-    trust_score: {
-        arrays: ['trustScoreProjects', 'trustScoreFraudAlerts'],
-        nested: [],
-        seedKeys: ['trustScoreProjects', 'trustScoreFraudAlerts'],
-    },
-    matchmaking: {
-        arrays: ['matchmaking_templates', 'matchmaking_submissions'],
-        nested: [],
-        seedKeys: ['matchmaking_templates', 'matchmaking_submissions'],
-    },
-    cyber: {
-        arrays: [
-            'surakshaValidations',
-            'surakshaReports',
-            'surakshaDevices',
-            'spamNumbers',
-            'callHistory',
-            'communityReports',
-            'cyberThreats',
-            'autoValidationDetections',
-            'mobileSecurityScans',
-            'notificationValidations',
-            'threatIntelligence',
-            'threatAlerts',
-            'cyberSecurityTips',
-        ],
-        nested: [],
-        seedKeys: [
-            'surakshaValidations',
-            'surakshaReports',
-            'surakshaDevices',
-            'spamNumbers',
-            'callHistory',
-            'communityReports',
-            'cyberThreats',
-            'autoValidationDetections',
-            'mobileSecurityScans',
-            'notificationValidations',
-            'threatIntelligence',
-            'threatAlerts',
-            'cyberSecurityTips',
-        ],
-    },
-};
+const FEATURE_DATA = getFeatureDataMap();
 
 const refs = new Map();
 const idleTimers = new Map();
@@ -211,6 +148,20 @@ function unload(feature) {
     const spec = FEATURE_DATA[feature];
     const mem = getMem();
     if (!spec || !mem) return;
+    if (spec.reclaim === false) return;
+
+    // Push recent chat to MySQL before reclaiming RAM (best-effort)
+    if (feature === 'chat' && (process.env.DB_TYPE || 'inmemory') === 'mysql') {
+        try {
+            const { syncLast3Hours } = require('../syncLast3Hours');
+            if (typeof syncLast3Hours === 'function') {
+                // fire-and-forget — do not block reclaim
+                Promise.resolve(syncLast3Hours({ exit: false })).catch(() => {});
+            }
+        } catch (e) {
+            /* ignore */
+        }
+    }
 
     const before = featureSize(feature);
     const heapBefore = heapMb();
@@ -331,6 +282,10 @@ function startAppointmentJobs() {
     const io = runtime.io;
     addTimer('appointments', setInterval(async () => {
         try {
+            const fcm = require('./featureConnectionManager');
+            if (fcm.isMysqlEnabled && fcm.isMysqlEnabled()) {
+                try { await fcm.acquireForSync('core'); } catch (e) { /* in-memory fallback */ }
+            }
             const db = require('../database');
             const affectedVendorIds = await db.autoExpireAppointments();
             if (!io || !affectedVendorIds?.length) return;
@@ -373,31 +328,43 @@ function startFleetJobs() {
             if (db.getType() !== 'mysql' || !db.getPool) return;
             const pool = db.getPool();
             if (!pool) return;
-            const [queues] = await pool.query(`
-                SELECT DISTINCT gate_id FROM fleet_queues WHERE status = 'waiting'
+            const [waiting] = await pool.query(`
+                SELECT gate_id, driver_id, joined_at
+                FROM fleet_queues
+                WHERE status = 'waiting'
+                ORDER BY gate_id, joined_at ASC
             `);
-            for (const row of queues) {
-                const gateId = row.gate_id;
-                const [queueRows] = await pool.query(`
-                    SELECT driver_id, joined_at FROM fleet_queues
-                    WHERE gate_id = ? AND status = 'waiting'
-                    ORDER BY joined_at ASC
-                `, [gateId]);
+            if (!waiting.length) return;
+            const [gates] = await pool.query(`SELECT gate_id, estimated_wait_time FROM fleet_gates`);
+            const waitByGate = new Map((gates || []).map((g) => [g.gate_id, g.estimated_wait_time || 10]));
+            const byGate = new Map();
+            for (const row of waiting) {
+                if (!byGate.has(row.gate_id)) byGate.set(row.gate_id, []);
+                byGate.get(row.gate_id).push(row);
+            }
+            for (const [gateId, queueRows] of byGate) {
+                const baseWaitTime = waitByGate.get(gateId) || 10;
+                const avgProcessingTime = 3;
+                const posSql = [];
+                const waitSql = [];
+                const params = [];
                 for (let i = 0; i < queueRows.length; i++) {
-                    const position = i + 1;
-                    const avgProcessingTime = 3;
-                    const [gateInfo] = await pool.query(
-                        `SELECT estimated_wait_time FROM fleet_gates WHERE gate_id = ?`,
-                        [gateId]
-                    );
-                    const baseWaitTime = gateInfo[0]?.estimated_wait_time || 10;
-                    const estimatedWaitTime = Math.max(5, baseWaitTime + ((position - 1) * avgProcessingTime));
-                    await pool.query(`
-                        UPDATE fleet_queues
-                        SET position = ?, estimated_wait_time = ?
-                        WHERE driver_id = ? AND gate_id = ? AND status = 'waiting'
-                    `, [position, estimatedWaitTime, queueRows[i].driver_id, gateId]);
+                    posSql.push('WHEN ? THEN ?');
+                    params.push(queueRows[i].driver_id, i + 1);
                 }
+                for (let i = 0; i < queueRows.length; i++) {
+                    waitSql.push('WHEN ? THEN ?');
+                    params.push(queueRows[i].driver_id, Math.max(5, baseWaitTime + (i * avgProcessingTime)));
+                }
+                const idPlaceholders = queueRows.map(() => '?').join(', ');
+                params.push(gateId, ...queueRows.map((r) => r.driver_id));
+                await pool.query(
+                    `UPDATE fleet_queues
+                     SET position = CASE driver_id ${posSql.join(' ')} END,
+                         estimated_wait_time = CASE driver_id ${waitSql.join(' ')} END
+                     WHERE gate_id = ? AND status = 'waiting' AND driver_id IN (${idPlaceholders})`,
+                    params
+                );
                 if (io && queueRows.length > 0) {
                     io.emit('fleet_queue_updated', {
                         gate_id: gateId,
@@ -424,6 +391,16 @@ function startJobs(feature) {
     if (feature === 'fleet') startFleetJobs();
 }
 
+async function runSchema(feature) {
+    try {
+        const db = require('../database');
+        const { ensureFeatureSchema } = require('./schema/featureTables');
+        await ensureFeatureSchema(feature, db);
+    } catch (err) {
+        LOG.warn(`Schema upgrade skipped for "${feature}": ${err.message}`);
+    }
+}
+
 async function loadHeavy(feature) {
     if (feature !== 'trade' || heavyLoaded.has('trade')) return;
     if (loadPromises.has('trade-heavy')) {
@@ -447,12 +424,18 @@ async function loadHeavy(feature) {
 
 async function ensureFeature(feature, options = {}) {
     const mode = options.mode || 'basic';
-    if (!feature || feature === 'core' || !FEATURE_DATA[feature]) return;
+    if (!feature) return;
+    if (feature === 'core') {
+        await runSchema('core');
+        return;
+    }
+    if (!FEATURE_DATA[feature]) return;
 
     acquire(feature);
     try {
         if (!basicReady.has(feature)) {
             loadSeed(feature);
+            await runSchema(feature);
             startJobs(feature);
             basicReady.add(feature);
             LOG.info(`Initialized "${feature}" (${mode}, ${process.env.DB_TYPE || 'inmemory'}) | heap ${heapMb()}MB`);
@@ -481,7 +464,7 @@ function startWatchdog() {
 }
 
 function middleware(...features) {
-    const list = features.filter((f) => f && f !== 'core');
+    const list = features.filter((f) => f);
     return (req, res, next) => {
         if (!list.length) return next();
         list.forEach((f) => acquire(f));

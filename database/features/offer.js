@@ -5,4 +5,7 @@ module.exports = {
     getPool: () => fcm.getCachedPool('offer') || fcm.getPool(),
     acquire: () => fcm.acquire('offer'),
     release: () => fcm.release('offer'),
+    ensureTables: async (mainDb) => {
+        if (mainDb?.ensureFeatureSchema) await mainDb.ensureFeatureSchema('offer');
+    },
 };

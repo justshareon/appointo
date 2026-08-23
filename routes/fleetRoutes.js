@@ -232,7 +232,7 @@ router.get('/operations/stats', authenticateToken, async (req, res) => {
         
         // Only allow admins or fleet vendors (case-insensitive email check)
         const email = userEmail?.toLowerCase() || '';
-        if (req.user.role !== 'super_admin' && !email.includes('fleet')) {
+        if (req.user.role !== 'super_admin' && String(req.user.role || '').toLowerCase() !== 'vendor') {
             LOG.warning(`[Fleet Routes] Access denied for user ${req.user.id} - role: ${req.user.role}, email: ${userEmail || 'undefined'}`);
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -266,7 +266,7 @@ router.get('/operations/gates', authenticateToken, async (req, res) => {
         
         // Only allow admins or fleet vendors (case-insensitive email check)
         const email = userEmail?.toLowerCase() || '';
-        if (req.user.role !== 'super_admin' && !email.includes('fleet')) {
+        if (req.user.role !== 'super_admin' && String(req.user.role || '').toLowerCase() !== 'vendor') {
             LOG.warning(`[Fleet Routes] Access denied for user ${req.user.id} - email: ${userEmail || 'undefined'}`);
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -301,7 +301,7 @@ router.get('/operations/alerts', authenticateToken, async (req, res) => {
         
         // Only allow admins or fleet vendors (case-insensitive email check)
         const email = userEmail?.toLowerCase() || '';
-        if (req.user.role !== 'super_admin' && !email.includes('fleet')) {
+        if (req.user.role !== 'super_admin' && String(req.user.role || '').toLowerCase() !== 'vendor') {
             LOG.warning(`[Fleet Routes] Access denied for user ${req.user.id} - email: ${userEmail || 'undefined'}`);
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -336,7 +336,7 @@ router.get('/operations/drivers', authenticateToken, async (req, res) => {
         
         // Only allow admins or fleet vendors (case-insensitive email check)
         const email = userEmail?.toLowerCase() || '';
-        if (req.user.role !== 'super_admin' && !email.includes('fleet')) {
+        if (req.user.role !== 'super_admin' && String(req.user.role || '').toLowerCase() !== 'vendor') {
             LOG.warning(`[Fleet Routes] Access denied for user ${req.user.id} - email: ${userEmail || 'undefined'}`);
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -371,7 +371,7 @@ router.get('/operations/suspicious-locations', authenticateToken, async (req, re
         
         // Only allow admins or fleet vendors (case-insensitive email check)
         const email = userEmail?.toLowerCase() || '';
-        if (req.user.role !== 'super_admin' && !email.includes('fleet')) {
+        if (req.user.role !== 'super_admin' && String(req.user.role || '').toLowerCase() !== 'vendor') {
             LOG.warning(`[Fleet Routes] Access denied for user ${req.user.id} - email: ${userEmail || 'undefined'}`);
             return res.status(403).json({ error: 'Access denied' });
         }
@@ -386,6 +386,97 @@ router.get('/operations/suspicious-locations', authenticateToken, async (req, re
     } catch (err) {
         LOG.error("[Fleet Routes] Failed to get suspicious locations", err.message);
         LOG.error("[Fleet Routes] Stack trace:", err.stack);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+const resolveUserEmail = async (req) => {
+    let userEmail = req.user.email;
+    if (!userEmail && req.user.id) {
+        const db = require('../database');
+        const user = await db.getUserById(req.user.id);
+        if (user) {
+            userEmail = user.email;
+            req.user.email = user.email;
+            req.user.role = req.user.role || user.role;
+        }
+    }
+    return userEmail;
+};
+
+/**
+ * GET /api/fleet/overview
+ * Super admin: fleet vendors + driver counts (keeps the main admin dashboard light).
+ */
+router.get('/overview', authenticateToken, async (req, res) => {
+    try {
+        if (req.user.role !== 'super_admin') {
+            return res.status(403).json({ error: 'Access denied' });
+        }
+        const data = await fleetService.getOverview();
+        res.json(data);
+    } catch (err) {
+        LOG.error('Failed to get fleet overview', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * GET /api/fleet/roster
+ * Drivers mapped to one fleet vendor (excludes the vendor owner).
+ */
+router.get('/roster', authenticateToken, async (req, res) => {
+    try {
+        await resolveUserEmail(req);
+        const vendor = await fleetService.assertFleetManager(req.user, req.query.vendor_id || null);
+        const drivers = await fleetService.getRoster(vendor.id);
+        res.json({ vendor: { id: vendor.id, shop_name: vendor.shop_name }, drivers });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status !== 500) return res.status(status).json({ error: err.message });
+        LOG.error('Failed to get fleet roster', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.post('/roster', authenticateToken, async (req, res) => {
+    try {
+        await resolveUserEmail(req);
+        const vendor = await fleetService.assertFleetManager(req.user, req.body.vendor_id || req.query.vendor_id || null);
+        const driver = await fleetService.addRosterDriver(vendor.id, req.body || {});
+        res.json({ success: true, driver, vendor_id: vendor.id });
+    } catch (err) {
+        const status = err.status || (err.message && err.message.includes('required') ? 400 : 500);
+        if (status !== 500) return res.status(status).json({ error: err.message });
+        LOG.error('Failed to add fleet driver', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.put('/roster/:userId', authenticateToken, async (req, res) => {
+    try {
+        await resolveUserEmail(req);
+        const vendor = await fleetService.assertFleetManager(req.user, req.body.vendor_id || req.query.vendor_id || null);
+        const driver = await fleetService.updateRosterDriver(vendor.id, req.params.userId, req.body || {});
+        res.json({ success: true, driver });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status !== 500) return res.status(status).json({ error: err.message });
+        LOG.error('Failed to update fleet driver', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+router.delete('/roster/:userId', authenticateToken, async (req, res) => {
+    try {
+        await resolveUserEmail(req);
+        const vendor = await fleetService.assertFleetManager(req.user, req.query.vendor_id || null);
+        await fleetService.removeRosterDriver(vendor.id, req.params.userId);
+        res.json({ success: true });
+    } catch (err) {
+        const status = err.status || 500;
+        if (status !== 500) return res.status(status).json({ error: err.message });
+        LOG.error('Failed to remove fleet driver', err.message);
         res.status(500).json({ error: err.message });
     }
 });

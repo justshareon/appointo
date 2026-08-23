@@ -5,11 +5,10 @@ const notificationService = require('../services/notificationService');
 const { authenticateToken } = require('../middleware/auth');
 const db = require('../database');
 const LOG = require('../utils/logger');
+const { LAZY_FEATURES } = require('../database/featureRegistry');
 const featureMemory = require('../database/featureMemoryManager');
 
-const FEATURE_QUERY_KEYS = new Set([
-    'trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score', 'matchmaking',
-]);
+const FEATURE_QUERY_KEYS = new Set(LAZY_FEATURES);
 
 /**
  * GET /api/vendors
@@ -120,8 +119,11 @@ router.get('/:id/queue', async (req, res) => {
  * GET /api/vendors/:id/products
  * Get vendor products
  */
-router.get('/:id/products', async (req, res) => {
+router.get('/:id/products', async (req, res, next) => {
     try {
+        if (req.params.id === 'me' || req.params.id === 'self') {
+            return next();
+        }
         const products = await vendorService.getVendorProducts(req.params.id);
         res.json(products);
     } catch (err) {
@@ -155,8 +157,8 @@ router.get('/:id/matchmaking/template', async (req, res, next) => {
  */
 router.get('/me/products', authenticateToken, async (req, res) => {
     try {
-        const products = await vendorService.getMyProducts(req.user.id);
-        res.json(products);
+        const products = await vendorService.getMyProducts(req.user.id, req.user.email);
+        res.json(Array.isArray(products) ? products : []);
     } catch (err) {
         LOG.error("Failed to fetch own products", err.message);
         res.status(500).json({ error: err.message });
@@ -169,7 +171,7 @@ router.get('/me/products', authenticateToken, async (req, res) => {
  */
 router.get('/me/appointments', authenticateToken, async (req, res) => {
     try {
-        const appointments = await vendorService.getMyAppointments(req.user.id);
+        const appointments = await vendorService.getMyAppointments(req.user.id, req.user.email);
         res.json(appointments);
     } catch (err) {
         LOG.error("Failed to fetch vendor appointments", err.message);
@@ -184,7 +186,7 @@ router.get('/me/appointments', authenticateToken, async (req, res) => {
 router.post('/me/products/add', authenticateToken, async (req, res) => {
     try {
         const productService = require('../services/productService');
-        const result = await productService.addProduct(req.user.id, req.body);
+        const result = await productService.addProduct(req.user.id, req.body, req.user.email);
             notificationService.notify('product_added', {
                 userId: req.user.id,
                 productId: result?.product_id || result?.id
@@ -192,8 +194,9 @@ router.post('/me/products/add', authenticateToken, async (req, res) => {
         res.json(result);
     } catch (err) {
         LOG.error("Failed to add product", err.message);
-        const statusCode = err.message.includes('required') ? 400 : 500;
-        res.status(statusCode).json({ error: err.message });
+        const isDup = err.code === 'DUPLICATE_PRODUCT' || /already exists/i.test(err.message || '');
+        const statusCode = isDup || err.message.includes('required') ? 400 : 500;
+        res.status(statusCode).json({ error: err.message, code: err.code || (isDup ? 'DUPLICATE_PRODUCT' : undefined) });
     }
 });
 
@@ -204,7 +207,7 @@ router.post('/me/products/add', authenticateToken, async (req, res) => {
 router.post('/me/products/:id/update', authenticateToken, async (req, res) => {
     try {
         const productService = require('../services/productService');
-        const result = await productService.updateProduct(req.user.id, req.params.id, req.body);
+        const result = await productService.updateProduct(req.user.id, req.params.id, req.body, req.user.email);
             notificationService.notify('product_updated', {
                 userId: req.user.id,
                 productId: req.params.id
@@ -212,6 +215,23 @@ router.post('/me/products/:id/update', authenticateToken, async (req, res) => {
         res.json(result);
     } catch (err) {
         LOG.error("Failed to update product", err.message);
+        const isDup = err.code === 'DUPLICATE_PRODUCT' || /already exists/i.test(err.message || '');
+        const statusCode = err.message.includes('not found') ? 404 : (isDup ? 400 : 500);
+        res.status(statusCode).json({ error: err.message, code: err.code || (isDup ? 'DUPLICATE_PRODUCT' : undefined) });
+    }
+});
+
+/**
+ * POST /api/vendors/me/products/:id/delete
+ * Delete product for logged-in vendor
+ */
+router.post('/me/products/:id/delete', authenticateToken, async (req, res) => {
+    try {
+        const productService = require('../services/productService');
+        const result = await productService.deleteProduct(req.user.id, req.params.id, req.user.email);
+        res.json(result);
+    } catch (err) {
+        LOG.error('Failed to delete product', err.message);
         const statusCode = err.message.includes('not found') ? 404 : 500;
         res.status(statusCode).json({ error: err.message });
     }

@@ -103,12 +103,56 @@ class VendorService {
         }
 
         if (vendor) {
+            vendor = await this._ensureShoppingEnabled(vendor);
             LOG.info(`[API /vendors/me] Returning vendor: ${vendor.id} - ${vendor.shop_name}`);
         } else {
             LOG.warning(`[API /vendors/me] No vendor found for user ${userEmail || userId}, returning empty object`);
         }
 
         return vendor || {};
+    }
+
+    /**
+     * Shop / QLess vendors should be able to sell products by default.
+     * Legacy rows often had features_products=0 which hid Add Products and user catalog.
+     */
+    async _ensureShoppingEnabled(vendor) {
+        if (!vendor?.id) return vendor;
+        const productsOff =
+            vendor.features_products === false ||
+            vendor.features_products === 0 ||
+            vendor.features_products === '0';
+        if (!productsOff) return vendor;
+
+        const isShopLike =
+            vendor.features_qless === true ||
+            vendor.features_qless === 1 ||
+            vendor.features_offer === true ||
+            vendor.features_offer === 1 ||
+            /shop|qless|offer|general|hotel|hospital|railway/i.test(String(vendor.category || ''));
+
+        let hasProducts = false;
+        try {
+            const list = await db.getProductsByVendor(vendor.id);
+            hasProducts = Array.isArray(list) && list.length > 0;
+        } catch (e) {
+            hasProducts = false;
+        }
+
+        if (!isShopLike && !hasProducts) return vendor;
+
+        try {
+            await db.updateVendor(vendor.id, 'features_products', true);
+            if (vendor.features_payments === false || vendor.features_payments === 0 || vendor.features_payments === '0') {
+                await db.updateVendor(vendor.id, 'features_payments', true);
+                vendor.features_payments = true;
+            }
+            vendor.features_products = true;
+            LOG.info(`[Vendor] Enabled shopping for ${vendor.id}`);
+        } catch (e) {
+            LOG.warning(`[Vendor] Could not enable shopping for ${vendor.id}: ${e.message}`);
+        }
+        return vendor;
     }
 
     /**
@@ -207,6 +251,10 @@ class VendorService {
             is_promoted: false,
             latitude: 0,
             longitude: 0,
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
             features_matchmaking: false
         };
         await db.addVendor(vendor);
@@ -224,13 +272,20 @@ class VendorService {
         }
 
         const allowedFields = [
-            'shop_name', 'category', 'google_link', 'instagram_handle', 'facebook_link',
+            'shop_name', 'google_link', 'instagram_handle', 'facebook_link',
             'features_products', 'features_payments', 'features_appointments', 'features_queue',
             'features_matchmaking', 'features_trade', 'features_offer', 'features_qless',
             'features_fleet', 'features_realestate', 'features_cyber', 'features_trust_score',
             'gateway_razorpay', 'gateway_sabpaisa',
             'visibility_top_rated', 'visibility_list', 'visibility_feed'
         ];
+
+        // Category is permanent after vendor creation.
+        if (Object.prototype.hasOwnProperty.call(profileData, 'category')
+            && profileData.category
+            && String(profileData.category) !== String(vendor.category || '')) {
+            throw new Error('Category cannot be changed once the vendor is created');
+        }
 
         for (const field of allowedFields) {
             if (Object.prototype.hasOwnProperty.call(profileData, field)) {
@@ -265,8 +320,16 @@ class VendorService {
      */
     async getVendorProducts(vendorId) {
         const vendor = await db.getVendorById(vendorId);
-        if (!vendor || vendor.features_products === false) {
-            return [];
+        if (!vendor) return [];
+        const productsOff =
+            vendor.features_products === false ||
+            vendor.features_products === 0 ||
+            vendor.features_products === '0';
+        if (productsOff) {
+            // Still return catalog if products already exist (legacy vendors)
+            const existing = await db.getProductsByVendor(vendorId) || [];
+            if (!existing.length) return [];
+            return existing;
         }
         return await db.getProductsByVendor(vendorId) || [];
     }
@@ -274,30 +337,19 @@ class VendorService {
     /**
      * Get my products (for logged-in vendor)
      */
-    async getMyProducts(userId) {
-        const vendor = await db.getVendorByOwnerId(userId);
-        if (!vendor) return [];
+    async getMyProducts(userId, userEmail) {
+        const vendor = await this.getMyVendorProfile(userId, userEmail);
+        if (!vendor?.id) return [];
         return await db.getProductsByVendor(vendor.id) || [];
     }
 
     /**
      * Get my appointments (for logged-in vendor)
      */
-    async getMyAppointments(userId) {
-        const vendor = await db.getVendorByOwnerId(userId);
-        if (!vendor) return [];
-
-        // Return appointments for ALL vendors owned by this user
-        const ownedVendors = await db.getVendors(false);
-        const myVendorIds = ownedVendors.filter(v => v.owner_id === userId).map(v => v.id);
-
-        let allAppointments = [];
-        for (const vId of myVendorIds) {
-            const apps = await db.getAppointmentsByVendor(vId);
-            allAppointments = [...allAppointments, ...apps];
-        }
-
-        return allAppointments || [];
+    async getMyAppointments(userId, userEmail) {
+        const vendor = await this.getMyVendorProfile(userId, userEmail);
+        if (!vendor?.id) return [];
+        return await db.getAppointmentsByVendor(vendor.id) || [];
     }
 }
 

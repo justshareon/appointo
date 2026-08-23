@@ -86,6 +86,45 @@ class AdminController {
     }
 
     /**
+     * GET /api/admin/vendor-categories
+     */
+    async getVendorCategories(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const categories = await adminService.getVendorCategories();
+            res.json({ categories });
+        } catch (err) {
+            LOG.error('Admin get vendor categories failed', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    }
+
+    /**
+     * POST /api/admin/vendor-categories
+     */
+    async addVendorCategory(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const name = req.body?.name || req.body?.category;
+            const result = await adminService.addVendorCategory(name);
+            res.json({
+                success: true,
+                created: result.created,
+                category: result.category,
+                categories: await adminService.getVendorCategories()
+            });
+        } catch (err) {
+            LOG.error('Admin add vendor category failed', err.message);
+            const status = /required/i.test(err.message) ? 400 : 500;
+            res.status(status).json({ error: err.message });
+        }
+    }
+
+    /**
      * GET /api/admin/vendor-dashboard/:vendorId
      * Get vendor dashboard data
      * Allows: Super admins (any vendor) OR vendors accessing their own dashboard

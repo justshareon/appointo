@@ -2,7 +2,6 @@
  * Database Core Module
  * Common utilities, connection, and in-memory data structure
  */
-const mysql = require('mysql2');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config();
@@ -33,7 +32,7 @@ const LOG = {
 };
 
 const DB_TYPE = process.env.DB_TYPE || 'inmemory';
-const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
+const { resolveProductImages, getCategoryImage } = require('../../utils/categoryImages');
 
 // Helper for dynamic seed dates
 const now = new Date();
@@ -69,64 +68,20 @@ const normalizeProductRow = (row) => {
         imageUrls = [];
     }
     const cleaned = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
-    product.image_urls = cleaned.length ? cleaned : [DEFAULT_PRODUCT_IMAGE];
+    const category = product.vendor_category || product.category;
+    product.image_urls = resolveProductImages(cleaned, category, product.id || product.name);
     return product;
 };
 
-// --- MYSQL CONNECTION ---
-let pool;
-if (DB_TYPE === 'mysql') {
-    LOG.info(`Connecting to MySQL at ${process.env.DB_HOST}:${process.env.DB_PORT || 3306}...`);
-    pool = mysql.createPool({
-        host: process.env.DB_HOST || 'localhost',
-        port: process.env.DB_PORT || 3306,
-        user: process.env.DB_USER || 'root',
-        password: process.env.DB_PASSWORD || 'root',
-        database: process.env.DB_NAME || 'qr_queue',
-        waitForConnections: true,
-        connectionLimit: 10,
-        queueLimit: 0,
-        ssl: {
-            rejectUnauthorized: false
-        }
-    }).promise();
-
-    // Error handling for the pool
-    pool.on('error', (err) => {
-        LOG.error('Unexpected database pool error', err.message);
-        if (err.code === 'PROTOCOL_CONNECTION_LOST') {
-            LOG.warning('Database connection lost. Reconnecting...');
-        }
-    });
-
-    // Test connection after a delay to ensure the server starts up first
-    setTimeout(() => {
-        LOG.info("Testing database connection (delayed)...");
-        pool.getConnection()
-            .then(conn => {
-                LOG.success("MySQL Database Connected successfully!");
-                conn.release();
-            })
-            .catch(err => {
-                LOG.error("MySQL Connection Failed!", err.message);
-                LOG.warning("Verify TiDB IP Whitelist (0.0.0.0/0) and Render Env Variables.");
-            });
-    }, 5000);
-}
-
-// Cleanup on exit
-process.on('SIGINT', async () => {
-    if (pool) {
-        LOG.info('Closing database pool...');
-        await pool.end();
-    }
-    process.exit(0);
-});
+// MySQL pools live in featureConnectionManager. Do not open a second
+// 10-connection pool here — requiring this file for dates used to do that
+// and the extra sockets got killed by TiDB/cloud wait_timeout.
+let pool = null;
 
 module.exports = {
     LOG,
     DB_TYPE,
-    DEFAULT_PRODUCT_IMAGE,
+    DEFAULT_PRODUCT_IMAGE: getCategoryImage('shop', 'default'),
     todayStr,
     tomorrowStr,
     dayAfterStr,

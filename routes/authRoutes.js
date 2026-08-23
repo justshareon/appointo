@@ -47,7 +47,9 @@ router.post('/register', async (req, res) => {
         res.json(result);
     } catch (err) {
         LOG.error("Server Error in /register", err.message);
-        res.status(500).json({ error: err.message });
+        const statusCode =
+            /already registered|required|valid/i.test(err.message) ? 400 : 500;
+        res.status(statusCode).json({ error: err.message });
     }
 });
 

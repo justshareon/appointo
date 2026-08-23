@@ -183,6 +183,11 @@ class BoardMeetingsCsvService {
                     invalidCount++;
                     return;
                 }
+                const headerish = /attachment|broadcast|company name|^details$|^purpose$|^symbol$/i;
+                if (headerish.test(symbol.replace(/^[\s,]+/, ''))) {
+                    invalidCount++;
+                    return;
+                }
 
                 const companyName = row[columnMap['COMPANY_NAME']] ? String(row[columnMap['COMPANY_NAME']]).trim() : null;
                 const purpose = row[columnMap['PURPOSE']] ? String(row[columnMap['PURPOSE']]).trim() : null;

@@ -22,7 +22,7 @@ function logDbAccess(source, name, ms) {
 }
 
 function logMysqlQuery(feature, sql, ms) {
-    const preview = String(sql || 'query').replace(/\s+/g, ' ').trim().slice(0, 140);
+    const preview = String(sql || 'query').replace(/\s+/g, ' ').trim().slice(0, 200);
     console.log(`[MYSQL QUERY]${slowTag(ms, 200)} ${stamp()} | ${ms}ms | feature=${feature} | ${preview}`);
 }
 

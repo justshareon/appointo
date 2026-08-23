@@ -77,17 +77,39 @@ const fleetService = {
     async joinQueue(gateId, driverId, vendorId = null) {
         try {
             await ensureFleetTablesInitialized();
+            LOG.info(`[FLEET-JOIN] Driver ${driverId} joining gate ${gateId} (passed vendorId: ${vendorId})`);
+            
             if (db.getType() === 'mysql') {
                 const pool = db.getPool();
                 
                 // Check if already in queue
                 const [existing] = await pool.query(`
-                    SELECT id FROM fleet_queues 
-                    WHERE driver_id = ? AND status = 'waiting'
+                    SELECT fq.*, fg.gate_name 
+                    FROM fleet_queues fq
+                    JOIN fleet_gates fg ON fq.gate_id = fg.gate_id
+                    WHERE fq.driver_id = ? AND fq.status = 'waiting'
+                    ORDER BY fq.joined_at DESC LIMIT 1
                 `, [driverId]);
                 
                 if (existing.length > 0) {
-                    throw new Error('Driver already in queue');
+                    const queue = existing[0];
+                    // Calculate position
+                    const [positionRows] = await pool.query(`
+                        SELECT COUNT(*) as position
+                        FROM fleet_queues
+                        WHERE gate_id = ? AND status = 'waiting' AND joined_at <= ?
+                    `, [queue.gate_id, queue.joined_at]);
+                    
+                    const position = positionRows[0].position || 1;
+                    LOG.info(`[FLEET-JOIN] Driver ${driverId} already in queue at gate ${queue.gate_id}. Returning existing position #${position}.`);
+                    return {
+                        id: queue.id,
+                        gate_id: queue.gate_id,
+                        gate_name: queue.gate_name,
+                        position: position,
+                        estimated_wait_time: queue.estimated_wait_time,
+                        already_joined: true
+                    };
                 }
                 
                 // Get gate info
@@ -100,6 +122,19 @@ const fleetService = {
                 }
                 
                 const gate = gateRows[0];
+                
+                // Resolve vendor_id from driver mapping if not provided
+                let resolvedVendorId = vendorId;
+                if (!resolvedVendorId) {
+                    const [mappingRows] = await pool.query(`
+                        SELECT vendor_id FROM user_vendor_mappings WHERE user_id = ? LIMIT 1
+                    `, [driverId]);
+                    if (mappingRows.length > 0) {
+                        resolvedVendorId = mappingRows[0].vendor_id;
+                    } else {
+                        resolvedVendorId = 'v_fleet1'; // Default fallback
+                    }
+                }
                 
                 // Get current queue count for position
                 const [countRows] = await pool.query(`
@@ -118,7 +153,7 @@ const fleetService = {
                     INSERT INTO fleet_queues 
                     (gate_id, gate_name, driver_id, vendor_id, position, estimated_wait_time)
                     VALUES (?, ?, ?, ?, ?, ?)
-                `, [gateId, gate.gate_name, driverId, vendorId, position, estimatedWaitTime]);
+                `, [gateId, gate.gate_name, driverId, resolvedVendorId, position, estimatedWaitTime]);
                 
                 // Update gate queue count
                 await pool.query(`
@@ -126,6 +161,8 @@ const fleetService = {
                     SET current_queue_count = current_queue_count + 1
                     WHERE gate_id = ?
                 `, [gateId]);
+                
+                LOG.success(`[FLEET-JOIN] Driver ${driverId} successfully joined gate ${gateId} at position #${position} (vendor: ${resolvedVendorId})`);
                 
                 return {
                     id: result.insertId,
@@ -137,13 +174,30 @@ const fleetService = {
             }
             
             // Fallback for in-memory
-            return {
+            // Initialize in-memory queue array if needed
+            if (!db.inMemoryDb) db.inMemoryDb = {};
+            if (!db.inMemoryDb.fleet_queues) db.inMemoryDb.fleet_queues = [];
+            
+            const existingMem = db.inMemoryDb.fleet_queues.find(q => q.driver_id === driverId && q.status === 'waiting');
+            if (existingMem) {
+                LOG.info(`[FLEET-JOIN] (In-Memory) Driver ${driverId} already in queue. Returning existing position.`);
+                return existingMem;
+            }
+            
+            const position = db.inMemoryDb.fleet_queues.filter(q => q.gate_id === gateId && q.status === 'waiting').length + 1;
+            const newQueue = {
                 id: Date.now(),
                 gate_id: gateId,
                 gate_name: `Gate ${gateId}`,
-                position: 4,
-                estimated_wait_time: 18
+                driver_id: driverId,
+                vendor_id: vendorId || 'v_fleet1',
+                position: position,
+                estimated_wait_time: 10 + (position - 1) * 3,
+                status: 'waiting'
             };
+            db.inMemoryDb.fleet_queues.push(newQueue);
+            LOG.success(`[FLEET-JOIN] (In-Memory) Driver ${driverId} joined gate ${gateId} at position #${position}`);
+            return newQueue;
         } catch (e) {
             LOG.error("Failed to join queue", e.message);
             throw e;
@@ -370,15 +424,17 @@ const fleetService = {
                 
                 // For driver view, return all active gates regardless of vendor_id
                 // Only filter by vendor_id if explicitly provided and not null
-                let query = `SELECT * FROM fleet_gates WHERE is_active = TRUE`;
-                const params = [];
+                const { CORRIDOR_GATE_IDS } = require('../database/features/fleetRouteSeed');
+                let query = `SELECT * FROM fleet_gates WHERE is_active = TRUE AND gate_id IN (${CORRIDOR_GATE_IDS.map(() => '?').join(',')})`;
+                const params = [...CORRIDOR_GATE_IDS];
                 
                 if (vendorId && vendorId.trim() !== '') {
                     query += ` AND (vendor_id = ? OR vendor_id IS NULL)`;
                     params.push(vendorId);
                 }
                 
-                query += ` ORDER BY gate_name ASC`;
+                query += ` ORDER BY FIELD(gate_id, ${CORRIDOR_GATE_IDS.map(() => '?').join(',')})`;
+                params.push(...CORRIDOR_GATE_IDS);
                 
                 const [rows] = await pool.query(query, params);
                 LOG.info(`[FleetService] getAllGates returned ${rows.length} gates (vendorId: ${vendorId || 'all'})`);
@@ -610,6 +666,7 @@ const fleetService = {
             if (db.getType() === 'mysql') {
                 const pool = db.getPool();
                 
+                const { CORRIDOR_GATE_IDS } = require('../database/features/fleetRouteSeed');
                 let query = `
                     SELECT 
                         fg.*,
@@ -627,15 +684,17 @@ const fleetService = {
                         WHERE status = 'waiting'
                         GROUP BY gate_id
                     ) as queue_stats ON fg.gate_id = queue_stats.gate_id
+                    WHERE fg.gate_id IN (${CORRIDOR_GATE_IDS.map(() => '?').join(',')})
                 `;
                 
-                const params = [];
+                const params = [...CORRIDOR_GATE_IDS];
                 if (vendorId) {
-                    query += ' WHERE fg.vendor_id = ?';
+                    query += ' AND fg.vendor_id = ?';
                     params.push(vendorId);
                 }
                 
-                query += ' ORDER BY fg.gate_id ASC';
+                query += ` ORDER BY FIELD(fg.gate_id, ${CORRIDOR_GATE_IDS.map(() => '?').join(',')})`;
+                params.push(...CORRIDOR_GATE_IDS);
                 
                 const [rows] = await pool.query(query, params);
                 
@@ -815,6 +874,132 @@ const fleetService = {
             LOG.error("[Fleet Service] Error stack:", e.stack);
             throw e;
         }
+    },
+
+    isFleetVendorRow(vendor) {
+        return !!(vendor && (vendor.features_fleet === true || vendor.features_fleet === 1 || vendor.features_fleet === '1'));
+    },
+
+    async getManagedFleetVendor(user, preferredVendorId = null) {
+        if (!user) return null;
+        if (preferredVendorId && user.role === 'super_admin') {
+            const v = await db.getVendorById(preferredVendorId);
+            return this.isFleetVendorRow(v) ? v : v;
+        }
+        const owned = await db.getVendorByOwnerId(user.id);
+        if (this.isFleetVendorRow(owned)) return owned;
+        const mappings = await db.getUserVendorMappings(user.id);
+        for (const m of mappings || []) {
+            const v = await db.getVendorById(m.vendor_id);
+            if (this.isFleetVendorRow(v)) return v;
+        }
+        if (preferredVendorId) {
+            const v = await db.getVendorById(preferredVendorId);
+            if (v) return v;
+        }
+        return owned || null;
+    },
+
+    async assertFleetManager(user, preferredVendorId = null) {
+        if (!user) {
+            const err = new Error('Access denied');
+            err.status = 403;
+            throw err;
+        }
+        if (user.role === 'super_admin') {
+            if (preferredVendorId) {
+                const v = await db.getVendorById(preferredVendorId);
+                if (!v) {
+                    const err = new Error('Fleet vendor not found');
+                    err.status = 404;
+                    throw err;
+                }
+                return v;
+            }
+            const overview = await db.getFleetOverview();
+            if (overview.vendors?.[0]) return db.getVendorById(overview.vendors[0].id);
+            const err = new Error('No fleet vendors yet');
+            err.status = 404;
+            throw err;
+        }
+        if (String(user.role || '').toLowerCase() !== 'vendor') {
+            const err = new Error('Fleet management is for vendors. Switch role or log in as vendor.');
+            err.status = 403;
+            throw err;
+        }
+        const vendor = await this.getManagedFleetVendor(user, preferredVendorId);
+        if (!vendor) {
+            const err = new Error('No fleet vendor mapped to this account');
+            err.status = 403;
+            throw err;
+        }
+        return vendor;
+    },
+
+    async getOverview() {
+        return db.getFleetOverview();
+    },
+
+    async getRoster(vendorId) {
+        return db.getFleetRoster(vendorId);
+    },
+
+    async addRosterDriver(vendorId, payload = {}) {
+        const name = String(payload.name || '').trim();
+        const mobile = String(payload.mobile || '').trim();
+        if (!name || !mobile) {
+            throw new Error('name and mobile are required');
+        }
+        let user = await db.getUserByMobile(mobile);
+        if (!user && payload.email) {
+            const users = await db.getUsers();
+            user = users.find((u) => String(u.email || '').toLowerCase() === String(payload.email).toLowerCase());
+        }
+        if (!user) {
+            user = {
+                id: 'usr_' + Math.random().toString(36).substring(2, 11),
+                name,
+                email: payload.email || `${mobile}@qrqueue.local`,
+                mobile,
+                role: 'user',
+                location_name: payload.location_name || '',
+                created_at: new Date(),
+            };
+            await db.addUser(user);
+        } else {
+            const role = String(user.role || '').toLowerCase();
+            if (role === 'vendor' || role === 'super_admin') {
+                throw new Error('This account is a vendor. Drivers must be user accounts.');
+            }
+            await db.updateUserProfile(user.id, {
+                name: name || user.name,
+                email: payload.email || user.email,
+                mobile,
+                location_name: payload.location_name !== undefined ? payload.location_name : user.location_name,
+            });
+        }
+        await db.addUserVendorMapping(user.id, vendorId);
+        const roster = await db.getFleetRoster(vendorId);
+        return roster.find((d) => String(d.id) === String(user.id)) || { ...user, vendor_id: vendorId };
+    },
+
+    async updateRosterDriver(vendorId, userId, payload = {}) {
+        const roster = await db.getFleetRoster(vendorId);
+        const existing = roster.find((d) => String(d.id) === String(userId));
+        if (!existing) throw new Error('Driver is not mapped to this fleet');
+        await db.updateUserProfile(userId, {
+            name: payload.name,
+            email: payload.email,
+            mobile: payload.mobile,
+            location_name: payload.location_name,
+        });
+        const next = await db.getFleetRoster(vendorId);
+        return next.find((d) => String(d.id) === String(userId));
+    },
+
+    async removeRosterDriver(vendorId, userId) {
+        await db.removeUserVendorMapping(userId, vendorId);
+        return { success: true };
     }
 };
 

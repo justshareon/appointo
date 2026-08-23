@@ -30,6 +30,8 @@ router.use(authenticateToken);
 router.get('/vendors', (req, res) => adminController.getVendors(req, res));
 router.post('/update-vendor', (req, res) => adminController.updateVendor(req, res));
 router.post('/add-vendor', (req, res) => adminController.addVendor(req, res));
+router.get('/vendor-categories', (req, res) => adminController.getVendorCategories(req, res));
+router.post('/vendor-categories', (req, res) => adminController.addVendorCategory(req, res));
 router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendorDashboard(req, res));
 
 // User & Mapping Management

@@ -1,7 +1,6 @@
 const db = require('../database');
 const LOG = require('../utils/logger');
-
-const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
+const { resolveProductImages } = require('../../../utils/categoryImages');
 
 /**
  * Product Service
@@ -31,7 +30,9 @@ class ProductService {
 
         return {
             ...product,
-            shop_name: vendor.shop_name
+            shop_name: vendor.shop_name,
+            vendor_category: vendor.category,
+            category: product.category || vendor.category,
         };
     }
 
@@ -70,7 +71,7 @@ class ProductService {
         }
 
         const normalizedImages = Array.isArray(image_urls) ? image_urls.filter(Boolean) : [];
-        const finalImages = normalizedImages.length ? normalizedImages : [DEFAULT_PRODUCT_IMAGE];
+        const finalImages = resolveProductImages(normalizedImages, vendor.category, name);
 
         const product = {
             vendor_id: vendor.id,
@@ -117,10 +118,12 @@ class ProductService {
         // Keep first/default image fixed
         if (Object.prototype.hasOwnProperty.call(updateFields, 'image_urls')) {
             const existingImages = Array.isArray(existing.image_urls) ? existing.image_urls.filter(Boolean) : [];
-            const fixedFirstImage = existingImages[0] || DEFAULT_PRODUCT_IMAGE;
             const incoming = Array.isArray(updateFields.image_urls) ? updateFields.image_urls.filter(Boolean) : [];
-            const extras = incoming.filter((u) => u && u !== fixedFirstImage);
-            updateFields.image_urls = [fixedFirstImage, ...extras];
+            updateFields.image_urls = resolveProductImages(
+                incoming.length ? incoming : existingImages,
+                vendor.category,
+                productId
+            );
         }
 
         const updated = await db.updateProduct(productId, updateFields);

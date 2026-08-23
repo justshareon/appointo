@@ -236,7 +236,7 @@ router.get('/options', async (req, res) => {
 router.get('/top-gainers', async (req, res) => {
     const routeStartTime = Date.now();
     try {
-        const limit = parseInt(req.query.limit) || 10;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 200);
         
         LOG.info('[Trading Routes] ========================================');
         LOG.info(`[Trading Routes] GET /api/trading/top-gainers?limit=${limit}`);
@@ -257,58 +257,44 @@ router.get('/top-gainers', async (req, res) => {
             // Use MySQL database (populated from Excel file)
             LOG.info('[Trading Routes] Using MySQL/Excel database');
             
-            // Check if MySQL is available
-            const isMySQLAvailable = stockDataService.isMySQLAvailable();
-            LOG.info(`[Trading Routes] MySQL available: ${isMySQLAvailable}`);
-            
-            // Check database record count before fetching
-            let totalStocks = 0;
-            try {
-                const allStocks = await stockDataService.getAllStocks();
-                totalStocks = allStocks.length;
-                LOG.info(`[Trading Routes] Total stocks in database: ${totalStocks}`);
-            } catch (err) {
-                LOG.warning(`[Trading Routes] Could not count total stocks: ${err.message}`);
-            }
-            
-            gainers = await stockDataService.getTopGainers(limit);
+            // Fast path: paginated query only (never load all stocks here)
+            const page = await stockDataService.getLiveStocksPage({
+                dataType: 'gainers',
+                limit,
+                offset: Math.max(parseInt(req.query.offset, 10) || 0, 0),
+                includeVolume: req.query.includeVolume === '1' || req.query.includeVolume === 'true',
+            });
+            gainers = page.data || [];
+            res.locals.tradingPageMeta = {
+                limit: page.limit,
+                offset: page.offset,
+                hasMore: page.hasMore,
+                total: page.total,
+            };
             
             LOG.info(`[Trading Routes] getTopGainers returned: ${gainers?.length || 0} records`);
-            if (gainers && gainers.length > 0) {
-                LOG.info(`[Trading Routes] Sample gainer:`, {
-                    symbol: gainers[0].symbol,
-                    name: gainers[0].name,
-                    price: gainers[0].price,
-                    changePercent: gainers[0].changePercent
-                });
-            }
-            
             if (!gainers || gainers.length === 0) {
                 LOG.warning('[Trading Routes] No gainers found in database');
-                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-                LOG.warning('[Trading Routes] Run diagnostics at /api/trading/diagnostics');
-            } else {
-                LOG.info(`[Trading Routes] Found ${gainers.length} gainers in database`);
             }
         }
         
         const routeDuration = Date.now() - routeStartTime;
+        const meta = res.locals.tradingPageMeta || {};
         LOG.info(`[Trading Routes] Response: ${gainers?.length || 0} gainers, duration: ${routeDuration}ms`);
-        LOG.info('[Trading Routes] ========================================');
         
-        // Always return success with data array (even if empty)
-        res.json({ success: true, data: gainers || [] });
+        res.json({
+            success: true,
+            data: gainers || [],
+            limit: meta.limit ?? limit,
+            offset: meta.offset ?? 0,
+            hasMore: !!meta.hasMore,
+            total: meta.total ?? null,
+        });
     } catch (error) {
         const routeDuration = Date.now() - routeStartTime;
-        LOG.error('[Trading Routes] ========================================');
-        LOG.error('[Trading Routes] ERROR: Failed to fetch top gainers');
-        LOG.error('[Trading Routes] ERROR Duration: ' + routeDuration + 'ms');
-        LOG.error('[Trading Routes] ERROR Type: ' + error.constructor.name);
-        LOG.error('[Trading Routes] ERROR Message: ' + (error.message || 'No message'));
-        LOG.error('[Trading Routes] ERROR Stack: ' + (error.stack ? error.stack.split('\n').slice(0, 5).join('\n') : 'No stack'));
-        LOG.error('[Trading Routes] ========================================');
-        // Return empty array instead of error to prevent frontend crashes
-        res.json({ success: true, data: [] });
+        LOG.error('[Trading Routes] ERROR: Failed to fetch top gainers', error.message);
+        LOG.error(`[Trading Routes] ERROR Duration: ${routeDuration}ms`);
+        res.json({ success: true, data: [], hasMore: false });
     }
 });
 
@@ -319,128 +305,104 @@ router.get('/top-gainers', async (req, res) => {
  */
 router.get('/top-losers', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 10;
-        LOG.info(`[Trading Routes] GET /api/trading/top-losers?limit=${limit}`);
-        LOG.info(`[Trading Routes] Data Source: ${config.dataSources.useYahooFinance ? 'Yahoo Finance API' : 'MySQL/Excel File'}`);
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const includeVolume = req.query.includeVolume === '1' || req.query.includeVolume === 'true';
+        LOG.info(`[Trading Routes] GET /api/trading/top-losers?limit=${limit}&offset=${offset}`);
         
-        let losers = [];
-        
+        let page;
         if (config.dataSources.useYahooFinance) {
-            // Use Yahoo Finance API
-            losers = tradingDataService.getTopLosers(limit);
-            if (!losers || losers.length === 0) {
-                LOG.info('[Trading Routes] No local data, fetching from Yahoo Finance API...');
-                losers = await tradingDataService.refreshTopLosers(limit);
-            }
+            let losers = tradingDataService.getTopLosers(limit + offset) || [];
+            if (!losers.length) losers = await tradingDataService.refreshTopLosers(limit + offset) || [];
+            const slice = losers.slice(offset, offset + limit);
+            page = { data: slice, limit, offset, hasMore: offset + slice.length < losers.length, total: losers.length };
         } else {
-            // Use MySQL database (populated from Excel file)
-            LOG.info('[Trading Routes] Using MySQL/Excel database');
-            losers = await stockDataService.getTopLosers(limit);
-            
-            if (!losers || losers.length === 0) {
-                LOG.warning('[Trading Routes] No losers found in database');
-                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-            }
+            page = await stockDataService.getLiveStocksPage({
+                dataType: 'decliners',
+                limit,
+                offset,
+                includeVolume,
+            });
         }
         
-        res.json({ success: true, data: losers || [] });
+        res.json({
+            success: true,
+            data: page.data || [],
+            limit: page.limit,
+            offset: page.offset,
+            hasMore: !!page.hasMore,
+            total: page.total ?? null,
+        });
     } catch (error) {
-        LOG.error('[Trading Routes] Error fetching top losers:', error);
-        LOG.error('[Trading Routes] Error details:', error.message);
-        // Return empty array instead of error to prevent frontend crashes
-        res.json({ success: true, data: [] });
+        LOG.error('[Trading Routes] Error fetching top losers:', error.message);
+        res.json({ success: true, data: [], hasMore: false });
     }
 });
 
 /**
  * GET /api/trading/actives
  * Get most active stocks from local DB
- * Query params: limit (default: 10)
+ * Query params: limit (default: 30), offset
  */
 router.get('/actives', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 10;
-        LOG.info(`[Trading Routes] GET /api/trading/actives?limit=${limit}`);
-        LOG.info(`[Trading Routes] Data Source: ${config.dataSources.useYahooFinance ? 'Yahoo Finance API' : 'MySQL/Excel File'}`);
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const includeVolume = req.query.includeVolume === '1' || req.query.includeVolume === 'true';
+        LOG.info(`[Trading Routes] GET /api/trading/actives?limit=${limit}&offset=${offset}`);
         
-        let actives = [];
+        const page = await stockDataService.getLiveStocksPage({
+            dataType: 'actives',
+            limit,
+            offset,
+            includeVolume,
+        });
         
-        if (config.dataSources.useYahooFinance) {
-            // Yahoo Finance doesn't have actives endpoint, use database
-            LOG.info('[Trading Routes] Using MySQL/Excel database for actives');
-            actives = await stockDataService.getActives(limit);
-        } else {
-            // Use MySQL database (populated from Excel file)
-            LOG.info('[Trading Routes] Using MySQL/Excel database');
-            actives = await stockDataService.getActives(limit);
-            
-            if (!actives || actives.length === 0) {
-                LOG.warning('[Trading Routes] No actives found in database');
-                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-            }
-        }
-        
-        res.json({ success: true, data: actives || [] });
+        res.json({
+            success: true,
+            data: page.data || [],
+            limit: page.limit,
+            offset: page.offset,
+            hasMore: !!page.hasMore,
+            total: page.total ?? null,
+        });
     } catch (error) {
-        LOG.error('[Trading Routes] Error fetching actives:', error);
-        LOG.error('[Trading Routes] Error details:', error.message);
-        // Return empty array instead of error to prevent frontend crashes
-        res.json({ success: true, data: [] });
+        LOG.error('[Trading Routes] Error fetching actives:', error.message);
+        res.json({ success: true, data: [], hasMore: false });
     }
 });
 
 /**
  * GET /api/trading/data
- * Get all stock data from local DB
- * Query params: limit (default: 100)
+ * Paginated stock list — default 30 rows, scroll for more
+ * Query params: limit (default: 30), offset (default: 0)
  */
 router.get('/data', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 100;
-        LOG.info(`[Trading Routes] GET /api/trading/data?limit=${limit}`);
-        LOG.info(`[Trading Routes] Data Source: ${config.dataSources.useYahooFinance ? 'Yahoo Finance API' : 'MySQL/Excel File'}`);
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        const includeVolume = req.query.includeVolume === '1' || req.query.includeVolume === 'true';
+        LOG.info(`[Trading Routes] GET /api/trading/data?limit=${limit}&offset=${offset}`);
         
-        let stocks = [];
+        const page = await stockDataService.getLiveStocksPage({
+            dataType: null,
+            limit,
+            offset,
+            includeVolume,
+            sort: 'auto',
+        });
         
-        if (config.dataSources.useYahooFinance) {
-            // Use Yahoo Finance API
-            LOG.info('[Trading Routes] Using Yahoo Finance API');
-            stocks = await stockDataService.getAllStocks();
-            stocks = stocks.slice(0, limit);
-        } else {
-            // Use MySQL database (populated from Excel file)
-            LOG.info('[Trading Routes] Using MySQL/Excel database');
-            // Get all stocks regardless of type for the DATA tab
-            stocks = await stockDataService.getAllStocks();
-            
-            LOG.info(`[Trading Routes] getAllStocks returned ${stocks?.length || 0} stocks`);
-            if (stocks && stocks.length > 0) {
-                LOG.info(`[Trading Routes] Sample stock data:`, {
-                    symbol: stocks[0].symbol,
-                    name: stocks[0].name,
-                    price: stocks[0].price,
-                    pchange: stocks[0].pchange,
-                    changePercent: stocks[0].changePercent,
-                    hasValidData: !!(stocks[0].symbol && stocks[0].name && stocks[0].price !== undefined)
-                });
-            }
-            
-            stocks = stocks.slice(0, limit);
-            
-            if (!stocks || stocks.length === 0) {
-                LOG.warning('[Trading Routes] No stocks found in database');
-                LOG.warning('[Trading Routes] Check Excel sync job status at /api/trading/sync-status');
-            } else {
-                LOG.info(`[Trading Routes] Returning ${stocks.length} stocks (limited from ${stocks.length} total)`);
-            }
-        }
-        
-        res.json({ success: true, data: stocks || [] });
+        res.json({
+            success: true,
+            data: page.data || [],
+            limit: page.limit,
+            offset: page.offset,
+            hasMore: !!page.hasMore,
+            total: page.total ?? null,
+        });
     } catch (error) {
-        LOG.error('[Trading Routes] Error fetching data:', error);
-        LOG.error('[Trading Routes] Error details:', error.message);
-        // Return empty array instead of error to prevent frontend crashes
-        res.json({ success: true, data: [] });
+        LOG.error('[Trading Routes] Error fetching data:', error.message);
+        res.json({ success: true, data: [], hasMore: false });
     }
 });
 
@@ -1774,17 +1736,19 @@ router.post('/funds/add', async (req, res) => {
  */
 router.get('/mutual-funds', async (req, res) => {
     try {
-        const { category, sheetName, limit = 100 } = req.query;
-        LOG.info(`[Trading Routes] GET /api/trading/mutual-funds?category=${category || 'all'}&sheetName=${sheetName || 'all'}&limit=${limit}`);
+        const { category, sheetName } = req.query;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 20, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+        LOG.info(`[Trading Routes] GET /api/trading/mutual-funds?category=${category || 'all'}&sheetName=${sheetName || 'all'}&limit=${limit}&offset=${offset}`);
         
         let funds = [];
         
         if (sheetName) {
-            funds = await mutualFundDataService.getFundsBySheet(sheetName, parseInt(limit));
+            funds = await mutualFundDataService.getFundsBySheet(sheetName, limit, offset);
         } else if (category) {
-            funds = await mutualFundDataService.getFundsByCategory(category, parseInt(limit));
+            funds = await mutualFundDataService.getFundsByCategory(category, limit, offset);
         } else {
-            funds = await mutualFundDataService.getAllFunds(parseInt(limit));
+            funds = await mutualFundDataService.getAllFunds(limit, offset);
         }
         
         if (!funds || funds.length === 0) {
@@ -1792,7 +1756,7 @@ router.get('/mutual-funds', async (req, res) => {
             LOG.warning('[Trading Routes] Check mutual fund sync job status');
         }
         
-        res.json({ success: true, data: funds || [] });
+        res.json({ success: true, data: funds || [], hasMore: (funds || []).length >= limit, limit, offset });
     } catch (error) {
         LOG.error('[Trading Routes] Error fetching mutual funds:', error);
         res.json({ success: true, data: [] });
@@ -1834,12 +1798,14 @@ router.get('/mutual-funds/sheets', async (req, res) => {
  */
 router.get('/corporate-actions', async (req, res) => {
     try {
-        const { symbol, limit = 100, offset = 0 } = req.query;
+        const { symbol } = req.query;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 20, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
         LOG.info(`[Trading Routes] GET /api/trading/corporate-actions?symbol=${symbol || 'all'}&limit=${limit}&offset=${offset}`);
         
         const options = {
-            limit: parseInt(limit),
-            offset: parseInt(offset),
+            limit,
+            offset,
             symbol: symbol || null
         };
         
@@ -1850,7 +1816,7 @@ router.get('/corporate-actions', async (req, res) => {
             LOG.warning('[Trading Routes] Check corporate actions sync job status');
         }
         
-        res.json({ success: true, data: actions || [] });
+        res.json({ success: true, data: actions || [], hasMore: (actions || []).length >= limit, limit, offset });
     } catch (error) {
         LOG.error('[Trading Routes] Error fetching corporate actions:', error);
         res.json({ success: true, data: [] });
@@ -1882,12 +1848,14 @@ router.get('/corporate-actions/:symbol', async (req, res) => {
  */
 router.get('/board-meetings', async (req, res) => {
     try {
-        const { symbol, limit = 100, offset = 0 } = req.query;
+        const { symbol } = req.query;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 20, 200);
+        const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
         LOG.info(`[Trading Routes] GET /api/trading/board-meetings?symbol=${symbol || 'all'}&limit=${limit}&offset=${offset}`);
         
         const options = {
-            limit: parseInt(limit),
-            offset: parseInt(offset),
+            limit,
+            offset,
             symbol: symbol || null
         };
         
@@ -1898,7 +1866,7 @@ router.get('/board-meetings', async (req, res) => {
             LOG.warning('[Trading Routes] Check board meetings sync job status');
         }
         
-        res.json({ success: true, data: meetings || [] });
+        res.json({ success: true, data: meetings || [], hasMore: (meetings || []).length >= limit, limit, offset });
     } catch (error) {
         LOG.error('[Trading Routes] Error fetching board meetings:', error);
         res.json({ success: true, data: [] });

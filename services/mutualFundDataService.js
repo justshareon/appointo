@@ -251,19 +251,21 @@ class MutualFundDataService {
     /**
      * Get all mutual funds
      */
-    async getAllFunds(limit = 1000) {
+    async getAllFunds(limit = 20, offset = 0) {
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
         if (!this.isMySQLAvailable()) {
             const inMemoryDb = this.getInMemoryDb();
             return inMemoryDb.mutual_funds
-                .slice(0, limit)
+                .slice(safeOffset, safeOffset + safeLimit)
                 .map(fund => this.formatFundData(fund));
         }
 
         const pool = db.getPool();
         try {
             const [rows] = await pool.query(
-                'SELECT * FROM mutual_funds ORDER BY fund_name LIMIT ?',
-                [limit]
+                'SELECT * FROM mutual_funds ORDER BY fund_name LIMIT ? OFFSET ?',
+                [safeLimit, safeOffset]
             );
             return rows.map(row => this.formatFundData(row));
         } catch (error) {
@@ -275,20 +277,22 @@ class MutualFundDataService {
     /**
      * Get mutual funds by category
      */
-    async getFundsByCategory(category, limit = 100) {
+    async getFundsByCategory(category, limit = 20, offset = 0) {
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
         if (!this.isMySQLAvailable()) {
             const inMemoryDb = this.getInMemoryDb();
             return inMemoryDb.mutual_funds
                 .filter(f => f.category && f.category.toLowerCase() === category.toLowerCase())
-                .slice(0, limit)
+                .slice(safeOffset, safeOffset + safeLimit)
                 .map(fund => this.formatFundData(fund));
         }
 
         const pool = db.getPool();
         try {
             const [rows] = await pool.query(
-                'SELECT * FROM mutual_funds WHERE category = ? ORDER BY fund_name LIMIT ?',
-                [category, limit]
+                'SELECT * FROM mutual_funds WHERE category = ? ORDER BY fund_name LIMIT ? OFFSET ?',
+                [category, safeLimit, safeOffset]
             );
             return rows.map(row => this.formatFundData(row));
         } catch (error) {
@@ -300,20 +304,22 @@ class MutualFundDataService {
     /**
      * Get mutual funds by sheet name
      */
-    async getFundsBySheet(sheetName, limit = 100) {
+    async getFundsBySheet(sheetName, limit = 20, offset = 0) {
+        const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+        const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
         if (!this.isMySQLAvailable()) {
             const inMemoryDb = this.getInMemoryDb();
             return inMemoryDb.mutual_funds
                 .filter(f => f.sheet_name === sheetName)
-                .slice(0, limit)
+                .slice(safeOffset, safeOffset + safeLimit)
                 .map(fund => this.formatFundData(fund));
         }
 
         const pool = db.getPool();
         try {
             const [rows] = await pool.query(
-                'SELECT * FROM mutual_funds WHERE sheet_name = ? ORDER BY fund_name LIMIT ?',
-                [sheetName, limit]
+                'SELECT * FROM mutual_funds WHERE sheet_name = ? ORDER BY fund_name LIMIT ? OFFSET ?',
+                [sheetName, safeLimit, safeOffset]
             );
             return rows.map(row => this.formatFundData(row));
         } catch (error) {

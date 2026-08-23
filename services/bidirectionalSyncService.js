@@ -565,17 +565,33 @@ class BidirectionalSyncService {
                 LOG.info('[Bidirectional Sync] Loading settings from MySQL...');
                 try {
                     const [settingsRows] = await connection.query('SELECT * FROM system_settings');
-                    inMemoryDb.settings = {};
+                    // Merge into defaults — never wipe specialty flags when MySQL row is missing
+                    const merged = { ...(inMemoryDb.settings || {}) };
                     for (const row of settingsRows) {
-                        const raw = row.value;
-                        if (raw === 'true' || raw === '1') {
-                            inMemoryDb.settings[row.key_name] = true;
-                        } else if (raw === 'false' || raw === '0') {
-                            inMemoryDb.settings[row.key_name] = false;
+                        const raw = row.value !== undefined && row.value !== null ? row.value : row.is_enabled;
+                        if (raw === 'true' || raw === '1' || raw === 1 || raw === true) {
+                            merged[row.key_name] = true;
+                        } else if (raw === 'false' || raw === '0' || raw === 0 || raw === false) {
+                            merged[row.key_name] = false;
                         } else {
-                            inMemoryDb.settings[row.key_name] = raw;
+                            merged[row.key_name] = raw;
                         }
                     }
+                    // Ensure specialty dashboards stay on unless explicitly disabled in MySQL
+                    for (const key of [
+                        'enable_trade', 'enable_fleet', 'enable_cyber', 'enable_trust_score',
+                        'enable_realestate', 'enable_offer', 'enable_qless', 'enable_news',
+                        'enable_queue', 'enable_appointments', 'enable_shopping', 'enable_matchmaking',
+                    ]) {
+                        if (merged[key] === undefined) merged[key] = true;
+                    }
+                    merged.enable_trade_extra_tabs = false;
+                    merged.enable_lazy_loading = true;
+                    merged.ui_theme = 'facebook';
+                    merged.enable_offer = true;
+                    merged.enable_trade = true;
+                    merged.enable_trust_score = true;
+                    inMemoryDb.settings = merged;
                     syncResult.settings = settingsRows.length;
                     LOG.success(`[Bidirectional Sync] Loaded ${syncResult.settings} settings from MySQL`);
                 } catch (err) {

@@ -7,9 +7,10 @@
 require('../loadEnv');
 const { AsyncLocalStorage } = require('async_hooks');
 const mysql = require('mysql2/promise');
-const { logMysqlQuery, logMysqlPool } = require('../utils/dbTiming');
+const { logMysqlQuery, logMysqlPool } = require('../utils/dbtiming');
 const { getFeatureIdleMs } = require('./featureIdle');
 const featureMemory = require('./featureMemoryManager');
+const { MYSQL_FEATURES } = require('./featureRegistry');
 
 const LOG = {
     info: (msg) => console.log(`[FeatureDB] ${msg}`),
@@ -24,28 +25,116 @@ const IDLE_CLOSE_MS = getFeatureIdleMs();
 const featurePools = new Map();
 const als = new AsyncLocalStorage();
 
-const FEATURES = [
-    'core',
-    'queue',
-    'appointments',
-    'shopping',
-    'matchmaking',
-    'trade',
-    'offer',
-    'qless',
-    'fleet',
-    'realestate',
-    'cyber',
-    'trust_score',
-];
+const FEATURES = MYSQL_FEATURES;
+
+const lastRebuildAt = new Map();
+
+const STALE_CODES = new Set([
+    'PROTOCOL_CONNECTION_LOST',
+    'PROTOCOL_ENQUEUE_AFTER_QUIT',
+    'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR',
+    'ECONNRESET',
+    'EPIPE',
+    'ETIMEDOUT',
+    'ECONNREFUSED',
+]);
+
+async function recreatePool(feature) {
+    const now = Date.now();
+    if (now - (lastRebuildAt.get(feature) || 0) < 8000) {
+        return liveEntry(feature)?.pool || null;
+    }
+    lastRebuildAt.set(feature, now);
+    const entry = featurePools.get(feature);
+    if (entry) {
+        entry.closing = true;
+        featurePools.delete(feature);
+        try { await entry.pool.end(); } catch (e) { /* ignore */ }
+    }
+    const pool = createPoolInstance(feature);
+    featurePools.set(feature, {
+        pool,
+        refCount: Math.max(1, entry?.refCount || 1),
+        idleTimer: null,
+        closing: false,
+    });
+    LOG.warn(`Recreated MySQL pool for "${feature}" after stale socket`);
+    return pool;
+}
+
+function isStaleConnectionError(err) {
+    if (!err) return false;
+    if (STALE_CODES.has(err.code) || STALE_CODES.has(String(err.errno))) return true;
+    return /socket has been ended|closed state|Cannot enqueue|Connection lost|server closed the connection/i.test(
+        String(err.message || err)
+    );
+}
+
+function shouldUseSsl() {
+    const flag = String(process.env.DB_SSL || '').toLowerCase();
+    if (flag === '0' || flag === 'false' || flag === 'off') return false;
+    if (flag === '1' || flag === 'true' || flag === 'on') return true;
+    const host = String(process.env.DB_HOST || 'localhost').toLowerCase();
+    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
+}
 
 function isMysqlEnabled() {
-    return DB_TYPE === 'mysql';
+    return String(process.env.DB_TYPE || DB_TYPE || 'inmemory').toLowerCase() === 'mysql';
+}
+
+function isMysqlConfigured() {
+    return Boolean(process.env.DB_HOST || process.env.DB_NAME);
+}
+
+function liveEntry(feature) {
+    const entry = featurePools.get(feature);
+    if (!entry || entry.closing) return null;
+    return entry;
+}
+
+async function acquireForSync(feature = 'core') {
+    if (!process.env.DB_HOST && !process.env.DB_NAME) {
+        throw new Error('MySQL is not configured (set DB_HOST and DB_NAME in backend/.env)');
+    }
+    const existing = getCachedPool(feature) || getCachedPool('core');
+    if (existing) return existing;
+
+    const start = Date.now();
+    const pool = createPoolInstance(feature);
+    featurePools.set(feature, { pool, refCount: 1, idleTimer: null, closing: false });
+    try {
+        const conn = await pool.getConnection();
+        conn.release();
+        logMysqlPool(feature, 'sync-pool ready', Date.now() - start, 'ready');
+        LOG.info(`Sync pool ready for feature "${feature}"`);
+    } catch (err) {
+        logMysqlPool(feature, 'sync-pool FAILED', Date.now() - start, err.message);
+        LOG.error(`Sync pool failed for "${feature}"`, err.message);
+        throw err;
+    }
+    return pool;
 }
 
 function instrumentPool(pool, feature) {
     const originalQuery = pool.query.bind(pool);
     const originalExecute = pool.execute.bind(pool);
+
+    const withRetry = (fn) => async function retryMysql(...args) {
+        try {
+            return await fn(...args);
+        } catch (err) {
+            if (!isStaleConnectionError(err)) throw err;
+            LOG.warn(`Stale MySQL socket on "${feature}", retrying once: ${err.message}`);
+            try {
+                return await fn(...args);
+            } catch (err2) {
+                if (!isStaleConnectionError(err2)) throw err2;
+                const fresh = await recreatePool(feature);
+                if (!fresh) throw err2;
+                return fresh.query(...args);
+            }
+        }
+    };
 
     const timed = (fn) => async function timedMysql(...args) {
         const sql = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].sql) || 'query';
@@ -67,31 +156,45 @@ function instrumentPool(pool, feature) {
         }
     };
 
-    pool.query = timed(originalQuery);
-    pool.execute = timed(originalExecute);
+    pool.query = timed(withRetry(originalQuery));
+    pool.execute = timed(withRetry(originalExecute));
+    const errorTarget = pool.pool && typeof pool.pool.on === 'function' ? pool.pool : pool;
+    if (typeof errorTarget.on === 'function') {
+        errorTarget.on('error', (err) => {
+            LOG.warn(`Pool error (${feature}): ${err.message}`);
+        });
+    }
     return pool;
 }
 
 function createPoolInstance(feature) {
     const dbName = process.env[`DB_NAME_${feature.toUpperCase()}`] || process.env.DB_NAME || 'qr_queue';
-    LOG.info(`Creating MySQL pool for feature "${feature}" (db: ${dbName} host: ${process.env.DB_HOST || 'localhost'})`);
-    return instrumentPool(mysql.createPool({
+    const idleTimeout = parseInt(process.env.DB_POOL_IDLE_MS || '60000', 10);
+    const connectionLimit = parseInt(process.env[`DB_CONN_LIMIT_${feature.toUpperCase()}`] || process.env.DB_CONN_LIMIT || '5', 10);
+    const useSsl = shouldUseSsl();
+    LOG.info(`Creating MySQL pool for feature "${feature}" (db: ${dbName} host: ${process.env.DB_HOST || 'localhost'} ssl: ${useSsl})`);
+    const config = {
         host: process.env.DB_HOST || 'localhost',
         port: process.env.DB_PORT || 3306,
         user: process.env.DB_USER || 'root',
         password: process.env.DB_PASSWORD || 'root',
         database: dbName,
         waitForConnections: true,
-        connectionLimit: parseInt(process.env[`DB_CONN_LIMIT_${feature.toUpperCase()}`] || '5', 10),
+        connectionLimit,
         queueLimit: 0,
-        ssl: { rejectUnauthorized: false },
-    }), feature);
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10000,
+        idleTimeout,
+        maxIdle: Math.min(2, connectionLimit),
+    };
+    if (useSsl) config.ssl = { rejectUnauthorized: false };
+    return instrumentPool(mysql.createPool(config), feature);
 }
 
 async function acquire(feature = 'core') {
     if (!isMysqlEnabled()) return null;
 
-    const entry = featurePools.get(feature);
+    const entry = liveEntry(feature);
     if (entry) {
         entry.refCount += 1;
         if (entry.idleTimer) {
@@ -103,7 +206,7 @@ async function acquire(feature = 'core') {
 
     const start = Date.now();
     const pool = createPoolInstance(feature);
-    featurePools.set(feature, { pool, refCount: 1, idleTimer: null });
+    featurePools.set(feature, { pool, refCount: 1, idleTimer: null, closing: false });
 
     try {
         const conn = await pool.getConnection();
@@ -119,20 +222,21 @@ async function acquire(feature = 'core') {
 }
 
 function scheduleClose(feature) {
-    const entry = featurePools.get(feature);
+    const entry = liveEntry(feature);
     if (!entry || entry.refCount > 0) return;
 
     if (entry.idleTimer) clearTimeout(entry.idleTimer);
     entry.idleTimer = setTimeout(async () => {
         const current = featurePools.get(feature);
-        if (!current || current.refCount > 0) return;
+        if (!current || current.refCount > 0 || current.closing) return;
+        current.closing = true;
+        featurePools.delete(feature);
         try {
             await current.pool.end();
             LOG.info(`Closed idle pool for feature "${feature}" (idle ${Math.round(IDLE_CLOSE_MS / 60000)}m)`);
         } catch (err) {
             LOG.warn(`Failed closing pool for "${feature}": ${err.message}`);
         }
-        featurePools.delete(feature);
     }, IDLE_CLOSE_MS);
 }
 
@@ -144,7 +248,7 @@ function release(feature = 'core') {
 }
 
 function getCachedPool(feature = 'core') {
-    return featurePools.get(feature)?.pool || null;
+    return liveEntry(feature)?.pool || null;
 }
 
 /**
@@ -152,14 +256,17 @@ function getCachedPool(feature = 'core') {
  */
 function getPool() {
     const store = als.getStore();
-    if (store?.activePool) return store.activePool;
+    if (store?.activeFeature) {
+        const live = getCachedPool(store.activeFeature);
+        if (live) return live;
+    }
     if (store?.features?.length) {
         for (let i = store.features.length - 1; i >= 0; i -= 1) {
             const p = getCachedPool(store.features[i]);
             if (p) return p;
         }
     }
-    return getCachedPool('core');
+    return getCachedPool('core') || store?.activePool || null;
 }
 
 function runWithFeatures(features, fn) {
@@ -172,27 +279,53 @@ function runWithFeatures(features, fn) {
 function middleware(...features) {
     const list = features.length ? features : ['core'];
     return async (req, res, next) => {
+        const target = list[list.length - 1];
+        list.forEach((f) => featureMemory.acquire(f));
+        let memReleased = false;
+        const onMemFinish = () => {
+            if (memReleased) return;
+            memReleased = true;
+            list.forEach((f) => featureMemory.release(f));
+        };
+        res.on('finish', onMemFinish);
+        req.on('aborted', onMemFinish);
+
         if (!isMysqlEnabled()) {
-            return featureMemory.middleware(...list)(req, res, next);
+            try {
+                await featureMemory.ensureFeature(target, { mode: 'basic' });
+            } catch (err) {
+                LOG.warn(`Init skipped: ${err.message}`);
+            }
+            return next();
         }
 
         try {
-            featureMemory.middleware(...list)(req, res, () => {});
             for (const feature of list) {
                 await acquire(feature);
             }
-            const activeFeature = list[list.length - 1];
+            const activeFeature = target;
             const activePool = getCachedPool(activeFeature) || getCachedPool('core');
 
+            let released = false;
             const onFinish = () => {
+                if (released) return;
+                released = true;
                 list.forEach((f) => release(f));
-                res.removeListener('finish', onFinish);
-                res.removeListener('close', onFinish);
             };
             res.on('finish', onFinish);
-            res.on('close', onFinish);
+            req.on('aborted', onFinish);
 
-            als.run({ features: list, activePool, activeFeature, req, mysqlCount: 0, mysqlMs: 0 }, () => next());
+            await new Promise((resolve) => {
+                als.run({ features: list, activePool, activeFeature, req, mysqlCount: 0, mysqlMs: 0 }, async () => {
+                    try {
+                        await featureMemory.ensureFeature(target, { mode: 'basic' });
+                    } catch (err) {
+                        LOG.warn(`Init skipped: ${err.message}`);
+                    }
+                    next();
+                    resolve();
+                });
+            });
         } catch (err) {
             LOG.error('Feature DB middleware failed', err.message);
             next(err);
@@ -201,16 +334,18 @@ function middleware(...features) {
 }
 
 async function closeAll() {
-    for (const [feature, entry] of featurePools.entries()) {
+    const entries = [...featurePools.entries()];
+    featurePools.clear();
+    for (const [feature, entry] of entries) {
         try {
             if (entry.idleTimer) clearTimeout(entry.idleTimer);
+            entry.closing = true;
             await entry.pool.end();
             LOG.info(`Closed pool for feature "${feature}"`);
         } catch (err) {
             LOG.warn(`Error closing "${feature}": ${err.message}`);
         }
     }
-    featurePools.clear();
 }
 
 process.on('SIGINT', () => closeAll().finally(() => process.exit(0)));
@@ -218,6 +353,8 @@ process.on('SIGTERM', () => closeAll().finally(() => process.exit(0)));
 
 module.exports = {
     FEATURES,
+    acquireForSync,
+    isMysqlConfigured,
     isMysqlEnabled,
     acquire,
     release,

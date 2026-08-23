@@ -28,15 +28,13 @@ class CallerValidationService {
      * Initialize local spam database
      */
     initializeLocalDatabase() {
-        if (!db.spamNumbers) {
-            db.spamNumbers = [];
-        }
-        if (!db.callHistory) {
-            db.callHistory = [];
-        }
-        if (!db.communityReports) {
-            db.communityReports = [];
-        }
+        const mem = db.inMemoryDb || db;
+        if (!Array.isArray(mem.spamNumbers)) mem.spamNumbers = [];
+        if (!Array.isArray(mem.callHistory)) mem.callHistory = [];
+        if (!Array.isArray(mem.communityReports)) mem.communityReports = [];
+        db.spamNumbers = mem.spamNumbers;
+        db.callHistory = mem.callHistory;
+        db.communityReports = mem.communityReports;
     }
 
     /**
@@ -602,8 +600,8 @@ class CallerValidationService {
     async getCallHistory(userId, limit = 50) {
         if (!userId) return [];
         
-        return db.callHistory
-            .filter(c => c.user_id === userId)
+        return (db.callHistory || db.inMemoryDb?.callHistory || [])
+            .filter(c => String(c.user_id) === String(userId))
             .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
             .slice(0, limit);
     }

@@ -114,6 +114,45 @@ const setupSyncRoutes = (router) => {
             isSyncing = false;
         }
     });
+
+    /**
+     * Easy bidirectional sync for recent activity (products, appointments, chat, …)
+     * POST /api/sync/3h
+     */
+    router.post('/3h', async (req, res) => {
+        if (isSyncing) {
+            return res.status(409).json({
+                status: 'in_progress',
+                message: 'Sync already in progress',
+            });
+        }
+        isSyncing = true;
+        lastSyncTime = new Date();
+        try {
+            const { syncLast3Hours } = require('../syncLast3Hours');
+            const counts = await syncLast3Hours({ exit: false });
+            lastSyncStatus = {
+                status: 'success',
+                mode: 'last_3h',
+                counts,
+                completedAt: new Date(),
+                startedAt: lastSyncTime,
+            };
+            res.json(lastSyncStatus);
+        } catch (err) {
+            LOG.error('[Sync API] 3h sync failed:', err);
+            lastSyncStatus = {
+                status: 'error',
+                mode: 'last_3h',
+                error: err.message,
+                completedAt: new Date(),
+                startedAt: lastSyncTime,
+            };
+            res.status(500).json(lastSyncStatus);
+        } finally {
+            isSyncing = false;
+        }
+    });
     
     return router;
 };

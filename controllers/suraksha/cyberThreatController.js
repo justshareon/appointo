@@ -77,7 +77,7 @@ class CyberThreatController {
                 type: req.query.type,
                 severity: req.query.severity,
                 category: req.query.category,
-                verified: req.query.verified === 'true',
+                verified: req.query.verified === undefined ? undefined : req.query.verified === 'true',
                 limit: parseInt(req.query.limit) || 50
             };
 

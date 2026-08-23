@@ -197,7 +197,9 @@ class MobileSecurityScanService {
      */
     async _saveScanResult(scanResult) {
         if (!db.mobileSecurityScans) {
-            db.mobileSecurityScans = [];
+            const mem = db.inMemoryDb || db;
+            if (!Array.isArray(mem.mobileSecurityScans)) mem.mobileSecurityScans = [];
+            db.mobileSecurityScans = mem.mobileSecurityScans;
         }
 
         db.mobileSecurityScans.push(scanResult);

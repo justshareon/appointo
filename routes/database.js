@@ -9,6 +9,7 @@ const {
     calculateMatchmakingScore,
     buildAiInsight
 } = require('./matchmakingEngine');
+const { resolveProductImages } = require('../../utils/categoryImages');
 
 const LOG_FILE = path.join(__dirname, 'error.log');
 
@@ -37,7 +38,6 @@ const LOG = {
 };
 
 const DB_TYPE = process.env.DB_TYPE || 'inmemory';
-const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
 
 // Helper for dynamic seed dates
 const now = new Date();
@@ -530,7 +530,10 @@ const normalizeProductRow = (row) => {
         imageUrls = [];
     }
     const cleaned = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
-    product.image_urls = cleaned.length ? cleaned : [DEFAULT_PRODUCT_IMAGE];
+    const vendor = (inMemoryDb.vendors || []).find((v) => String(v.id) === String(product.vendor_id));
+    const category = product.vendor_category || product.category || vendor?.category;
+    if (category && !product.vendor_category) product.vendor_category = category;
+    product.image_urls = resolveProductImages(cleaned, category, product.id || product.name);
     return product;
 };
 
@@ -1633,7 +1636,7 @@ const db = {
         try {
             if (pool) {
                 const [rows] = await pool.query(
-                    `SELECT p.*, v.shop_name, v.features_payments, v.features_products
+                    `SELECT p.*, v.shop_name, v.category AS vendor_category, v.features_payments, v.features_products
                      FROM products p
                      JOIN vendors v ON p.vendor_id = v.id
                      WHERE v.is_active = TRUE AND v.features_products = TRUE
@@ -1651,6 +1654,7 @@ const db = {
             return {
                 ...normalizeProductRow(p),
                 shop_name: v.shop_name || 'Unknown Shop',
+                vendor_category: v.category || p.vendor_category,
                 features_payments: v.features_payments !== false,
                 features_products: v.features_products !== false
             };
@@ -2072,7 +2076,10 @@ const db = {
                     };
                     rows.forEach(r => {
                         if (settings.hasOwnProperty(r.key_name)) {
-                            settings[r.key_name] = r.value === 'true' || r.value === 1 || r.value === true;
+                            const raw = r.value !== undefined && r.value !== null ? r.value : r.is_enabled;
+                            const s = String(raw ?? '').trim().toLowerCase();
+                            settings[r.key_name] =
+                                raw === true || raw === 1 || s === 'true' || s === '1' || s === 'yes' || s === 'on';
                         }
                     });
                     return settings;

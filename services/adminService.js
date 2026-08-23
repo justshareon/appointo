@@ -50,6 +50,9 @@ class AdminService {
      * Update vendor field
      */
     async updateVendor(vendorId, field, value) {
+        if (field === 'category') {
+            throw new Error('Category cannot be changed once the vendor is created');
+        }
         await db.updateVendor(vendorId, field, value);
         return { success: true };
     }
@@ -73,6 +76,7 @@ class AdminService {
                 email: owner_email || `vendor_${owner_mobile}@qrqueue.local`,
                 mobile: owner_mobile,
                 role: 'vendor',
+                location_name: vendorData.location_name || '',
                 created_at: new Date()
             };
             await db.addUser(owner);
@@ -90,12 +94,41 @@ class AdminService {
             is_promoted: false,
             latitude: 0,
             longitude: 0,
-            features_matchmaking: false
+            location_name: vendorData.location_name || owner.location_name || '',
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false,
+            visibility_list: true,
+            visibility_top_rated: true,
+            visibility_feed: true,
         };
 
         await db.addVendor(vendor);
+        if (category) {
+            try {
+                await db.addVendorCategory(category);
+            } catch (e) {
+                LOG.warning(`[Admin] Category catalog update skipped: ${e.message}`);
+            }
+        }
         LOG.success(`Admin added vendor ${vendor.shop_name} for mobile ${owner_mobile}`);
         return { success: true, vendor, owner };
+    }
+
+    /**
+     * List permanent vendor categories (defaults + custom)
+     */
+    async getVendorCategories() {
+        return await db.getVendorCategories();
+    }
+
+    /**
+     * Add a vendor category (add-only; cannot rename later)
+     */
+    async addVendorCategory(name) {
+        return await db.addVendorCategory(name);
     }
 
     /**
@@ -103,36 +136,88 @@ class AdminService {
      */
     async getVendorDashboard(vendorId) {
         try {
-            // Get vendor first
             const vendor = await db.getVendorById(vendorId);
-            
             if (!vendor) {
                 throw new Error("Vendor not found");
             }
 
-            // For trade/cyber/trust vendors, they might not have queues/appointments
-            // So we handle errors gracefully
             let queue = [];
             let appointments = [];
+            let products = [];
+            let orders = [];
 
             try {
                 queue = await db.getQueueByVendor(vendorId) || [];
             } catch (err) {
                 LOG.warning(`[Admin Service] Error fetching queue for ${vendorId}:`, err.message);
-                queue = [];
             }
 
             try {
                 appointments = await db.getAppointmentsByVendor(vendorId) || [];
             } catch (err) {
                 LOG.warning(`[Admin Service] Error fetching appointments for ${vendorId}:`, err.message);
-                appointments = [];
             }
+
+            try {
+                products = await db.getProductsByVendor(vendorId) || [];
+            } catch (err) {
+                LOG.warning(`[Admin Service] Error fetching products for ${vendorId}:`, err.message);
+            }
+
+            try {
+                if (typeof db.getOrdersByVendorId === 'function') {
+                    orders = await db.getOrdersByVendorId(vendorId) || [];
+                } else if (typeof db.getAllOrders === 'function') {
+                    const all = await db.getAllOrders() || [];
+                    orders = all.filter((o) => String(o.vendor_id) === String(vendorId));
+                }
+            } catch (err) {
+                LOG.warning(`[Admin Service] Error fetching orders for ${vendorId}:`, err.message);
+            }
+
+            const todayStr = new Date().toISOString().slice(0, 10);
+            const openAppts = appointments.filter((a) => ['pending', 'confirmed'].includes(String(a.status || '').toLowerCase()));
+            const running = openAppts.filter((a) => String(a.date || '').slice(0, 10) === todayStr);
+            const todayDone = appointments.filter((a) => String(a.date || '').slice(0, 10) === todayStr && String(a.status).toLowerCase() === 'completed');
+            const isPaid = (o) => {
+                const st = String(o.status || '').toLowerCase();
+                const fs = String(o.fulfillment_status || '').toLowerCase();
+                return ['paid', 'completed', 'success', 'done'].includes(st)
+                    || ['delivered', 'completed', 'paid'].includes(fs)
+                    || !!(o.payment_ref)
+                    || Number(o.total_amount) > 0;
+            };
+            const paidOrders = orders.filter(isPaid);
+            const liveQueue = queue.filter((q) => String(q.status || '').toLowerCase() === 'waiting');
+            const todayQueueDone = queue.filter((q) => {
+                if (!['done', 'completed'].includes(String(q.status || '').toLowerCase())) return false;
+                const d = q.joined_at ? new Date(q.joined_at).toISOString().slice(0, 10) : '';
+                return d === todayStr;
+            });
+            const todayOrders = orders.filter((o) => {
+                const d = o.created_at ? new Date(o.created_at).toISOString().slice(0, 10) : '';
+                return d === todayStr;
+            });
 
             return {
                 profile: vendor,
-                queue: queue,
-                appointments: appointments
+                queue,
+                appointments,
+                products,
+                orders,
+                stats: {
+                    live_queue_count: liveQueue.length,
+                    appointments_open: openAppts.length,
+                    appointments_running: running.length,
+                    appointments_total: appointments.length,
+                    today_pending_appointments: running.length,
+                    today_completed_appointments: todayDone.length,
+                    product_count: products.length,
+                    orders_count: orders.length,
+                    payments_done: paidOrders.length,
+                    payments_amount: paidOrders.reduce((s, o) => s + (Number(o.total_amount) || 0), 0),
+                    today_processed: todayDone.length + todayQueueDone.length + todayOrders.length,
+                },
             };
         } catch (err) {
             LOG.error(`[Admin Service] Error in getVendorDashboard for ${vendorId}:`, err.message);

@@ -30,6 +30,9 @@ class AdminService {
      * Update vendor field
      */
     async updateVendor(vendorId, field, value) {
+        if (field === 'category') {
+            throw new Error('Category cannot be changed once the vendor is created');
+        }
         await db.updateVendor(vendorId, field, value);
         return { success: true };
     }
@@ -70,7 +73,15 @@ class AdminService {
             is_promoted: false,
             latitude: 0,
             longitude: 0,
-            features_matchmaking: false
+            location_name: vendorData.location_name || owner.location_name || '',
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false,
+            visibility_list: true,
+            visibility_top_rated: true,
+            visibility_feed: true,
         };
 
         await db.addVendor(vendor);

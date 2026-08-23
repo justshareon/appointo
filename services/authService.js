@@ -131,16 +131,53 @@ class AuthService {
     async register(userData) {
         let { name, email, mobile, location_name, role } = userData;
 
+        if (!name || !String(name).trim()) {
+            throw new Error('Full name is required');
+        }
+        if (!mobile) {
+            throw new Error('Mobile number is required');
+        }
+
         // Normalize mobile
-        if (mobile) mobile = mobile.toString().replace(/\D/g, '').slice(-10);
+        mobile = mobile.toString().replace(/\D/g, '').slice(-10);
+        if (mobile.length < 10) {
+            throw new Error('Please enter a valid 10-digit mobile number');
+        }
+
+        const existingMobile = await db.getUserByMobile(mobile);
+        if (existingMobile) {
+            throw new Error('This mobile number is already registered. Please log in instead.');
+        }
+
+        let normalizedEmail = email ? String(email).trim().toLowerCase() : '';
+        if (normalizedEmail) {
+            const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+            if (!emailRegex.test(normalizedEmail)) {
+                throw new Error('Please enter a valid email address.');
+            }
+            const existingEmail = await db.getUserByEmail(normalizedEmail);
+            if (existingEmail) {
+                throw new Error('This email address is already registered with another account.');
+            }
+        } else {
+            normalizedEmail = `user_${mobile}@qrqueue.local`;
+        }
 
         const userId = 'usr_' + Math.random().toString(36).substring(2, 11);
-        const newUser = { id: userId, name, email, mobile, location_name, role: role || 'user', created_at: new Date() };
+        const newUser = {
+            id: userId,
+            name: String(name).trim(),
+            email: normalizedEmail,
+            mobile,
+            location_name: location_name || '',
+            role: role || 'user',
+            created_at: new Date()
+        };
 
         await db.addUser(newUser);
         const token = jwt.sign({ id: userId, role: newUser.role, email: newUser.email }, process.env.JWT_SECRET || 'secret');
 
-        LOG.success(`New user registered: ${email}`);
+        LOG.success(`New user registered: ${normalizedEmail}`);
         return { token, user: newUser };
     }
 
