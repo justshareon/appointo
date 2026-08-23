@@ -344,3 +344,9 @@
 [2026-08-23T14:29:42.781Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
 [2026-08-23T14:29:42.785Z] ERROR: MySQL autoCompleteQueues failed, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
 [2026-08-23T15:09:13.529Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
+[2026-08-23T15:52:30.057Z] ERROR: MySQL getUserVendorMappings failed, falling back to local | DETAIL: Table 'qr_queue.user_vendor_mappings' doesn't exist
+[2026-08-23T15:52:30.128Z] ERROR: MySQL getAppointmentsByUser failed for usr_trade1, falling back to local | DETAIL: Table 'qr_queue.appointments' doesn't exist
+[2026-08-23T15:52:30.130Z] ERROR: MySQL getUserHistory failed for usr_trade1, falling back to local | DETAIL: Table 'qr_queue.queues' doesn't exist
+[2026-08-23T15:52:30.299Z] ERROR: MySQL addUserVendorMapping failed, in-memory write kept | DETAIL: Table 'qr_queue.user_vendor_mappings' doesn't exist
+[2026-08-23T15:52:30.472Z] ERROR: MySQL getVendors failed, falling back to local | DETAIL: Table 'qr_queue.vendors' doesn't exist
+[2026-08-23T15:52:46.483Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: Table 'qr_queue.appointments' doesn't exist
