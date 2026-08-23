@@ -18,7 +18,7 @@ const LOG = {
     error: (msg, detail = '') => console.error(`[FeatureDB] ${msg}`, detail),
 };
 
-const DB_TYPE = process.env.DB_TYPE || 'inmemory';
+const DB_TYPE = process.env.DB_TYPE || 'mysql';
 const IDLE_CLOSE_MS = getFeatureIdleMs();
 
 /** @type {Map<string, { pool: any, refCount: number, idleTimer: NodeJS.Timeout | null }>} */
