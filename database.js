@@ -11,11 +11,27 @@ const {
     buildAiInsight
 } = require('./matchmakingEngine');
 const featureConnectionManager = require('./database/featureConnectionManager');
+const { insertMany } = require('./database/sqlBatch');
+const { resolveProductImages } = require('../utils/categoryImages');
 
 /** Resolve MySQL pool for current request (lazy, feature-aware). */
 const getPool = () => featureConnectionManager.getPool();
 
-const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score'];
+/** Ensure a MySQL pool exists for writes even outside request middleware. */
+const ensureWritePool = async () => {
+    let pool = getPool();
+    if (pool) return pool;
+    if (String(process.env.DB_TYPE || DB_TYPE || '').toLowerCase() !== 'mysql') return null;
+    try {
+        pool = await featureConnectionManager.acquireForSync('core');
+        return pool || getPool();
+    } catch (err) {
+        LOG.warning(`[ensureWritePool] ${err.message}`);
+        return null;
+    }
+};
+
+const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score', 'news'];
 const isFeatureFlagOn = (v, feature) => {
     const val = v?.[`features_${feature}`];
     return val === true || val === 1 || val === '1';
@@ -35,8 +51,19 @@ function getTestData() {
 }
 
 const LOG_FILE = path.join(__dirname, 'error.log');
+const recentErrorLog = new Map();
 
 const appendErrorLog = (msg, detail) => {
+    const key = `${msg}|${detail}`;
+    const nowMs = Date.now();
+    const prev = recentErrorLog.get(key) || 0;
+    if (nowMs - prev < 5 * 60 * 1000) return;
+    recentErrorLog.set(key, nowMs);
+    if (recentErrorLog.size > 200) {
+        for (const [k, t] of recentErrorLog) {
+            if (nowMs - t > 10 * 60 * 1000) recentErrorLog.delete(k);
+        }
+    }
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ERROR: ${msg} | DETAIL: ${detail}\n`;
     fs.appendFile(LOG_FILE, logEntry, (err) => {
@@ -61,7 +88,6 @@ const LOG = {
 };
 
 const DB_TYPE = process.env.DB_TYPE || 'inmemory';
-const DEFAULT_PRODUCT_IMAGE = 'https://images.unsplash.com/photo-1629909613654-28e377c37b09?w=800';
 
 // Helper for dynamic seed dates
 const now = new Date();
@@ -103,21 +129,27 @@ let inMemoryDb = {
         { id: 'usr_offer1vendor', name: 'Offer Vendor 1', email: 'offer1vendor@test.com', mobile: '8000000004', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_qlessuser1', name: 'QLess User 1', email: 'qlessuser1@test.com', mobile: '8000000005', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_qlessvendor1', name: 'QLess Vendor 1', email: 'qlessvendor1@test.com', mobile: '8000000006', role: 'vendor', location_name: 'Mumbai' },
-        { id: 'usr_fleetuser1', name: 'Fleet User 1', email: 'fleetuser1@test.com', mobile: '8000000007', role: 'user', location_name: 'Delhi' },
-        { id: 'usr_fleetvendor1', name: 'Fleet Vendor 1', email: 'fleetvendor1@test.com', mobile: '8000000008', role: 'vendor', location_name: 'Delhi' },
+        { id: 'usr_fleetuser1', name: 'Amit Sharma', email: 'fleetuser1@test.com', mobile: '8000000007', role: 'user', location_name: 'Bhiwandi' },
+        { id: 'usr_fleetuser2', name: 'Suresh Jadhav', email: 'fleetuser2@test.com', mobile: '8000000017', role: 'user', location_name: 'Panvel' },
+        { id: 'usr_fleetuser3', name: 'Priya Kulkarni', email: 'fleetuser3@test.com', mobile: '8000000027', role: 'user', location_name: 'Pune' },
+        { id: 'usr_fleetvendor1', name: 'Rajesh Patil', email: 'fleetvendor1@test.com', mobile: '8000000008', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_realuser1', name: 'Realestate User 1', email: 'realuser1@test.com', mobile: '8000000009', role: 'user', location_name: 'Bangalore' },
         { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
         { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_trust1', name: 'Trust User 1', email: 'trust1@test.com', mobile: '8000000101', role: 'user', location_name: 'Mumbai' },
-        { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' }
+        { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' },
+        // Runtime demo accounts (must exist in MySQL via sync)
+        { id: 'usr_anuj', name: 'Anuj', email: 'anuj@test.com', mobile: '9000000001', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_sam', name: 'Sam', email: 'sam@test.com', mobile: '9000000002', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_siddhi', name: 'Siddhi', email: 'siddhi@test.com', mobile: '9000000003', role: 'vendor', location_name: 'Mumbai' }
     ],
     vendors: [
         {
             id: 'v_1',
             owner_id: 'usr_vendor',
             shop_name: 'Smile Dental Clinic',
-            category: 'Medical',
+            category: 'Hospital',
             is_active: true,
             is_promoted: true,
             latitude: 0,
@@ -315,10 +347,10 @@ let inMemoryDb = {
             google_link: '',
             instagram_handle: '',
             facebook_link: '',
-            features_products: false,
-            features_payments: false,
-            features_appointments: false,
-            features_queue: false,
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
             features_matchmaking: false,
             features_qless: true,
             visibility_top_rated: false,
@@ -328,12 +360,13 @@ let inMemoryDb = {
         {
             id: 'v_fleet1',
             owner_id: 'usr_fleetvendor1',
-            shop_name: 'Fleet Shop 1',
+            shop_name: 'Western Express Logistics',
             category: 'Fleet',
             is_active: true,
             is_promoted: false,
-            latitude: 0,
-            longitude: 0,
+            latitude: 19.076,
+            longitude: 72.8777,
+            location_name: 'Mumbai → Pune',
             appointmentCount: 0,
             google_link: '',
             instagram_handle: '',
@@ -417,6 +450,29 @@ let inMemoryDb = {
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false
+        },
+        {
+            id: 'v_siddhi',
+            owner_id: 'usr_siddhi',
+            shop_name: 'Siddhi Vendor',
+            category: 'Shop',
+            is_active: true,
+            is_promoted: true,
+            latitude: 19.076,
+            longitude: 72.8777,
+            location_name: 'Mumbai',
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: true,
+            features_payments: true,
+            features_appointments: true,
+            features_queue: true,
+            features_matchmaking: false,
+            visibility_top_rated: true,
+            visibility_list: true,
+            visibility_feed: true
         }
     ],
     // Suraksha (Cyber Safety) in-memory data
@@ -471,7 +527,12 @@ let inMemoryDb = {
         },
         { id: 5, vendor_id: 'v_2', name: 'Hair Spa Premium', price: 799, offer: 'Flat 100 OFF', offer_amount: 100, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
         { id: 6, vendor_id: 'v_3', name: 'Health Checkup Basic', price: 1299, offer: 'Free Follow-up', offer_amount: 0, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
-        { id: 7, vendor_id: 'v_4', name: 'Prasad Combo', price: 199, offer: 'Temple Special', offer_amount: 20, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] }
+        { id: 7, vendor_id: 'v_4', name: 'Prasad Combo', price: 199, offer: 'Temple Special', offer_amount: 20, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [] },
+        { id: 12, vendor_id: 'v_qless1', name: 'QLess Express Pass', price: 199, offer: 'Skip the line', offer_amount: 20, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: ['https://images.unsplash.com/photo-1556742049-0cfed4f6a45d?w=800'] },
+        { id: 13, vendor_id: 'v_qless1', name: 'Priority Token Pack', price: 499, offer: '3 tokens', offer_amount: 50, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: ['https://images.unsplash.com/photo-1556742111-a301076d9d18?w=800'] },
+        { id: 1001, vendor_id: 'v_siddhi', name: 'Siddhi Combo Pack', price: 299, offer: '10% OFF', offer_amount: 30, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: ['https://images.unsplash.com/photo-1607082348824-0a96f2a4b9da?w=800'], name_key: 'siddhi combo pack', stock: 50 },
+        { id: 1002, vendor_id: 'v_siddhi', name: 'Siddhi Special Service', price: 499, offer: 'Flat 50 OFF', offer_amount: 50, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: ['https://images.unsplash.com/photo-1556740749-887f6717d7e4?w=800'], name_key: 'siddhi special service', stock: 30 },
+        { id: 1003, vendor_id: 'v_siddhi', name: 'Quick Care Visit', price: 199, offer: 'No Offer', offer_amount: 0, validity_from: '2026-01-01', validity_to: '2026-12-31', image_urls: [], name_key: 'quick care visit', stock: 100 }
     ],
     orders: [
         { id: 1, vendor_id: 'v_1', user_id: 'usr_user', total_amount: 500, created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) },
@@ -510,7 +571,9 @@ let inMemoryDb = {
         // New Future Appointments for vendor1 (v_new1)
         { id: 14, vendor_id: 'v_new1', user_id: 'usr_user', date: todayStr, time: '11:00', status: 'confirmed', created_at: new Date() },
         { id: 15, vendor_id: 'v_new1', user_id: 'usr_user', date: tomorrowStr, time: '11:00', status: 'confirmed', created_at: new Date() },
-        { id: 16, vendor_id: 'v_new1', user_id: 'usr_user', date: dayAfterStr, time: '11:00', status: 'confirmed', created_at: new Date() }
+        { id: 16, vendor_id: 'v_new1', user_id: 'usr_user', date: dayAfterStr, time: '11:00', status: 'confirmed', created_at: new Date() },
+        { id: 17, vendor_id: 'v_siddhi', user_id: 'usr_anuj', date: todayStr, time: currentTime, status: 'pending', created_at: new Date(), notes: 'Booked with Siddhi Vendor' },
+        { id: 18, vendor_id: 'v_siddhi', user_id: 'usr_sam', date: tomorrowStr, time: '11:00', status: 'confirmed', created_at: new Date(), notes: 'Booked with Siddhi Vendor' }
     ],
     activities: [
         { id: 1, type: 'appointment', vendor_id: 'v_new1', userId: 'usr_u1', userName: 'User One', message: 'booked an appointment at Vendor One Shop', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
@@ -531,12 +594,17 @@ let inMemoryDb = {
         { id: 12, user_id: 'usr_offer1', vendor_id: 'v_offer1' },
         { id: 13, user_id: 'usr_qlessuser1', vendor_id: 'v_qless1' },
         { id: 14, user_id: 'usr_fleetuser1', vendor_id: 'v_fleet1' },
+        { id: 22, user_id: 'usr_fleetuser2', vendor_id: 'v_fleet1' },
+        { id: 23, user_id: 'usr_fleetuser3', vendor_id: 'v_fleet1' },
         { id: 15, user_id: 'usr_realuser1', vendor_id: 'v_realestate1' },
         { id: 16, user_id: 'usr_cyber1', vendor_id: 'v_cyber1' },
         { id: 17, user_id: 'usr_match_u1', vendor_id: 'v_match_super' },
         { id: 18, user_id: 'usr_match_u2', vendor_id: 'v_match_super' },
         { id: 19, user_id: 'usr_trust1', vendor_id: 'v_trust1' },
+        { id: 20, user_id: 'usr_anuj', vendor_id: 'v_siddhi' },
+        { id: 21, user_id: 'usr_sam', vendor_id: 'v_siddhi' },
     ],
+    chat_messages: [],
     // System Settings
     settings: {
         enable_queue: true,
@@ -552,13 +620,106 @@ let inMemoryDb = {
         enable_trust_score: true,
         theme_position: 'auto',
         enable_news: true,
+        enable_trade_extra_tabs: false,
+        enable_lazy_loading: true,
+        ui_theme: 'facebook',
         news_user_emails: 'newsuser11',
         news_vendor_emails: 'newsvendor1@test.com'
     },
+    vendor_categories: [
+        { id: 'cat_shop', name: 'Shop', created_at: new Date() },
+        { id: 'cat_hotel', name: 'Hotel', created_at: new Date() },
+        { id: 'cat_hospital', name: 'Hospital', created_at: new Date() },
+        { id: 'cat_doctor', name: 'Doctor', created_at: new Date() },
+        { id: 'cat_railway', name: 'Railway', created_at: new Date() },
+    ],
+    health_reports: [
+        {
+            id: 'hr_user_2022',
+            user_id: 'usr_user',
+            vendor_id: 'v_1',
+            report_year: 2022,
+            report_type: 'lab',
+            file_name: 'annual-lab-2022.pdf',
+            notes: 'HbA1c 5.6 LDL 118 creatinine 0.90 fasting glucose 96 triglycerides 132 HDL 46 hemoglobin 13.4 TSH 2.1 ALT 28 uric acid 5.4 vitamin D 28 BP 122/78',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2022-08-12T10:00:00'),
+        },
+        {
+            id: 'hr_user_2023',
+            user_id: 'usr_user',
+            vendor_id: 'v_1',
+            report_year: 2023,
+            report_type: 'lab',
+            file_name: 'annual-lab-2023.pdf',
+            notes: 'HbA1c 5.9 LDL 132 creatinine 1.00 fasting glucose 104 triglycerides 158 HDL 41 hemoglobin 13.1 TSH 2.4 ALT 36 uric acid 6.1 vitamin D 22 BP 128/82',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2023-08-18T10:00:00'),
+        },
+        {
+            id: 'hr_user_2024',
+            user_id: 'usr_user',
+            vendor_id: 'v_1',
+            report_year: 2024,
+            report_type: 'lab',
+            file_name: 'annual-lab-2024.pdf',
+            notes: 'HbA1c 6.2 LDL 148 creatinine 1.10 fasting glucose 112 triglycerides 176 HDL 38 hemoglobin 12.8 TSH 3.1 ALT 49 uric acid 6.8 vitamin D 18 BP 134/86',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2024-08-20T10:00:00'),
+        },
+        {
+            id: 'hr_user_2025',
+            user_id: 'usr_user',
+            vendor_id: 'v_1',
+            report_year: 2025,
+            report_type: 'lab',
+            file_name: 'annual-lab-2025.pdf',
+            notes: 'HbA1c 6.4 LDL 155 creatinine 1.20 fasting glucose 118 triglycerides 189 HDL 37 hemoglobin 12.6 TSH 3.6 ALT 58 uric acid 7.2 vitamin D 16 BP 138/88',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2025-08-21T10:00:00'),
+        },
+        {
+            id: 'hr_vendor_2023',
+            user_id: 'usr_vendor',
+            vendor_id: 'v_1',
+            report_year: 2023,
+            report_type: 'lab',
+            file_name: 'clinic-owner-lab-2023.pdf',
+            notes: 'HbA1c 5.5 LDL 110 creatinine 0.95 fasting glucose 92 triglycerides 120 HDL 48 hemoglobin 14.2 TSH 1.8 ALT 24 uric acid 5.1 vitamin D 32 BP 118/76',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2023-09-02T10:00:00'),
+        },
+        {
+            id: 'hr_vendor_2025',
+            user_id: 'usr_vendor',
+            vendor_id: 'v_1',
+            report_year: 2025,
+            report_type: 'lab',
+            file_name: 'clinic-owner-lab-2025.pdf',
+            notes: 'HbA1c 5.8 LDL 128 creatinine 1.02 fasting glucose 101 triglycerides 149 HDL 44 hemoglobin 13.9 TSH 2.2 ALT 33 uric acid 5.8 vitamin D 24 BP 126/80',
+            markers: {},
+            extracted_text: '',
+            created_at: new Date('2025-09-04T10:00:00'),
+        },
+    ],
+    health_illness_years: [],
+    health_predictions: [],
     matchmaking_templates: [],
     matchmaking_submissions: [],
     trustScoreProjects: [],
     trustScoreFraudAlerts: [],
+    trustScoreBuilders: [],
+    trustScoreReviews: [],
+    trustScoreComplaints: [],
+    trustScoreWatchlist: [],
+    trustScoreLandLedger: [],
+    trustScoreContributorScores: [],
+    trustScoreApiConfigs: [],
     boardMeetings: [],
     corporateActions: [],
     tradingWatchlists: {}, // User watchlists: { userId: [{ symbol, addedAt }] }
@@ -599,7 +760,10 @@ const normalizeProductRow = (row) => {
         imageUrls = [];
     }
     const cleaned = Array.isArray(imageUrls) ? imageUrls.filter(Boolean) : [];
-    product.image_urls = cleaned.length ? cleaned : [DEFAULT_PRODUCT_IMAGE];
+    const vendor = (inMemoryDb.vendors || []).find((v) => String(v.id) === String(product.vendor_id));
+    const category = product.vendor_category || product.category || vendor?.category;
+    if (category && !product.vendor_category) product.vendor_category = category;
+    product.image_urls = resolveProductImages(cleaned, category, product.id || product.name);
     return product;
 };
 
@@ -651,6 +815,7 @@ dbContext.inMemoryDb = inMemoryDb;
 dbContext.LOG = LOG;
 dbContext.DB_TYPE = DB_TYPE;
 dbContext.toMysqlDateTime = toMysqlDateTime;
+dbContext.ensureWritePool = ensureWritePool;
 dbContext.normalizeProductRow = normalizeProductRow;
 dbContext.MATCHMAKING_PRESETS = MATCHMAKING_PRESETS;
 dbContext.deepClone = deepClone;
@@ -745,6 +910,7 @@ const ensureVendorFeatureColumns = async () => {
                 ADD COLUMN IF NOT EXISTS features_fleet TINYINT(1) DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS features_realestate TINYINT(1) DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS features_trust_score TINYINT(1) DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS features_news TINYINT(1) DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS visibility_top_rated TINYINT(1) DEFAULT 0,
                 ADD COLUMN IF NOT EXISTS visibility_list TINYINT(1) DEFAULT 1,
                 ADD COLUMN IF NOT EXISTS visibility_feed TINYINT(1) DEFAULT 0
@@ -810,109 +976,178 @@ const stampUserUpdatedAt = async (userId) => {
     }
 };
 
+let seedUsersVendorsDone = false;
+let seedUsersVendorsPromise = null;
+
 /**
- * Ensure ALL test users and vendors are synced to MySQL on startup
- * Syncs ALL in-memory users/vendors to database, not just cyber ones
+ * Seed missing users/vendors/mappings into MySQL once per process.
+ * Existing MySQL rows are left unchanged (no ON DUPLICATE KEY UPDATE from seed).
  */
 const ensureAllUsersAndVendors = async () => {
-    if (!getPool()) return;
-    
-    try {
-        // Ensure vendor feature/visibility columns exist
-        await ensureVendorFeatureColumns();
-        await ensureUserVendorMappingTable();
-        await ensureUsersUpdatedAtColumn();
+    if (seedUsersVendorsDone) return;
+    if (seedUsersVendorsPromise) return seedUsersVendorsPromise;
 
-        // Sync ALL users from in-memory DB to MySQL
-        LOG.info(`[All Users Sync] Starting sync of ${inMemoryDb.users.length} users to MySQL...`);
-        
-        let created = 0;
-        for (const user of inMemoryDb.users) {
-            try {
-                const [existing] = await getPool().query(
-                    'SELECT id FROM users WHERE id = ?', 
-                    [user.id]
-                );
-                
-                if (existing.length === 0) {
-                    await getPool().query(
-                        `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
-                         VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-                        [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
-                    );
-                    created++;
-                }
-            } catch (err) {
-                LOG.warning(`[All Users Sync] Failed to sync user ${user.id}:`, err.message);
-            }
+    seedUsersVendorsPromise = (async () => {
+        const pool = (await ensureWritePool()) || getPool();
+        if (!pool) {
+            seedUsersVendorsPromise = null;
+            return;
         }
-        
-        LOG.success(`[All Users Sync] Completed: ${created} created, existing rows left unchanged`);
 
-        // Sync ALL vendors from in-memory DB to MySQL  
-        LOG.info(`[All Vendors Sync] Starting sync of ${inMemoryDb.vendors.length} vendors to MySQL...`);
-        
-        let vendorsCreated = 0;
-        for (const vendor of inMemoryDb.vendors) {
-            try {
-                const [existingVendor] = await getPool().query(
-                    'SELECT id FROM vendors WHERE id = ?',
-                    [vendor.id]
-                );
-                
-                if (existingVendor.length === 0) {
-                    await getPool().query(
-                        `INSERT IGNORE INTO vendors (
-                            id, owner_id, shop_name, category, is_active, is_promoted, 
-                            latitude, longitude, google_link, instagram_handle, facebook_link,
-                            features_products, features_payments, features_appointments, features_queue,
-                            features_matchmaking, features_cyber, features_trade, features_offer, features_qless, 
-                            features_fleet, features_realestate, visibility_top_rated, visibility_list, visibility_feed
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                        [
-                            vendor.id, vendor.owner_id, vendor.shop_name, vendor.category,
-                            vendor.is_active ? 1 : 0, vendor.is_promoted ? 1 : 0, 
-                            vendor.latitude || 0, vendor.longitude || 0,
-                            vendor.google_link || '', vendor.instagram_handle || '', vendor.facebook_link || '',
-                            vendor.features_products ? 1 : 0, vendor.features_payments ? 1 : 0, 
-                            vendor.features_appointments ? 1 : 0, vendor.features_queue ? 1 : 0,
-                            vendor.features_matchmaking ? 1 : 0, vendor.features_cyber ? 1 : 0,
-                            vendor.features_trade ? 1 : 0, vendor.features_offer ? 1 : 0, vendor.features_qless ? 1 : 0,
-                            vendor.features_fleet ? 1 : 0, vendor.features_realestate ? 1 : 0,
-                            vendor.visibility_top_rated ? 1 : 0, vendor.visibility_list ? 1 : 0, vendor.visibility_feed ? 1 : 0
-                        ]
-                    );
-                    vendorsCreated++;
-                }
-            } catch (err) {
-                LOG.warning(`[All Vendors Sync] Failed to sync vendor ${vendor.id}:`, err.message);
+        try {
+            await ensureVendorFeatureColumns();
+            await ensureUserVendorMappingTable();
+            await ensureUsersUpdatedAtColumn();
+
+            const [existingUsers] = await pool.query('SELECT id FROM users');
+            const haveUsers = new Set((existingUsers || []).map((r) => String(r.id)));
+            const missingUsers = (inMemoryDb.users || []).filter((u) => !haveUsers.has(String(u.id)));
+
+            if (missingUsers.length === 0) {
+                LOG.info(`[All Users Sync] Skip inserts: ${haveUsers.size} users already in MySQL`);
+            } else {
+                LOG.info(`[All Users Sync] Inserting ${missingUsers.length} missing users (${haveUsers.size} already present)`);
             }
-        }
-        
-        LOG.success(`[All Vendors Sync] Completed: ${vendorsCreated} created, existing rows left unchanged`);
 
-        // Sync user-vendor mappings
-        const mappings = inMemoryDb.user_vendor_mappings || [];
-        LOG.info(`[Mappings Sync] Starting sync of ${mappings.length} user-vendor mappings...`);
-        let mappingsCreated = 0;
-        for (const mapping of mappings) {
-            try {
-                await getPool().query(
-                    `INSERT IGNORE INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())`,
-                    [mapping.user_id, mapping.vendor_id]
+            let created = 0;
+            if (missingUsers.length) {
+                created = await insertMany(
+                    pool,
+                    'users',
+                    ['id', 'name', 'email', 'mobile', 'role', 'location_name', 'created_at'],
+                    missingUsers.map((user) => ({
+                        id: user.id,
+                        name: user.name,
+                        email: user.email,
+                        mobile: user.mobile,
+                        role: user.role,
+                        location_name: user.location_name,
+                        created_at: user.created_at || new Date(),
+                    })),
+                    { ignore: true }
                 );
-                mappingsCreated++;
-            } catch (err) {
-                LOG.warning(`[Mappings Sync] Failed mapping ${mapping.user_id}->${mapping.vendor_id}:`, err.message);
             }
-        }
-        LOG.success(`[Mappings Sync] ✅ Completed: ${mappingsCreated} mappings synced`);
+            if (created > 0) {
+                LOG.success(`[All Users Sync] Completed: ${created} inserted`);
+            }
 
-        LOG.success(`[Database Init] ✅ All users and vendors synced to MySQL`);
-        
-    } catch (error) {
-        LOG.error('[All Users/Vendors Sync] Error syncing all data:', error.message);
-    }
+            const [existingVendors] = await pool.query('SELECT id FROM vendors');
+            const haveVendors = new Set((existingVendors || []).map((r) => String(r.id)));
+            const missingVendors = (inMemoryDb.vendors || []).filter((v) => !haveVendors.has(String(v.id)));
+
+            if (missingVendors.length === 0) {
+                LOG.info(`[All Vendors Sync] Skip inserts: ${haveVendors.size} vendors already in MySQL`);
+            } else {
+                LOG.info(`[All Vendors Sync] Inserting ${missingVendors.length} missing vendors (${haveVendors.size} already present)`);
+            }
+
+            let vendorsCreated = 0;
+            if (missingVendors.length) {
+                vendorsCreated = await insertMany(
+                    pool,
+                    'vendors',
+                    [
+                        'id', 'owner_id', 'shop_name', 'category', 'is_active', 'is_promoted',
+                        'latitude', 'longitude', 'google_link', 'instagram_handle', 'facebook_link',
+                        'features_products', 'features_payments', 'features_appointments', 'features_queue',
+                        'features_matchmaking', 'features_cyber', 'features_trade', 'features_offer', 'features_qless',
+                        'features_fleet', 'features_realestate', 'visibility_top_rated', 'visibility_list', 'visibility_feed', 'location_name',
+                    ],
+                    missingVendors.map((vendor) => ({
+                        id: vendor.id,
+                        owner_id: vendor.owner_id,
+                        shop_name: vendor.shop_name,
+                        category: vendor.category,
+                        is_active: vendor.is_active ? 1 : 0,
+                        is_promoted: vendor.is_promoted ? 1 : 0,
+                        latitude: vendor.latitude || 0,
+                        longitude: vendor.longitude || 0,
+                        google_link: vendor.google_link || '',
+                        instagram_handle: vendor.instagram_handle || '',
+                        facebook_link: vendor.facebook_link || '',
+                        features_products: vendor.features_products !== false ? 1 : 0,
+                        features_payments: vendor.features_payments !== false ? 1 : 0,
+                        features_appointments: vendor.features_appointments !== false ? 1 : 0,
+                        features_queue: vendor.features_queue !== false ? 1 : 0,
+                        features_matchmaking: vendor.features_matchmaking ? 1 : 0,
+                        features_cyber: vendor.features_cyber ? 1 : 0,
+                        features_trade: vendor.features_trade ? 1 : 0,
+                        features_offer: vendor.features_offer ? 1 : 0,
+                        features_qless: vendor.features_qless ? 1 : 0,
+                        features_fleet: vendor.features_fleet ? 1 : 0,
+                        features_realestate: vendor.features_realestate ? 1 : 0,
+                        visibility_top_rated: vendor.visibility_top_rated ? 1 : 0,
+                        visibility_list: vendor.visibility_list !== false ? 1 : 0,
+                        visibility_feed: vendor.visibility_feed ? 1 : 0,
+                        location_name: vendor.location_name || '',
+                    })),
+                    { ignore: true }
+                );
+            }
+            if (vendorsCreated > 0) {
+                LOG.success(`[All Vendors Sync] Completed: ${vendorsCreated} inserted`);
+            }
+
+            const mappings = inMemoryDb.user_vendor_mappings || [];
+            const [existingMaps] = await pool.query('SELECT user_id, vendor_id FROM user_vendor_mappings');
+            const haveMaps = new Set((existingMaps || []).map((r) => `${r.user_id}::${r.vendor_id}`));
+            const missingMaps = mappings.filter((m) => !haveMaps.has(`${m.user_id}::${m.vendor_id}`));
+
+            if (missingMaps.length === 0) {
+                LOG.info(`[Mappings Sync] Skip inserts: ${haveMaps.size} mappings already in MySQL`);
+            } else {
+                LOG.info(`[Mappings Sync] Inserting ${missingMaps.length} missing mappings (${haveMaps.size} already present)`);
+            }
+
+            let mappingsCreated = 0;
+            if (missingMaps.length) {
+                mappingsCreated = await insertMany(
+                    pool,
+                    'user_vendor_mappings',
+                    ['user_id', 'vendor_id', 'created_at'],
+                    missingMaps.map((mapping) => ({
+                        user_id: mapping.user_id,
+                        vendor_id: mapping.vendor_id,
+                        created_at: mapping.created_at || new Date(),
+                    })),
+                    { ignore: true }
+                );
+            }
+            if (mappingsCreated > 0) {
+                LOG.success(`[Mappings Sync] Completed: ${mappingsCreated} mappings inserted`);
+            }
+
+            try {
+                const [mysqlUsers] = await pool.query('SELECT id, name, email, mobile, role, location_name, created_at FROM users');
+                const userIds = new Set(inMemoryDb.users.map((u) => String(u.id)));
+                (mysqlUsers || []).forEach((u) => {
+                    if (!userIds.has(String(u.id))) {
+                        inMemoryDb.users.push(u);
+                        userIds.add(String(u.id));
+                    }
+                });
+                const [mysqlVendors] = await pool.query('SELECT * FROM vendors');
+                const vendorIds = new Set(inMemoryDb.vendors.map((v) => String(v.id)));
+                (mysqlVendors || []).forEach((v) => {
+                    if (!vendorIds.has(String(v.id))) {
+                        inMemoryDb.vendors.push(v);
+                        vendorIds.add(String(v.id));
+                    }
+                });
+                LOG.info(`[Hydrate] memory users=${inMemoryDb.users.length} vendors=${inMemoryDb.vendors.length}`);
+            } catch (hydrateErr) {
+                LOG.warning(`[Hydrate] skipped: ${hydrateErr.message}`);
+            }
+
+            seedUsersVendorsDone = true;
+            LOG.success('[Database Init] Seed check complete (missing rows only; existing MySQL data kept)');
+        } catch (error) {
+            seedUsersVendorsPromise = null;
+            LOG.error('[All Users/Vendors Sync] Error syncing all data:', error.message);
+        }
+    })();
+
+    return seedUsersVendorsPromise;
 };
 
 /**
@@ -1121,15 +1356,14 @@ const ensureFleetTables = async () => {
             )
         `);
         
-        // Seed sample gates
-        await getPool().query(`
-            INSERT IGNORE INTO fleet_gates (gate_id, gate_name, location_name, vendor_id, is_active)
-            VALUES
-            ('gate_7', 'Port of Oakland - Gate 7', 'Oakland, CA', 'v_fleet1', TRUE),
-            ('gate_12', 'Port of Oakland - Gate 12', 'Oakland, CA', 'v_fleet1', TRUE),
-            ('gate_1', 'Port of Los Angeles - Gate 1', 'Los Angeles, CA', 'v_fleet1', TRUE)
-        `);
-        
+        try {
+            const { applyMumbaiPuneFleetSeed } = require('./database/features/fleetRouteSeed');
+            await applyMumbaiPuneFleetSeed(getPool());
+            LOG.success('Fleet demo route applied: Mumbai → Pune');
+        } catch (seedErr) {
+            LOG.warning('Fleet Mumbai–Pune seed skipped:', seedErr.message);
+        }
+
         fleetTablesReady = true;
         LOG.success("Fleet tables created successfully");
     } catch (err) {
@@ -1143,6 +1377,7 @@ const db = {
     ...featureApi(require('./database/features/queue')),
     ...featureApi(require('./database/features/shopping')),
     ...featureApi(require('./database/features/matchmaking')),
+    ...featureApi(require('./database/features/chat')),
 
     // Users / vendors / settings stay here; feature CRUD is in backend/database/features/
     getUsers: async () => {
@@ -1203,7 +1438,10 @@ const db = {
         try {
             if (getPool()) {
                 // Case-insensitive email lookup
-                const [rows] = await getPool().query('SELECT * FROM users WHERE LOWER(email) = ?', [normalizedEmail]);
+                const [rows] = await getPool().query(
+                    'SELECT * FROM users WHERE email = ? OR LOWER(email) = ? LIMIT 1',
+                    [email.trim(), normalizedEmail]
+                );
                 if (rows && rows.length > 0) return rows[0];
             }
         } catch (err) {
@@ -1225,15 +1463,75 @@ const db = {
     },
 
     addUser: async (user) => {
+        if (!user?.id) {
+            throw new Error('User id is required');
+        }
+        const exists = inMemoryDb.users.some((u) => u.id === user.id);
+        if (!exists) {
+            inMemoryDb.users.push(user);
+        }
+
+        const writeMysql = async (pool) => {
+            await pool.query(
+                `INSERT INTO users (id, name, email, mobile, role, location_name, loyalty_points, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   name = VALUES(name),
+                   email = VALUES(email),
+                   mobile = VALUES(mobile),
+                   role = VALUES(role),
+                   location_name = VALUES(location_name)`,
+                [
+                    user.id,
+                    user.name || '',
+                    user.email || null,
+                    user.mobile || null,
+                    user.role || 'user',
+                    user.location_name || null,
+                    user.loyalty_points || 0,
+                    user.created_at || new Date()
+                ]
+            );
+        };
+
         try {
-            if (getPool()) {
-                await getPool().query('INSERT INTO users SET ?', [user]);
-                return user;
+            if (DB_TYPE === 'mysql') {
+                const pool = await ensureWritePool();
+                if (pool) {
+                    await writeMysql(pool);
+                    return user;
+                }
             }
         } catch (err) {
             LOG.error("MySQL addUser failed, falling back to local", err.message);
         }
-        inMemoryDb.users.push(user);
+
+        try {
+            const { mirrorQuery } = require('./database/mysqlMirror');
+            await mirrorQuery(
+                `INSERT INTO users (id, name, email, mobile, role, location_name, loyalty_points, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   name = VALUES(name),
+                   email = VALUES(email),
+                   mobile = VALUES(mobile),
+                   role = VALUES(role),
+                   location_name = VALUES(location_name)`,
+                [
+                    user.id,
+                    user.name || '',
+                    user.email || null,
+                    user.mobile || null,
+                    user.role || 'user',
+                    user.location_name || null,
+                    user.loyalty_points || 0,
+                    user.created_at || new Date()
+                ]
+            );
+        } catch (err) {
+            LOG.warning(`[addUser] MySQL mirror skip: ${err.message}`);
+        }
+
         return user;
     },
 
@@ -1242,6 +1540,7 @@ const db = {
         const cleanData = {};
         if (data.name !== undefined) cleanData.name = data.name;
         if (data.email !== undefined) cleanData.email = data.email;
+        if (data.mobile !== undefined) cleanData.mobile = data.mobile;
         if (data.location_name !== undefined) cleanData.location_name = data.location_name;
 
         try {
@@ -1350,12 +1649,16 @@ const db = {
                 if (getPool()) {
                     await ensureUserVendorMappingTable();
                     await getPool().query(
-                        'INSERT INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())',
+                        'INSERT INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW()) ON DUPLICATE KEY UPDATE user_id = user_id',
                         [userId, vendorId]
                     );
                 }
             } catch (err) {
-                LOG.error('MySQL addUserVendorMapping failed, in-memory write kept', err.message);
+                if (/duplicate/i.test(String(err.message || ''))) {
+                    LOG.warning('MySQL user_vendor_mapping already exists, in-memory write kept');
+                } else {
+                    LOG.error('MySQL addUserVendorMapping failed, in-memory write kept', err.message);
+                }
             }
         }
         await stampUserUpdatedAt(userId);
@@ -1381,6 +1684,61 @@ const db = {
         }
         await stampUserUpdatedAt(userId);
         return true;
+    },
+
+    isFleetVendorRow: (vendor) => {
+        if (!vendor) return false;
+        return vendor.features_fleet === true || vendor.features_fleet === 1 || vendor.features_fleet === '1';
+    },
+
+    getFleetRoster: async (vendorId) => {
+        if (!vendorId) return [];
+        const vendor = await db.getVendorById(vendorId);
+        const mappings = await db.getUserVendorMappings();
+        const mappedIds = mappings.filter((m) => String(m.vendor_id) === String(vendorId)).map((m) => String(m.user_id));
+        const users = await db.getUsers();
+        const ownerId = vendor?.owner_id ? String(vendor.owner_id) : '';
+        return users.filter((u) => {
+            if (!mappedIds.includes(String(u.id))) return false;
+            if (ownerId && String(u.id) === ownerId) return false;
+            const role = String(u.role || '').toLowerCase();
+            if (role === 'vendor' || role === 'super_admin') return false;
+            return true;
+        }).map((u) => ({
+            id: u.id,
+            name: u.name,
+            email: u.email,
+            mobile: u.mobile,
+            role: u.role || 'user',
+            location_name: u.location_name,
+            vendor_id: vendorId,
+        }));
+    },
+
+    getFleetOverview: async () => {
+        const result = await db.getVendors(false, 1, 1000, 'newest', '', true);
+        const vendorList = Array.isArray(result) ? result : (result?.vendors || []);
+        const fleetVendors = vendorList.filter((v) => db.isFleetVendorRow(v));
+        const vendors = [];
+        let driverCount = 0;
+        for (const vendor of fleetVendors) {
+            const roster = await db.getFleetRoster(vendor.id);
+            driverCount += roster.length;
+            vendors.push({
+                id: vendor.id,
+                shop_name: vendor.shop_name,
+                location_name: vendor.location_name || vendor.city || '',
+                category: vendor.category,
+                owner_id: vendor.owner_id,
+                driver_count: roster.length,
+                is_active: vendor.is_active !== false,
+            });
+        }
+        return {
+            vendor_count: fleetVendors.length,
+            driver_count: driverCount,
+            vendors,
+        };
     },
 
     getUsersWithVendorMappings: async () => {
@@ -1411,14 +1769,48 @@ const db = {
 
     getMappedVendorsForUser: async (userId) => {
         const mappedIds = await db.getMappedVendorIdsForUser(userId);
-        if (!mappedIds.length) {
+        const relatedIds = new Set(mappedIds.map(String));
+
+        // Include shops the user already booked / queued with so they can see products & buy
+        try {
+            const [appts, queues] = await Promise.all([
+                db.getAppointmentsByUser(userId).catch(() => []),
+                typeof db.getUserHistory === 'function'
+                    ? db.getUserHistory(userId).catch(() => [])
+                    : Promise.resolve([]),
+            ]);
+            (appts || []).forEach((a) => {
+                if (a?.vendor_id) relatedIds.add(String(a.vendor_id));
+            });
+            (queues || []).forEach((q) => {
+                if (q?.vendor_id && String(q.status || '').toLowerCase() !== 'cancelled') {
+                    relatedIds.add(String(q.vendor_id));
+                }
+            });
+        } catch (e) {
+            LOG.warning('[getMappedVendorsForUser] related shops lookup failed:', e.message);
+        }
+
+        // Persist missing mappings so Home / shopping stay linked
+        for (const vendorId of relatedIds) {
+            if (!mappedIds.map(String).includes(String(vendorId))) {
+                try {
+                    await db.addUserVendorMapping(userId, vendorId);
+                } catch (e) { /* non-fatal */ }
+            }
+        }
+
+        const idList = [...relatedIds];
+        if (!idList.length) {
             return { vendors: [], hasMappings: false };
         }
 
         const vendorsResult = await db.getVendors(false, 1, 1000, 'newest', '', true);
         const allVendors = Array.isArray(vendorsResult) ? vendorsResult : (vendorsResult.vendors || []);
-        const mappedSet = new Set(mappedIds);
-        const vendors = allVendors.filter(v => mappedSet.has(v.id) && v.is_active !== false && v.visibility_list !== false);
+        const mappedSet = new Set(idList);
+        const vendors = allVendors.filter(
+            (v) => mappedSet.has(String(v.id)) && v.is_active !== false && v.visibility_list !== false
+        );
 
         return { vendors, hasMappings: true };
     },
@@ -1580,29 +1972,92 @@ const db = {
 
                 const query = `
                     SELECT v.*,
-                    (SELECT COUNT(*) FROM queues WHERE vendor_id = v.id AND status = 'waiting') as q_count_raw,
-                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND status IN ('confirmed', 'pending')) as a_count_raw,
-                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND date = '${todayStr}' AND status IN ('pending', 'confirmed')) as today_pending_appointments,
-                    (SELECT COUNT(*) FROM appointments WHERE vendor_id = v.id AND date = '${todayStr}' AND status = 'completed') as today_completed_appointments
+                    u.location_name AS owner_location,
+                    COALESCE(q.wait_count, 0) AS q_count_raw,
+                    COALESCE(a.open_count, 0) AS a_count_raw,
+                    COALESCE(a.open_count, 0) AS appointments_open,
+                    COALESCE(a.today_pending, 0) AS appointments_running,
+                    COALESCE(a.today_pending, 0) AS today_pending_appointments,
+                    COALESCE(a.today_completed, 0) AS today_completed_appointments,
+                    COALESCE(a.total_count, 0) AS appointments_total,
+                    COALESCE(pr.product_count, 0) AS product_count,
+                    COALESCE(o.orders_count, 0) AS orders_count,
+                    COALESCE(o.payments_done, 0) AS payments_done,
+                    COALESCE(o.payments_amount, 0) AS payments_amount,
+                    (COALESCE(a.today_completed, 0) + COALESCE(qd.today_done, 0) + COALESCE(o.today_orders, 0)) AS today_processed
                     FROM vendors v
+                    LEFT JOIN users u ON u.id = v.owner_id
+                    LEFT JOIN (
+                        SELECT vendor_id, COUNT(*) AS wait_count
+                        FROM queues WHERE status = 'waiting'
+                        GROUP BY vendor_id
+                    ) q ON q.vendor_id = v.id
+                    LEFT JOIN (
+                        SELECT vendor_id,
+                            SUM(status IN ('confirmed', 'pending')) AS open_count,
+                            SUM(date = ? AND status IN ('pending', 'confirmed')) AS today_pending,
+                            SUM(date = ? AND status = 'completed') AS today_completed,
+                            COUNT(*) AS total_count
+                        FROM appointments
+                        GROUP BY vendor_id
+                    ) a ON a.vendor_id = v.id
+                    LEFT JOIN (
+                        SELECT vendor_id, COUNT(*) AS product_count
+                        FROM products
+                        GROUP BY vendor_id
+                    ) pr ON pr.vendor_id = v.id
+                    LEFT JOIN (
+                        SELECT vendor_id,
+                            COUNT(*) AS orders_count,
+                            SUM(
+                                LOWER(COALESCE(status,'')) IN ('paid','completed','success','done')
+                                OR LOWER(COALESCE(fulfillment_status,'')) IN ('delivered','completed','paid')
+                                OR (payment_ref IS NOT NULL AND payment_ref <> '')
+                            ) AS payments_done,
+                            COALESCE(SUM(CASE WHEN
+                                LOWER(COALESCE(status,'')) IN ('paid','completed','success','done')
+                                OR LOWER(COALESCE(fulfillment_status,'')) IN ('delivered','completed','paid')
+                                OR (payment_ref IS NOT NULL AND payment_ref <> '')
+                                OR total_amount > 0
+                            THEN total_amount ELSE 0 END), 0) AS payments_amount,
+                            SUM(created_at >= ? AND created_at < DATE_ADD(?, INTERVAL 1 DAY)) AS today_orders
+                        FROM orders
+                        GROUP BY vendor_id
+                    ) o ON o.vendor_id = v.id
+                    LEFT JOIN (
+                        SELECT vendor_id, COUNT(*) AS today_done
+                        FROM queues
+                        WHERE status IN ('done', 'completed') AND joined_at >= ? AND joined_at < DATE_ADD(?, INTERVAL 1 DAY)
+                        GROUP BY vendor_id
+                    ) qd ON qd.vendor_id = v.id
                     ${whereClause}
-                    ORDER BY ${orderBy.replace('appointmentCount', '(q_count_raw + a_count_raw)').replace('live_queue_count', 'q_count_raw')}
-                    LIMIT ${limit} OFFSET ${offset}
+                    ORDER BY ${orderBy.replace('appointmentCount', '(COALESCE(q.wait_count,0) + COALESCE(a.open_count,0))').replace('live_queue_count', 'COALESCE(q.wait_count,0)')}
+                    LIMIT ? OFFSET ?
                 `;
-                
+
                 LOG.info(`[getVendors] Query: feature=${featureKey || 'none'}, includeTradeOffer=${includeTradeOffer}, activeOnly=${activeOnly}`);
-                LOG.info(`[getVendors] WHERE clause: ${whereClause}`);
-                
+                params.push(todayStr, todayStr, todayStr, todayStr, todayStr, todayStr, Number(limit), Number(offset));
                 const [rawRows] = await getPool().query(query, params);
                 
                 // Add calculated fields to match previous schema exactly
                 const rows = rawRows.map(row => {
-                    const q_count = row.q_count_raw || 0;
-                    const a_count = row.a_count_raw || 0;
+                    const q_count = Number(row.q_count_raw || 0);
+                    const a_count = Number(row.a_count_raw || 0);
                     return {
                         ...row,
+                        location_name: row.location_name || row.owner_location || '',
                         appointmentCount: q_count + a_count,
-                        live_queue_count: q_count
+                        live_queue_count: q_count,
+                        appointments_open: Number(row.appointments_open || a_count || 0),
+                        appointments_running: Number(row.appointments_running || row.today_pending_appointments || 0),
+                        appointments_total: Number(row.appointments_total || 0),
+                        today_pending_appointments: Number(row.today_pending_appointments || 0),
+                        today_completed_appointments: Number(row.today_completed_appointments || 0),
+                        product_count: Number(row.product_count || 0),
+                        orders_count: Number(row.orders_count || 0),
+                        payments_done: Number(row.payments_done || 0),
+                        payments_amount: Number(row.payments_amount || 0),
+                        today_processed: Number(row.today_processed || 0),
                     };
                 });
                 LOG.info(`[getVendors] MySQL returned ${rows.length} vendors`);
@@ -1701,18 +2156,50 @@ const db = {
         // Calculate metrics for ALL first (in-memory) so we can sort
         filtered = filtered.map(v => {
             const qCount = inMemoryDb.queues.filter(q => q.vendor_id === v.id && q.status === 'waiting').length;
-            const aCount = inMemoryDb.appointments.filter(a => a.vendor_id === v.id && (a.status === 'confirmed' || a.status === 'pending')).length;
-            
-            const liveQueueCount = qCount;
-            const todayPending = inMemoryDb.appointments.filter(a => a.vendor_id === v.id && a.date === todayStr && ['pending', 'confirmed'].includes(a.status)).length;
-            const todayCompleted = inMemoryDb.appointments.filter(a => a.vendor_id === v.id && a.date === todayStr && a.status === 'completed').length;
+            const openAppts = inMemoryDb.appointments.filter(a => a.vendor_id === v.id && (a.status === 'confirmed' || a.status === 'pending'));
+            const aCount = openAppts.length;
+            const allAppts = inMemoryDb.appointments.filter(a => a.vendor_id === v.id);
+            const todayPending = allAppts.filter(a => a.date === todayStr && ['pending', 'confirmed'].includes(a.status)).length;
+            const todayCompleted = allAppts.filter(a => a.date === todayStr && a.status === 'completed').length;
+            const products = (inMemoryDb.products || []).filter(p => String(p.vendor_id) === String(v.id));
+            const orders = (inMemoryDb.orders || []).filter(o => String(o.vendor_id) === String(v.id));
+            const isPaid = (o) => {
+                const st = String(o.status || '').toLowerCase();
+                const fs = String(o.fulfillment_status || '').toLowerCase();
+                return ['paid', 'completed', 'success', 'done'].includes(st)
+                    || ['delivered', 'completed', 'paid'].includes(fs)
+                    || !!(o.payment_ref)
+                    || Number(o.total_amount) > 0;
+            };
+            const paidOrders = orders.filter(isPaid);
+            const todayQueueDone = inMemoryDb.queues.filter(q => {
+                if (String(q.vendor_id) !== String(v.id)) return false;
+                if (!['done', 'completed'].includes(String(q.status || '').toLowerCase())) return false;
+                const d = q.joined_at ? new Date(q.joined_at).toISOString().slice(0, 10) : '';
+                return d === todayStr;
+            }).length;
+            const todayOrders = orders.filter(o => {
+                const d = o.created_at ? new Date(o.created_at).toISOString().slice(0, 10) : '';
+                return d === todayStr;
+            }).length;
+            const owner = (inMemoryDb.users || []).find((u) => String(u.id) === String(v.owner_id));
 
             return { 
-                ...v, 
+                ...v,
+                location_name: v.location_name || owner?.location_name || '',
+                owner_location: owner?.location_name || '',
                 appointmentCount: qCount + aCount,
-                live_queue_count: liveQueueCount,
+                live_queue_count: qCount,
+                appointments_open: aCount,
+                appointments_running: todayPending,
+                appointments_total: allAppts.length,
                 today_pending_appointments: todayPending,
-                today_completed_appointments: todayCompleted
+                today_completed_appointments: todayCompleted,
+                product_count: products.length,
+                orders_count: orders.length,
+                payments_done: paidOrders.length,
+                payments_amount: paidOrders.reduce((s, o) => s + (Number(o.total_amount) || 0), 0),
+                today_processed: todayCompleted + todayQueueDone + todayOrders,
             };
         });
 
@@ -1737,7 +2224,7 @@ const db = {
         } catch (err) {
             LOG.error(`MySQL getVendorByOwnerId failed for ${ownerId}, falling back to local`, err.message);
         }
-        return inMemoryDb.vendors.find(v => v.owner_id === ownerId);
+        return inMemoryDb.vendors.find(v => String(v.owner_id) === String(ownerId));
     },
 
     getVendorById: async (vendorId) => {
@@ -1766,6 +2253,109 @@ const db = {
         return !!vendor;
     },
 
+    getVendorCategories: async () => {
+        const { uniqueSortedCategories, DEFAULT_VENDOR_CATEGORIES, titleCaseCategory } = require('./utils/vendorCategories');
+        if (!Array.isArray(inMemoryDb.vendor_categories)) {
+            inMemoryDb.vendor_categories = [];
+        }
+        DEFAULT_VENDOR_CATEGORIES.forEach((name) => {
+            const exists = inMemoryDb.vendor_categories.some(
+                (c) => String(c.name || '').toLowerCase() === name.toLowerCase()
+            );
+            if (!exists) {
+                inMemoryDb.vendor_categories.push({
+                    id: `cat_${name.toLowerCase().replace(/\s+/g, '_')}`,
+                    name,
+                    created_at: new Date()
+                });
+            }
+        });
+
+        try {
+            if (getPool()) {
+                const [rows] = await getPool().query(
+                    'SELECT id, name, created_at FROM vendor_categories ORDER BY name ASC'
+                );
+                if (rows?.length) {
+                    rows.forEach((row) => {
+                        const label = titleCaseCategory(row.name);
+                        if (!label) return;
+                        const exists = inMemoryDb.vendor_categories.some(
+                            (c) => String(c.name || '').toLowerCase() === label.toLowerCase()
+                        );
+                        if (!exists) {
+                            inMemoryDb.vendor_categories.push({
+                                id: row.id || `cat_${label.toLowerCase().replace(/\s+/g, '_')}`,
+                                name: label,
+                                created_at: row.created_at || new Date()
+                            });
+                        }
+                    });
+                }
+            }
+        } catch (err) {
+            LOG.warning('[getVendorCategories] MySQL read skipped:', err.message);
+        }
+
+        const fromVendors = (inMemoryDb.vendors || []).map((v) => v.category).filter(Boolean);
+        const names = uniqueSortedCategories([
+            ...inMemoryDb.vendor_categories.map((c) => c.name),
+            ...fromVendors
+        ]);
+        return names.map((name) => {
+            const row = inMemoryDb.vendor_categories.find(
+                (c) => String(c.name || '').toLowerCase() === name.toLowerCase()
+            );
+            return {
+                id: row?.id || `cat_${name.toLowerCase().replace(/\s+/g, '_')}`,
+                name,
+                created_at: row?.created_at || null
+            };
+        });
+    },
+
+    addVendorCategory: async (name) => {
+        const { titleCaseCategory } = require('./utils/vendorCategories');
+        const label = titleCaseCategory(name);
+        if (!label) {
+            throw new Error('Category name is required');
+        }
+        if (!Array.isArray(inMemoryDb.vendor_categories)) {
+            inMemoryDb.vendor_categories = [];
+        }
+        const existing = inMemoryDb.vendor_categories.find(
+            (c) => String(c.name || '').toLowerCase() === label.toLowerCase()
+        );
+        if (existing) {
+            return { category: existing, created: false };
+        }
+
+        const category = {
+            id: `cat_${label.toLowerCase().replace(/\s+/g, '_')}_${Math.random().toString(36).slice(2, 6)}`,
+            name: label,
+            created_at: new Date()
+        };
+        inMemoryDb.vendor_categories.push(category);
+
+        const sql = `INSERT INTO vendor_categories (id, name, created_at)
+                     VALUES (?, ?, ?)
+                     ON DUPLICATE KEY UPDATE name = VALUES(name)`;
+        const params = [category.id, category.name, category.created_at];
+
+        try {
+            if (DB_TYPE === 'mysql' && getPool()) {
+                await getPool().query(sql, params);
+            } else {
+                const { mirrorQuery } = require('./database/mysqlMirror');
+                await mirrorQuery(sql, params);
+            }
+        } catch (err) {
+            LOG.warning('[addVendorCategory] MySQL mirror skip:', err.message);
+        }
+
+        return { category, created: true };
+    },
+
     addVendor: async (vendorData) => {
         const normalizedVendor = {
             google_link: '',
@@ -1785,15 +2375,79 @@ const db = {
             visibility_feed: true,
             ...vendorData
         };
+        if (normalizedVendor.category) {
+            try {
+                await db.addVendorCategory(normalizedVendor.category);
+            } catch (e) {
+                LOG.warning('[addVendor] category catalog update skipped:', e.message);
+            }
+        }
+
+        // Always keep in-memory copy so sync / local reads never lose runtime vendors
+        const memIdx = inMemoryDb.vendors.findIndex((v) => String(v.id) === String(normalizedVendor.id));
+        if (memIdx >= 0) {
+            inMemoryDb.vendors[memIdx] = { ...inMemoryDb.vendors[memIdx], ...normalizedVendor };
+        } else {
+            inMemoryDb.vendors.push(normalizedVendor);
+        }
+
         try {
-            if (getPool()) {
-                await getPool().query('INSERT INTO vendors SET ?', [normalizedVendor]);
-                return normalizedVendor;
+            const pool = await ensureWritePool();
+            if (pool) {
+                await pool.query(
+                    `INSERT INTO vendors (
+                        id, owner_id, shop_name, category, is_active, is_promoted,
+                        latitude, longitude, google_link, instagram_handle, facebook_link,
+                        features_products, features_payments, features_appointments, features_queue,
+                        features_matchmaking, features_cyber, features_trade, features_offer, features_qless,
+                        features_fleet, features_realestate, features_trust_score,
+                        visibility_top_rated, visibility_list, visibility_feed, location_name
+                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     ON DUPLICATE KEY UPDATE
+                        owner_id = VALUES(owner_id),
+                        shop_name = VALUES(shop_name),
+                        category = VALUES(category),
+                        is_active = VALUES(is_active),
+                        features_products = VALUES(features_products),
+                        features_payments = VALUES(features_payments),
+                        features_appointments = VALUES(features_appointments),
+                        features_queue = VALUES(features_queue),
+                        visibility_list = VALUES(visibility_list),
+                        location_name = VALUES(location_name)`,
+                    [
+                        normalizedVendor.id,
+                        normalizedVendor.owner_id || '',
+                        normalizedVendor.shop_name || '',
+                        normalizedVendor.category || '',
+                        normalizedVendor.is_active !== false ? 1 : 0,
+                        normalizedVendor.is_promoted ? 1 : 0,
+                        normalizedVendor.latitude || 0,
+                        normalizedVendor.longitude || 0,
+                        normalizedVendor.google_link || '',
+                        normalizedVendor.instagram_handle || '',
+                        normalizedVendor.facebook_link || '',
+                        normalizedVendor.features_products !== false ? 1 : 0,
+                        normalizedVendor.features_payments !== false ? 1 : 0,
+                        normalizedVendor.features_appointments !== false ? 1 : 0,
+                        normalizedVendor.features_queue !== false ? 1 : 0,
+                        normalizedVendor.features_matchmaking ? 1 : 0,
+                        normalizedVendor.features_cyber ? 1 : 0,
+                        normalizedVendor.features_trade ? 1 : 0,
+                        normalizedVendor.features_offer ? 1 : 0,
+                        normalizedVendor.features_qless ? 1 : 0,
+                        normalizedVendor.features_fleet ? 1 : 0,
+                        normalizedVendor.features_realestate ? 1 : 0,
+                        normalizedVendor.features_trust_score ? 1 : 0,
+                        normalizedVendor.visibility_top_rated ? 1 : 0,
+                        normalizedVendor.visibility_list !== false ? 1 : 0,
+                        normalizedVendor.visibility_feed ? 1 : 0,
+                        normalizedVendor.location_name || '',
+                    ]
+                );
             }
         } catch (err) {
-            LOG.error("MySQL addVendor failed, falling back to local", err.message);
+            LOG.error("MySQL addVendor failed, in-memory vendor kept", err.message);
         }
-        inMemoryDb.vendors.push(normalizedVendor);
         return normalizedVendor;
     },
 
@@ -1810,19 +2464,11 @@ const db = {
         };
         try {
             if (getPool()) {
-                await getPool().query(`
-                    CREATE TABLE IF NOT EXISTS notifications (
-                        id INT AUTO_INCREMENT PRIMARY KEY,
-                        user_id VARCHAR(64),
-                        title VARCHAR(255),
-                        message TEXT,
-                        type VARCHAR(50),
-                        data_json TEXT,
-                        is_read TINYINT DEFAULT 0,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    )
-                `);
-                const [res] = await getPool().query('INSERT INTO notifications SET ?', [payload]);
+                const [res] = await getPool().query(
+                    `INSERT INTO notifications (user_id, title, body, message, type, data_json, is_read, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, 0, ?)`,
+                    [payload.user_id, payload.title, payload.message, payload.message, payload.type, payload.data_json, payload.created_at]
+                );
                 return { id: res.insertId, ...payload };
             }
         } catch (err) {
@@ -2068,24 +2714,41 @@ const db = {
                         auto_scan_time: '09:00',
                         auto_scan_notify_threats: true,
                         auto_scan_auto_clean: false,
-                        enable_lazy_loading: false // Default: false (eager loading for better performance)
+                        enable_lazy_loading: true, // Feature screens load on demand; unload when idle
+                        enable_trade_extra_tabs: false,
+                        ui_theme: 'facebook'
+                    };
+                    const parseSettingBool = (raw) => {
+                        if (raw === true || raw === false) return raw;
+                        if (raw === 1 || raw === 0) return raw === 1;
+                        const s = String(raw ?? '').trim().toLowerCase();
+                        if (s === 'true' || s === '1' || s === 'yes' || s === 'on') return true;
+                        if (s === 'false' || s === '0' || s === 'no' || s === 'off') return false;
+                        // Unknown / empty → keep as enabled for feature flags
+                        return true;
                     };
                     const hasEnableNewsRow = rows.some(r => r.key_name === 'enable_news');
                     rows.forEach(r => {
+                        const rawVal = r.value !== undefined && r.value !== null
+                            ? r.value
+                            : r.is_enabled;
                         if (settings.hasOwnProperty(r.key_name)) {
                             // Handle boolean values
                             if (typeof settings[r.key_name] === 'boolean') {
-                                settings[r.key_name] = r.value === 'true' || r.value === 1 || r.value === true;
+                                settings[r.key_name] = parseSettingBool(rawVal);
                             } else {
                                 // Handle string values (like theme_position)
-                                settings[r.key_name] = r.value;
+                                settings[r.key_name] = rawVal;
                             }
                             return;
                         }
                         if (r.key_name === 'enable_trade_news' && !hasEnableNewsRow) {
-                            settings.enable_news = r.value === 'true' || r.value === 1 || r.value === true;
+                            settings.enable_news = parseSettingBool(rawVal);
                         }
                     });
+                    settings.enable_offer = true;
+                    settings.enable_trade = true;
+                    settings.enable_trust_score = true;
                     inMemoryDb.settings = settings;
                     inMemoryDb.lastSettingsFetch = Date.now();
                     return settings;
@@ -2183,7 +2846,10 @@ const db = {
                         auto_scan_enabled: false,
                         auto_scan_time: '09:00',
                         auto_scan_notify_threats: true,
-                        auto_scan_auto_clean: false
+                        auto_scan_auto_clean: false,
+                        enable_lazy_loading: true,
+                        enable_trade_extra_tabs: false,
+                        ui_theme: 'facebook'
                     };
                 }
             }
@@ -2349,7 +3015,10 @@ const db = {
             auto_scan_enabled: false,
             auto_scan_time: '09:00',
             auto_scan_notify_threats: true,
-            auto_scan_auto_clean: false
+            auto_scan_auto_clean: false,
+            enable_lazy_loading: true,
+            enable_trade_extra_tabs: false,
+            ui_theme: 'facebook',
         };
         return { ...defaultSettings, ...inMemoryDb.settings };
     },
@@ -2388,6 +3057,38 @@ const db = {
         }
         
         Object.assign(inMemoryDb.settings, newSettings);
+        return inMemoryDb.settings;
+    }
+    ,
+    persistUiChromeSettings: async () => {
+        const patch = {
+            enable_trade_extra_tabs: false,
+            enable_lazy_loading: true,
+            ui_theme: 'facebook',
+            enable_offer: true,
+        };
+        inMemoryDb.settings = { ...(inMemoryDb.settings || {}), ...patch };
+        try {
+            if (getPool()) {
+                await getPool().query(`
+                    CREATE TABLE IF NOT EXISTS system_settings (
+                        key_name VARCHAR(50) PRIMARY KEY,
+                        value TEXT
+                    )
+                `);
+                for (const [key, val] of Object.entries(patch)) {
+                    await getPool().query(
+                        'INSERT INTO system_settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?',
+                        [key, String(val), String(val)]
+                    );
+                }
+                LOG.info('[Settings] UI chrome synced to MySQL (Facebook theme, lazy load, hide trade extra tabs)');
+            } else {
+                LOG.info('[Settings] UI chrome applied in-memory (Facebook theme, lazy load, hide trade extra tabs)');
+            }
+        } catch (e) {
+            LOG.warning('[Settings] persistUiChromeSettings skipped: ' + (e.message || e));
+        }
         return inMemoryDb.settings;
     }
     ,
@@ -2596,6 +3297,8 @@ const CORE_DATA_KEYS = new Set([
     'settings',
     'user_vendor_mappings',
     'subscriptions',
+    'health_reports',
+    'health_illness_years',
 ]);
 
 // Core seed lives in this file. data.js feature collections load on first feature open.
@@ -2667,9 +3370,17 @@ measuredDb.loadFeatureSeed = (keys = []) => {
         LOG.info(`Loaded in-memory feature seed (${loaded} rows) for [${keys.join(', ')}]`);
     }
 };
-measuredDb.ensureFleetTables = ensureFleetTables; // Export for fleetService
-measuredDb.ensureCyberThreatTables = ensureCyberThreatTables; // Export for cyberThreatService
-measuredDb.ensureAllUsersAndVendors = ensureAllUsersAndVendors; // Export for comprehensive sync
-measuredDb.ensureCyberUsersAndVendor = ensureCyberUsersAndVendor; // Export for cyber sync
+measuredDb.ensureFleetTables = ensureFleetTables;
+measuredDb.ensureCyberThreatTables = ensureCyberThreatTables;
+measuredDb.ensureMatchmakingTables = ensureMatchmakingTables;
+measuredDb.ensureVendorFeatureColumns = ensureVendorFeatureColumns;
+measuredDb.ensureUserVendorMappingTable = ensureUserVendorMappingTable;
+measuredDb.ensureUsersUpdatedAtColumn = ensureUsersUpdatedAtColumn;
+measuredDb.ensureAllUsersAndVendors = ensureAllUsersAndVendors;
+measuredDb.ensureCyberUsersAndVendor = ensureCyberUsersAndVendor;
+measuredDb.ensureFeatureSchema = (featureId) => {
+    const { ensureFeatureSchema } = require('./database/schema/featureTables');
+    return ensureFeatureSchema(featureId, measuredDb);
+};
 
 module.exports = measuredDb;

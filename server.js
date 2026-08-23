@@ -6,7 +6,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const db = require('./database');
 const featureMemory = require('./database/featureMemoryManager');
-const { coreDb, tradeDb, fleetDb, cyberDb, trustScoreDb, matchmakingDb, queueDb, appointmentsDb, offerDb } = require('./middleware/featureDbMiddleware');
+const { coreDb, tradeDb, fleetDb, cyberDb, trustScoreDb, matchmakingDb, queueDb, appointmentsDb, offerDb, shoppingDb, chatDb, newsDb, healthDb, realestateDb, featureDb } = require('./middleware/featureDbMiddleware');
 
 // Import utilities and middleware
 const LOG = require('./utils/logger');
@@ -19,6 +19,7 @@ const productRoutes = require('./routes/productRoutes');
 const queueRoutes = require('./routes/queueRoutes');
 const appointmentRoutes = require('./routes/appointmentRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const chatRoutes = require('./routes/chatRoutes');
 const adminRoutes = require('./routes/adminRoutes');
 const historyRoutes = require('./routes/historyRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
@@ -132,18 +133,19 @@ const scheduleNewsRefresh = async () => {
 };
 scheduleNewsRefresh();
 
-// Feature jobs, seed, and MySQL pools start on first open (see featureMemoryManager).
-
-// Periodic task: Sync ALL users and vendors every 5 minutes (MySQL core only)
-setInterval(async () => {
+// Purge chat messages older than 10 days (hourly)
+cron.schedule('15 * * * *', async () => {
     try {
-        if (db.getType() === 'mysql' && db.ensureAllUsersAndVendors) {
-            await db.ensureAllUsersAndVendors();
-        }
+        const chatService = require('./services/chatService');
+        await chatService.purgeExpired();
     } catch (e) {
-        LOG.error("All users and vendors sync task failed", e.message);
+        LOG.warning('[Chat] retention purge failed', e.message);
     }
-}, 300000);
+});
+LOG.info('[Server] Chat retention purge scheduled hourly (keep 10 days)');
+
+// Feature jobs, seed, and MySQL pools start on first open (see featureMemoryManager).
+// Seed users/vendors run once via coreDb middleware — do not re-upsert every 5 minutes.
 
 // ============================================
 // FEATURE ROUTES - Modularized by Feature
@@ -156,16 +158,21 @@ app.use('/api/auth', ...coreDb, authRoutes);
 app.use('/api/vendors', ...coreDb, vendorRoutes);
 
 // Product Routes (public product endpoints)
-app.use('/api/products', ...coreDb, productRoutes);
+app.use('/api/products', ...shoppingDb, productRoutes);
 
 // Queue Routes (requires io instance)
 app.use('/api/queue', ...queueDb, queueRoutes(io));
 
 // Appointment Routes
+if (typeof appointmentRoutes.setIO === 'function') appointmentRoutes.setIO(io);
 app.use('/api/appointments', ...appointmentsDb, appointmentRoutes);
 
 // Order Routes
-app.use('/api/orders', ...coreDb, orderRoutes);
+app.use('/api/orders', ...shoppingDb, orderRoutes);
+
+// Chat Routes (user ↔ vendor, 10-day retention)
+if (typeof chatRoutes.setIO === 'function') chatRoutes.setIO(io);
+app.use('/api/chat', ...chatDb, chatRoutes);
 
 // Subscription Routes
 app.use('/api/subscriptions', ...coreDb, subscriptionRoutes);
@@ -174,7 +181,7 @@ LOG.success('[Server] ✅ Subscription routes registered at /api/subscriptions')
 app.use('/api', ...matchmakingDb, lazyRouter(() => require('./routes/matchmakingRoutes')));
 
 // History Routes
-app.use('/api/history', ...coreDb, historyRoutes);
+app.use('/api/history', ...featureDb('queue', 'appointments'), historyRoutes);
 
 // Activity Routes (public activities endpoint)
 app.use('/api', ...coreDb, activityRoutes);
@@ -189,7 +196,7 @@ LOG.success('[Server] ✅ Settings routes registered at /api/settings');
 
 // Notification Routes
 app.use('/api/notifications', ...coreDb, notificationRoutes);
-app.use('/api/news', ...coreDb, newsRoutes);
+app.use('/api/news', ...newsDb, newsRoutes);
 LOG.success('[Server] ✅ Notification routes registered at /api/notifications');
 
 // Admin Routes (with socket support)
@@ -213,7 +220,8 @@ app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDi
 app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
 app.use('/api/trading-data-trace', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
 app.use('/api/cyber', ...cyberDb, lazyRouter(() => require('./routes/cyberToolsRoutes')));
-app.use('/api/analytics', ...coreDb, analyticsRoutes);
+app.use('/api/health-predict', ...healthDb, lazyRouter(() => require('./routes/healthPredictRoutes')));
+app.use('/api/realestate', ...realestateDb, lazyRouter(() => require('./routes/realestateRoutes')));
 app.use('/api', ...offerDb, lazyRouter(() => require('./routes/dealsRoutes')));
 
 // ========== SYNC ROUTES ==========
@@ -246,11 +254,26 @@ server.listen(PORT, async () => {
         const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30;
         startAutoSync(syncIntervalMinutes);
         LOG.info(`[AutoSync] Enabled: syncing every ${syncIntervalMinutes} minutes`);
+    } else if (process.env.DB_HOST || process.env.DB_NAME) {
+        LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
+        if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
+            await syncOnStartup(true);
+        }
+        const mirrorInterval = parseInt(process.env.SYNC_INTERVAL_MINUTES, 10) || 30;
+        startAutoSync(mirrorInterval);
+        LOG.info(`[AutoSync] In-memory -> MySQL every ${mirrorInterval} minutes`);
     } else {
         LOG.info('In-memory mode: core seed only at boot. Feature seed/jobs start on first open.');
     }
     LOG.info(`Unused features reclaim memory + DB pools after ${Math.round(featureMemory.IDLE_MS / 60000)} min (FEATURE_IDLE_MINUTES)`);
     featureMemory.startWatchdog();
+    try {
+        if (typeof db.persistUiChromeSettings === 'function') {
+            await db.persistUiChromeSettings();
+        }
+    } catch (e) {
+        LOG.warning('[Server] persistUiChromeSettings failed: ' + (e.message || e));
+    }
     if (dbMode === 'inmemory') {
         LOG.info(`Seed Users -> Super Admin: 9999999999 | Vendor: 8888888888 | User: 7777777777 | Test Vendor: 3333333333`);
     }

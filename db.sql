@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS products (
     id INT AUTO_INCREMENT PRIMARY KEY,
     vendor_id VARCHAR(255),
     name VARCHAR(255),
+    name_key VARCHAR(255),
     price DECIMAL(10, 2),
     description TEXT,
     offer VARCHAR(255),
@@ -51,6 +52,7 @@ CREATE TABLE IF NOT EXISTS products (
     validity_to DATE,
     category VARCHAR(100),
     stock INT DEFAULT 0,
+    UNIQUE KEY uniq_vendor_product_name (vendor_id, name_key),
     FOREIGN KEY (vendor_id) REFERENCES vendors(id)
 );
 
@@ -88,7 +90,7 @@ CREATE TABLE IF NOT EXISTS appointments (
     user_id VARCHAR(255),
     date DATE,
     time TIME,
-    status ENUM('pending', 'confirmed', 'completed', 'cancelled') DEFAULT 'pending',
+    notes VARCHAR(255) NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (vendor_id) REFERENCES vendors(id),
     FOREIGN KEY (user_id) REFERENCES users(id)
