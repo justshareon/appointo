@@ -247,7 +247,7 @@ server.listen(PORT, async () => {
         // Optional: Sync on startup (disable if taking too long)
         const autoSyncOnStartup = process.env.AUTO_SYNC_ON_STARTUP !== 'false';
         if (autoSyncOnStartup) {
-            await syncOnStartup(true);
+            syncOnStartup(true);
         }
         
         // Start periodic auto-sync (every 30 minutes by default)
@@ -257,7 +257,7 @@ server.listen(PORT, async () => {
     } else if (process.env.DB_HOST || process.env.DB_NAME) {
         LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
         if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
-            await syncOnStartup(true);
+            syncOnStartup(true);
         }
         const mirrorInterval = parseInt(process.env.SYNC_INTERVAL_MINUTES, 10) || 30;
         startAutoSync(mirrorInterval);

@@ -5,6 +5,7 @@
  */
 
 const { syncAllToMysql } = require('../syncAllToMysql');
+const syncStatus = require('../services/syncStatusService');
 const LOG = require('../utils/logger');
 
 let isSyncing = false;
@@ -24,15 +25,19 @@ const setupSyncRoutes = (router) => {
         
         isSyncing = true;
         lastSyncTime = new Date();
+        const forceFull = req.query.forceFull === 'true' || req.body?.forceFull === true;
         
         try {
-            LOG.info(`[Sync API] Starting manual sync at ${lastSyncTime.toISOString()}`);
-            await syncAllToMysql();
+            LOG.info(`[Sync API] Starting manual sync at ${lastSyncTime.toISOString()}${forceFull ? ' (force full)' : ''}`);
+            const result = await syncAllToMysql({ triggerSource: 'api', forceFull });
             
             lastSyncStatus = {
                 status: 'success',
                 completedAt: new Date(),
-                startedAt: lastSyncTime
+                startedAt: lastSyncTime,
+                resume: result.resume,
+                summary: result.summary,
+                modules: result.modules,
             };
             
             res.json(lastSyncStatus);
@@ -51,13 +56,52 @@ const setupSyncRoutes = (router) => {
         }
     });
     
-    // Get sync status
-    router.get('/status', (req, res) => {
-        res.json({
-            isSyncing,
-            lastSyncTime,
-            lastSyncStatus
-        });
+    // Get sync status (in-memory + MySQL module map)
+    router.get('/status', async (req, res) => {
+        try {
+            const moduleState = await syncStatus.getModuleState();
+            const latestRun = await syncStatus.getLatestRun();
+            const complete = await syncStatus.isSyncComplete();
+            res.json({
+                isSyncing,
+                lastSyncTime,
+                lastSyncStatus,
+                latestRun,
+                complete,
+                needsSync: !complete,
+                summary: moduleState.summary,
+                modules: moduleState.modules,
+            });
+        } catch (err) {
+            res.json({
+                isSyncing,
+                lastSyncTime,
+                lastSyncStatus,
+                error: err.message,
+            });
+        }
+    });
+
+    // Module-by-module sync map (done / pending / failed)
+    router.get('/modules', async (req, res) => {
+        try {
+            const moduleState = await syncStatus.getModuleState();
+            const latestRun = await syncStatus.getLatestRun();
+            const complete = await syncStatus.isSyncComplete();
+            res.json({ ...moduleState, latestRun, complete, needsSync: !complete });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
+
+    // Keep syncing in background until all modules complete
+    router.post('/until-complete', async (req, res) => {
+        if (isSyncing) {
+            return res.status(409).json({ status: 'in_progress', message: 'Sync loop already running' });
+        }
+        const { syncUntilComplete } = require('../services/autoSyncService');
+        syncUntilComplete('api').catch((err) => LOG.error('[Sync API] until-complete:', err.message));
+        res.json({ status: 'started', message: 'Sync will retry until all modules complete' });
     });
     
     // Sync specific entity types

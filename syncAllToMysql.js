@@ -8,6 +8,7 @@ require('./loadEnv');
 const db = require('./database');
 const LOG = require('./utils/logger');
 const featureConnectionManager = require('./database/featureConnectionManager');
+const syncStatus = require('./services/syncStatusService');
 
 const inMemoryDb = db.inMemoryDb;
 
@@ -27,6 +28,13 @@ const getPool = async () => {
 };
 
 const BATCH_SIZE = 100;
+
+const doneSync = ({ itemsSynced = 0, version = 0, queriesSynced = 0, totalItems = 0 } = {}) => ({
+    itemsSynced,
+    version,
+    queriesSynced,
+    totalItems: totalItems || version,
+});
 
 const ensureCoreSchema = async () => {
     const pool = await getPool();
@@ -290,12 +298,16 @@ const upsertQueue = async (rows) => {
 // ====================
 // USERS & VENDORS SYNC
 // ====================
-const syncUsers = async () => {
-    LOG.info(`[Users Sync] Starting sync of ${inMemoryDb.users.length} users...`);
-    let total = 0;
-    
-    for (let i = 0; i < inMemoryDb.users.length; i += BATCH_SIZE) {
-        const batch = inMemoryDb.users.slice(i, i + BATCH_SIZE);
+const syncUsers = async ({ startOffset = 0, onProgress } = {}) => {
+    const users = inMemoryDb.users || [];
+    const totalItems = users.length;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
+    if (startOffset > 0) LOG.info(`[Users Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Users Sync] Starting sync of ${totalItems} users...`);
+
+    for (let i = startOffset; i < users.length; i += BATCH_SIZE) {
+        const batch = users.slice(i, i + BATCH_SIZE);
         const values = batch.map(u => [
             u.id,
             u.name || '',
@@ -303,23 +315,26 @@ const syncUsers = async () => {
             u.mobile || '',
             u.role || 'user',
             u.location_name || '',
-            0, // loyalty_points
+            0,
             new Date()
         ]);
-        
+
         const created = await insertBatch(
             'users',
             ['id', 'name', 'email', 'mobile', 'role', 'location_name', 'loyalty_points', 'created_at'],
             values
         );
-        total += created;
+        queriesSynced += 1;
+        itemsSynced += created;
+        const version = Math.min(i + batch.length, totalItems);
+        if (onProgress) await onProgress({ version, queriesSynced, itemsSynced, totalItems });
     }
-    
-    LOG.success(`[Users Sync] Completed: ${total} users synced to MySQL`);
-    return total;
+
+    LOG.success(`[Users Sync] Completed: ${itemsSynced} users synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-const syncVendorCategories = async () => {
+const syncVendorCategories = async ({ startOffset = 0, onProgress } = {}) => {
     const { DEFAULT_VENDOR_CATEGORIES, titleCaseCategory, uniqueSortedCategories } = require('./utils/vendorCategories');
     if (!Array.isArray(inMemoryDb.vendor_categories)) {
         inMemoryDb.vendor_categories = [];
@@ -331,12 +346,16 @@ const syncVendorCategories = async () => {
         ...inMemoryDb.vendor_categories.map((c) => c.name || c),
         ...fromVendors
     ]);
-
-    LOG.info(`[Vendor Categories Sync] Starting sync of ${names.length} categories...`);
-    let total = 0;
+    const totalItems = names.length;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     const pool = await getPool();
 
-    for (const name of names) {
+    if (startOffset > 0) LOG.info(`[Vendor Categories Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Vendor Categories Sync] Starting sync of ${totalItems} categories...`);
+
+    for (let idx = startOffset; idx < names.length; idx++) {
+        const name = names[idx];
         const label = titleCaseCategory(name);
         if (!label) continue;
         const existing = inMemoryDb.vendor_categories.find(
@@ -353,18 +372,25 @@ const syncVendorCategories = async () => {
                  ON DUPLICATE KEY UPDATE name = VALUES(name)`,
                 [id, label, existing?.created_at || new Date()]
             );
-            if (result?.affectedRows) total += 1;
+            queriesSynced += 1;
+            if (result?.affectedRows) itemsSynced += 1;
         } catch (err) {
             LOG.warning('[Vendor Categories Sync] row skipped:', err.message);
         }
+        if (onProgress && (idx % 10 === 0 || idx === names.length - 1)) {
+            await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
+        }
     }
 
-    LOG.success(`[Vendor Categories Sync] Completed: ${total} categories synced to MySQL`);
-    return total;
+    LOG.success(`[Vendor Categories Sync] Completed: ${itemsSynced} categories synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-const syncVendors = async () => {
-    LOG.info(`[Vendors Sync] Starting sync of ${inMemoryDb.vendors.length} vendors...`);
+const syncVendors = async ({ startOffset = 0, onProgress } = {}) => {
+    const vendors = inMemoryDb.vendors || [];
+    const totalItems = vendors.length;
+    if (startOffset > 0) LOG.info(`[Vendors Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Vendors Sync] Starting sync of ${totalItems} vendors...`);
     
     // Ensure columns first
     try {
@@ -388,10 +414,12 @@ const syncVendors = async () => {
         LOG.warning('[Vendors Sync] Column check (non-fatal):', err.message);
     }
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     const pool = await getPool();
 
-    for (const v of inMemoryDb.vendors) {
+    for (let idx = startOffset; idx < vendors.length; idx++) {
+        const v = vendors[idx];
         try {
             const [result] = await pool.query(
                 `INSERT INTO vendors (
@@ -451,19 +479,25 @@ const syncVendors = async () => {
                     v.location_name || ''
                 ]
             );
-            if (result?.affectedRows) total += 1;
+            queriesSynced += 1;
+            if (result?.affectedRows) itemsSynced += 1;
         } catch (err) {
             LOG.warning('[Vendors Sync] row skipped:', err.message);
         }
+        if (onProgress && (idx % 25 === 0 || idx === vendors.length - 1)) {
+            await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
+        }
     }
     
-    LOG.success(`[Vendors Sync] Completed: ${total} vendors synced to MySQL`);
-    return total;
+    LOG.success(`[Vendors Sync] Completed: ${itemsSynced} vendors synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-const syncUserVendorMappings = async () => {
+const syncUserVendorMappings = async ({ startOffset = 0, onProgress } = {}) => {
     const mappings = inMemoryDb.user_vendor_mappings || [];
-    LOG.info(`[Mappings Sync] Starting sync of ${mappings.length} user-vendor mappings...`);
+    const totalItems = mappings.length;
+    if (startOffset > 0) LOG.info(`[Mappings Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Mappings Sync] Starting sync of ${totalItems} user-vendor mappings...`);
     
     // Ensure table
     try {
@@ -482,9 +516,10 @@ const syncUserVendorMappings = async () => {
         LOG.warning('[Mappings Sync] Table check (non-fatal):', err.message);
     }
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     
-    for (let i = 0; i < mappings.length; i += BATCH_SIZE) {
+    for (let i = startOffset; i < mappings.length; i += BATCH_SIZE) {
         const batch = mappings.slice(i, i + BATCH_SIZE);
         const values = batch.map(m => [m.user_id, m.vendor_id, new Date()]);
         
@@ -493,11 +528,14 @@ const syncUserVendorMappings = async () => {
             ['user_id', 'vendor_id', 'created_at'],
             values
         );
-        total += created;
+        queriesSynced += 1;
+        itemsSynced += created;
+        const version = Math.min(i + batch.length, totalItems);
+        if (onProgress) await onProgress({ version, queriesSynced, itemsSynced, totalItems });
     }
     
-    LOG.success(`[Mappings Sync] Completed: ${total} mappings synced to MySQL`);
-    return total;
+    LOG.success(`[Mappings Sync] Completed: ${itemsSynced} mappings synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
 // ====================
@@ -533,12 +571,15 @@ const dedupeInMemoryProducts = () => {
     return removeIds.length;
 };
 
-const syncProducts = async () => {
+const syncProducts = async ({ startOffset = 0, onProgress } = {}) => {
     dedupeInMemoryProducts();
     const products = inMemoryDb.products || [];
-    LOG.info(`[Products Sync] Starting sync of ${products.length} products...`);
+    const totalItems = products.length;
+    if (startOffset > 0) LOG.info(`[Products Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Products Sync] Starting sync of ${totalItems} products...`);
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     const pool = await getPool();
 
     // Ensure MySQL duplicates are cleared before unique upserts
@@ -562,7 +603,8 @@ const syncProducts = async () => {
         LOG.warning('[Products Sync] MySQL dedupe skip:', err.message);
     }
 
-    for (const p of products) {
+    for (let idx = startOffset; idx < products.length; idx++) {
+        const p = products[idx];
         try {
             const name = String(p.name || '').trim().replace(/\s+/g, ' ');
             const nameKey = productNameKey(name);
@@ -599,23 +641,30 @@ const syncProducts = async () => {
                     p.stock || 0
                 ]
             );
-            if (result?.affectedRows) total += 1;
+            queriesSynced += 1;
+            if (result?.affectedRows) itemsSynced += 1;
         } catch (err) {
             LOG.warning('[Products Sync] row skipped:', err.message);
         }
+        if (onProgress && (idx % 25 === 0 || idx === products.length - 1)) {
+            await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
+        }
     }
     
-    LOG.success(`[Products Sync] Completed: ${total} products synced to MySQL`);
-    return total;
+    LOG.success(`[Products Sync] Completed: ${itemsSynced} products synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-const syncOrders = async () => {
+const syncOrders = async ({ startOffset = 0, onProgress } = {}) => {
     const orders = inMemoryDb.orders || [];
-    LOG.info(`[Orders Sync] Starting sync of ${orders.length} orders...`);
+    const totalItems = orders.length;
+    if (startOffset > 0) LOG.info(`[Orders Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Orders Sync] Starting sync of ${totalItems} orders...`);
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     
-    for (let i = 0; i < orders.length; i += BATCH_SIZE) {
+    for (let i = startOffset; i < orders.length; i += BATCH_SIZE) {
         const batch = orders.slice(i, i + BATCH_SIZE);
         const values = batch.map(o => [
             o.id,
@@ -634,40 +683,52 @@ const syncOrders = async () => {
             ['id', 'vendor_id', 'user_id', 'total_amount', 'payment_gateway', 'payment_ref', 'status', 'items_json', 'created_at'],
             values
         );
-        total += created;
+        queriesSynced += 1;
+        itemsSynced += created;
+        const version = Math.min(i + batch.length, totalItems);
+        if (onProgress) await onProgress({ version, queriesSynced, itemsSynced, totalItems });
     }
     
-    LOG.success(`[Orders Sync] Completed: ${total} orders synced to MySQL`);
-    return total;
+    LOG.success(`[Orders Sync] Completed: ${itemsSynced} orders synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
 // ====================
 // QUEUES & APPOINTMENTS
 // ====================
-const syncQueues = async () => {
-    const queues = inMemoryDb.queues || [];
-    LOG.info(`[Queues Sync] Starting sync of ${queues.length} queues...`);
-    const total = await upsertQueue(queues);
-    LOG.success(`[Queues Sync] Completed: ${total} queues synced to MySQL`);
-    return total;
+const syncQueues = async ({ startOffset = 0, onProgress } = {}) => {
+    const queues = (inMemoryDb.queues || []).slice(startOffset);
+    const totalItems = (inMemoryDb.queues || []).length;
+    if (startOffset > 0) LOG.info(`[Queues Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Queues Sync] Starting sync of ${totalItems} queues...`);
+    const itemsSynced = await upsertQueue(queues);
+    if (onProgress) await onProgress({ version: totalItems, queriesSynced: 1, itemsSynced, totalItems });
+    LOG.success(`[Queues Sync] Completed: ${itemsSynced} queues synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced: 1, totalItems });
 };
 
-const syncAppointments = async () => {
-    const appointments = inMemoryDb.appointments || [];
-    LOG.info(`[Appointments Sync] Starting sync of ${appointments.length} appointments...`);
-    const total = await upsertAppointments(appointments);
-    LOG.success(`[Appointments Sync] Completed: ${total} appointments synced to MySQL`);
-    return total;
+const syncAppointments = async ({ startOffset = 0, onProgress } = {}) => {
+    const appointments = (inMemoryDb.appointments || []).slice(startOffset);
+    const totalItems = (inMemoryDb.appointments || []).length;
+    if (startOffset > 0) LOG.info(`[Appointments Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Appointments Sync] Starting sync of ${totalItems} appointments...`);
+    const itemsSynced = await upsertAppointments(appointments);
+    if (onProgress) await onProgress({ version: totalItems, queriesSynced: 1, itemsSynced, totalItems });
+    LOG.success(`[Appointments Sync] Completed: ${itemsSynced} appointments synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced: 1, totalItems });
 };
 
 // ====================
 // ACTIVITIES & OTPs
 // ====================
-const syncActivities = async () => {
+const syncActivities = async ({ startOffset = 0, onProgress } = {}) => {
     const activities = inMemoryDb.activities || [];
-    LOG.info(`[Activities Sync] Starting sync of ${activities.length} activities...`);
+    const totalItems = activities.length;
+    if (startOffset > 0) LOG.info(`[Activities Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Activities Sync] Starting sync of ${totalItems} activities...`);
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     const pool = await getPool();
 
     // Ensure optional columns used by seed data
@@ -678,7 +739,8 @@ const syncActivities = async () => {
         try { await pool.query(sql); } catch (e) { /* exists */ }
     }
 
-    for (const act of activities) {
+    for (let idx = startOffset; idx < activities.length; idx++) {
+        const act = activities[idx];
         try {
             const userId = act.user_id || act.userId || '';
             const userName = act.user_name || act.userName || '';
@@ -705,7 +767,8 @@ const syncActivities = async () => {
                     act.vendor_id || null,
                 ]
             );
-            if (result?.affectedRows) total += 1;
+            queriesSynced += 1;
+            if (result?.affectedRows) itemsSynced += 1;
         } catch (err) {
             // Fallback without vendor_id column if alter failed on some hosts
             try {
@@ -731,24 +794,31 @@ const syncActivities = async () => {
                         act.timestamp || new Date(),
                     ]
                 );
-                if (result?.affectedRows) total += 1;
+                queriesSynced += 1;
+                if (result?.affectedRows) itemsSynced += 1;
             } catch (err2) {
                 LOG.warning('[Activities Sync] row skipped:', err2.message);
             }
         }
+        if (onProgress && (idx % 25 === 0 || idx === activities.length - 1)) {
+            await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
+        }
     }
     
-    LOG.success(`[Activities Sync] Completed: ${total} activities synced to MySQL`);
-    return total;
+    LOG.success(`[Activities Sync] Completed: ${itemsSynced} activities synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-const syncOTPs = async () => {
+const syncOTPs = async ({ startOffset = 0, onProgress } = {}) => {
     const otps = inMemoryDb.otps || [];
-    LOG.info(`[OTPs Sync] Starting sync of ${otps.length} OTPs...`);
+    const totalItems = otps.length;
+    if (startOffset > 0) LOG.info(`[OTPs Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[OTPs Sync] Starting sync of ${totalItems} OTPs...`);
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     
-    for (let i = 0; i < otps.length; i += BATCH_SIZE) {
+    for (let i = startOffset; i < otps.length; i += BATCH_SIZE) {
         const batch = otps.slice(i, i + BATCH_SIZE);
         const values = batch.map(o => [
             o.mobile || '',
@@ -762,19 +832,24 @@ const syncOTPs = async () => {
             ['mobile', 'otp', 'expires_at', 'created_at'],
             values
         );
-        total += created;
+        queriesSynced += 1;
+        itemsSynced += created;
+        const version = Math.min(i + batch.length, totalItems);
+        if (onProgress) await onProgress({ version, queriesSynced, itemsSynced, totalItems });
     }
     
-    LOG.success(`[OTPs Sync] Completed: ${total} OTPs synced to MySQL`);
-    return total;
+    LOG.success(`[OTPs Sync] Completed: ${itemsSynced} OTPs synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
 // ====================
 // CYBER/SURAKSHA SYNC
 // ====================
-const syncCyberThreats = async () => {
+const syncCyberThreats = async ({ startOffset = 0, onProgress } = {}) => {
     const threats = inMemoryDb.cyberThreats || [];
-    LOG.info(`[Cyber Threats Sync] Starting sync of ${threats.length} cyber threats...`);
+    const totalItems = threats.length;
+    if (startOffset > 0) LOG.info(`[Cyber Threats Sync] Resuming from ${startOffset}/${totalItems}...`);
+    else LOG.info(`[Cyber Threats Sync] Starting sync of ${totalItems} cyber threats...`);
     
     // Ensure table
     try {
@@ -811,9 +886,10 @@ const syncCyberThreats = async () => {
         LOG.warning('[Cyber Threats Sync] Table check (non-fatal):', err.message);
     }
     
-    let total = 0;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     
-    for (let i = 0; i < threats.length; i += BATCH_SIZE) {
+    for (let i = startOffset; i < threats.length; i += BATCH_SIZE) {
         const batch = threats.slice(i, i + BATCH_SIZE);
         const values = batch.map(t => [
             t.id || '',
@@ -847,22 +923,28 @@ const syncCyberThreats = async () => {
             ],
             values
         );
-        total += created;
+        queriesSynced += 1;
+        itemsSynced += created;
+        const version = Math.min(i + batch.length, totalItems);
+        if (onProgress) await onProgress({ version, queriesSynced, itemsSynced, totalItems });
     }
     
-    LOG.success(`[Cyber Threats Sync] Completed: ${total} cyber threats synced to MySQL`);
-    return total;
+    LOG.success(`[Cyber Threats Sync] Completed: ${itemsSynced} cyber threats synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
 // ====================
 // TRADING DATA SYNC
 // ====================
-const syncTradingData = async () => {
+const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
     LOG.info('[Trading Data Sync] Starting trading data sync...');
     
     const tradingData = inMemoryDb.tradingData || {};
+    const types = ['marketIndices', 'stockQuotes', 'topGainers', 'topLosers', 'marketHigh', 'mostBought'];
+    const totalItems = types.length;
+    let itemsSynced = 0;
+    let queriesSynced = 0;
     
-    // Create trading data tables if needed
     try {
         await (await getPool()).query(`
             CREATE TABLE IF NOT EXISTS trading_market_data (
@@ -876,12 +958,8 @@ const syncTradingData = async () => {
         LOG.warning('[Trading Data Sync] Table check (non-fatal):', err.message);
     }
     
-    let total = 0;
-    
-    // Insert trading data as JSON
-    const types = ['marketIndices', 'stockQuotes', 'topGainers', 'topLosers', 'marketHigh', 'mostBought'];
-    
-    for (const type of types) {
+    for (let idx = startOffset; idx < types.length; idx++) {
+        const type = types[idx];
         const data = tradingData[type] || [];
         if (data.length > 0) {
             try {
@@ -889,21 +967,20 @@ const syncTradingData = async () => {
                     'INSERT INTO trading_market_data (data_type, content) VALUES (?, ?)',
                     [type, JSON.stringify(data)]
                 );
-                total++;
+                queriesSynced += 1;
+                itemsSynced += 1;
             } catch (err) {
                 LOG.warning(`[Trading Data Sync] Error syncing ${type}:`, err.message);
             }
         }
+        if (onProgress) await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
     }
     
-    LOG.success(`[Trading Data Sync] Completed: ${total} trading data collections synced to MySQL`);
-    return total;
+    LOG.success(`[Trading Data Sync] Completed: ${itemsSynced} trading data collections synced to MySQL`);
+    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };
 
-// ====================
-// FLEET DATA SYNC
-// ====================
-const syncFleetData = async () => {
+const syncFleetData = async ({ onProgress } = {}) => {
     LOG.info('[Fleet Data Sync] Starting fleet data sync...');
     
     // Ensure tables exist
@@ -926,13 +1003,14 @@ const syncFleetData = async () => {
     }
     
     LOG.success('[Fleet Data Sync] Fleet data sync completed');
-    return 1;
+    if (onProgress) await onProgress({ version: 1, queriesSynced: 1, itemsSynced: 1, totalItems: 1 });
+    return doneSync({ itemsSynced: 1, version: 1, queriesSynced: 1, totalItems: 1 });
 };
 
 // ====================
 // MAIN SYNC ORCHESTRATOR
 // ====================
-const syncAllToMysql = async ({ exit = false } = {}) => {
+const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFull = false } = {}) => {
     LOG.info('');
     LOG.info('═══════════════════════════════════════════════════════════════');
     LOG.info('    STARTING COMPREHENSIVE IN-MEMORY TO MYSQL SYNC');
@@ -941,39 +1019,55 @@ const syncAllToMysql = async ({ exit = false } = {}) => {
     
     const startTime = Date.now();
     let totalSynced = 0;
+    let runId = null;
+    let resume = false;
+    const stepOpts = () => ({ forceFull, resume });
+    const step = (key, fn) => syncStatus.runStep(key, fn, runId, stepOpts());
     
     try {
-        await ensureCoreSchema();
-        try {
-            const featureMemory = require('./database/featureMemoryManager');
-            if (typeof featureMemory.ensureFeature === 'function') {
-                await featureMemory.ensureFeature('qless', { mode: 'basic' });
-                await featureMemory.ensureFeature('appointments', { mode: 'basic' });
-                await featureMemory.ensureFeature('queue', { mode: 'basic' });
-            }
-        } catch (e) {
-            LOG.warning('[Sync] Feature seed skip:', e.message);
-        }
+        ({ runId, resume } = await syncStatus.startRun(triggerSource, { forceFull }));
+        LOG.info(resume
+            ? `[Sync] Resuming from checkpoint (build ${syncStatus.getBuildVersion()})`
+            : `[Sync] Full sync — empty table or forceFull (build ${syncStatus.getBuildVersion()})`);
 
-        totalSynced += await syncUsers();
-        totalSynced += await syncVendorCategories();
-        totalSynced += await syncVendors();
-        totalSynced += await syncUserVendorMappings();
-        
-        totalSynced += await syncProducts();
-        totalSynced += await syncOrders();
-        
-        totalSynced += await syncQueues();
-        totalSynced += await syncAppointments();
-        
-        totalSynced += await syncActivities();
-        totalSynced += await syncOTPs();
-        
-        totalSynced += await syncCyberThreats();
-        totalSynced += await syncTradingData();
-        totalSynced += await syncFleetData();
+        await step('core_schema', () => ensureCoreSchema().then(() => doneSync({ itemsSynced: 1, version: 1, queriesSynced: 1, totalItems: 1 })));
+
+        await step('feature_seed', async () => {
+            try {
+                const featureMemory = require('./database/featureMemoryManager');
+                if (typeof featureMemory.ensureFeature === 'function') {
+                    await featureMemory.ensureFeature('qless', { mode: 'basic' });
+                    await featureMemory.ensureFeature('appointments', { mode: 'basic' });
+                    await featureMemory.ensureFeature('queue', { mode: 'basic' });
+                }
+            } catch (e) {
+                LOG.warning('[Sync] Feature seed skip:', e.message);
+            }
+            return doneSync({ itemsSynced: 0, version: 1, queriesSynced: 3, totalItems: 1 });
+        });
+
+        totalSynced += await step('users', syncUsers);
+        totalSynced += await step('vendor_categories', syncVendorCategories);
+        totalSynced += await step('vendors', syncVendors);
+        totalSynced += await step('user_vendor_mappings', syncUserVendorMappings);
+        totalSynced += await step('products', syncProducts);
+        totalSynced += await step('orders', syncOrders);
+        totalSynced += await step('queues', syncQueues);
+        totalSynced += await step('appointments', syncAppointments);
+        totalSynced += await step('activities', syncActivities);
+        totalSynced += await step('otps', syncOTPs);
+        totalSynced += await step('cyber_threats', syncCyberThreats);
+        totalSynced += await step('trading_data', syncTradingData);
+        totalSynced += await step('fleet_data', syncFleetData);
         
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        const state = await syncStatus.getModuleState();
+        await syncStatus.completeRun(runId, {
+            success: true,
+            totalSynced,
+            queriesSynced: state.summary.totalQueriesSynced,
+        });
+        syncStatus.printSummary(state.modules, state.summary);
         
         LOG.info('');
         LOG.info('═══════════════════════════════════════════════════════════════');
@@ -984,8 +1078,21 @@ const syncAllToMysql = async ({ exit = false } = {}) => {
         LOG.info('');
         
         if (exit) process.exit(0);
-        return { success: true, totalSynced, duration };
+        return { success: true, totalSynced, duration, runId, resume, modules: state.modules, summary: state.summary };
     } catch (err) {
+        const state = await syncStatus.getModuleState().catch(() => ({ summary: { totalQueriesSynced: 0 } }));
+        await syncStatus.completeRun(runId, {
+            success: false,
+            totalSynced,
+            queriesSynced: state.summary?.totalQueriesSynced || 0,
+            error: err.message,
+        });
+        try {
+            const state = await syncStatus.getModuleState();
+            syncStatus.printSummary(state.modules, state.summary);
+        } catch {
+            /* ignore */
+        }
         LOG.error('SYNC FAILED:', err);
         if (exit) process.exit(1);
         throw err;

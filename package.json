@@ -12,6 +12,7 @@
     "start:mysql": "set DB_TYPE=mysql&& node --max-old-space-size=2048 --expose-gc server.js",
     "dev": "node --max-old-space-size=2048 --expose-gc server.js",
     "sync:all": "node syncAllToMysql.js",
+    "sync:status": "node checkSyncStatus.js",
     "sync:3h": "node syncLast3Hours.js",
     "sync:users": "set DB_TYPE=mysql&& node -e \"const {syncUsers}=require('./syncAllToMysql');require('./database');syncUsers().then(()=>process.exit(0)).catch(()=>process.exit(1))\"",
     "sync:vendors": "set DB_TYPE=mysql&& node -e \"const {syncVendors}=require('./syncAllToMysql');require('./database');syncVendors().then(()=>process.exit(0)).catch(()=>process.exit(1))\"",

@@ -45,6 +45,12 @@ async function ensureCore(pool, mainDb) {
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     `);
+    try {
+        const syncStatus = require('../../services/syncStatusService');
+        await syncStatus.ensureTables(pool);
+    } catch (e) {
+        LOG.warn(`sync status tables skip: ${e.message}`);
+    }
     await ensureTable(pool, `
         CREATE TABLE IF NOT EXISTS notifications (
             id INT AUTO_INCREMENT PRIMARY KEY,
