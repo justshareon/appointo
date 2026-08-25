@@ -1,6 +1,6 @@
 const db = require('../database');
 const LOG = require('../utils/logger');
-const { logApiStart, logApiDone } = require('../utils/dbtiming');
+const { logApiStart, logApiDone } = require('../utils/dbTiming');
 
 /**
  * Compact request logging: always emit API START/DONE timing.

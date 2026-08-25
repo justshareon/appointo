@@ -7,7 +7,7 @@
 require('../loadEnv');
 const { AsyncLocalStorage } = require('async_hooks');
 const mysql = require('mysql2/promise');
-const { logMysqlQuery, logMysqlPool } = require('../utils/dbtiming');
+const { logMysqlQuery, logMysqlPool } = require('../utils/dbTiming');
 const { getFeatureIdleMs } = require('./featureIdle');
 const featureMemory = require('./featureMemoryManager');
 const { MYSQL_FEATURES } = require('./featureRegistry');

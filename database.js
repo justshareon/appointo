@@ -2,7 +2,7 @@ require('./loadEnv');
 const path = require('path');
 const mysql = require('mysql2');
 const fs = require('fs');
-const { logDbAccess } = require('./utils/dbtiming');
+const { logDbAccess } = require('./utils/dbTiming');
 const {
     MATCHMAKING_PRESETS,
     deepClone,
