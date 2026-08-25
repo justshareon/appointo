@@ -12,7 +12,7 @@ const {
 } = require('./matchmakingEngine');
 const featureConnectionManager = require('./database/featureConnectionManager');
 const { insertMany } = require('./database/sqlBatch');
-const { resolveProductImages } = require('../utils/categoryImages');
+const { resolveProductImages } = require('./utils/categoryImages');
 
 /** Resolve MySQL pool for current request (lazy, feature-aware). */
 const getPool = () => featureConnectionManager.getPool();

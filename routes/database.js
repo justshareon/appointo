@@ -9,7 +9,7 @@ const {
     calculateMatchmakingScore,
     buildAiInsight
 } = require('./matchmakingEngine');
-const { resolveProductImages } = require('../../utils/categoryImages');
+const { resolveProductImages } = require('../utils/categoryImages');
 
 const LOG_FILE = path.join(__dirname, 'error.log');
 

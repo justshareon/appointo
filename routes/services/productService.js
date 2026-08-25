@@ -1,6 +1,6 @@
 const db = require('../database');
 const LOG = require('../utils/logger');
-const { resolveProductImages } = require('../../../utils/categoryImages');
+const { resolveProductImages } = require('../../utils/categoryImages');
 
 /**
  * Product Service

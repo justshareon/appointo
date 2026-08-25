@@ -5,6 +5,8 @@
   "main": "server.js",
   "scripts": {
     "prestart": "node -e \"['cors','express','mysql2','dotenv','socket.io'].forEach(m=>{try{require.resolve(m)}catch(e){console.error('Missing '+m+'. Run: npm install');process.exit(1)}})\"",
+    "verify:deploy": "node verifyDeploy.js",
+    "predeploy": "node verifyDeploy.js",
     "start": "node --max-old-space-size=2048 --expose-gc server.js",
     "start:inmemory": "set DB_TYPE=inmemory&& node --max-old-space-size=2048 --expose-gc server.js",
     "start:mysql": "set DB_TYPE=mysql&& node --max-old-space-size=2048 --expose-gc server.js",

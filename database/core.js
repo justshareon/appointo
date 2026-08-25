@@ -32,7 +32,7 @@ const LOG = {
 };
 
 const DB_TYPE = process.env.DB_TYPE || 'inmemory';
-const { resolveProductImages, getCategoryImage } = require('../../utils/categoryImages');
+const { resolveProductImages, getCategoryImage } = require('../utils/categoryImages');
 
 // Helper for dynamic seed dates
 const now = new Date();
