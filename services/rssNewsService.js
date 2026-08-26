@@ -14,31 +14,30 @@ class RssNewsService {
             return { items: [], error: 'missing_rss_url' };
         }
         try {
-            const res = await axios.get(source.url, { timeout: 15000 });
-            // Sanitize XML before parsing - fix unencoded characters in CDATA sections
-            let xmlData = res.data || '';
-            
-            // Fix CDATA sections with nested brackets - CORRECTED REGEX
-            // This regex properly handles CDATA with any nested content including < and >
-            xmlData = xmlData.replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, (match, content) => {
-                // Escape any unencoded < and > characters within CDATA content
-                let escapedContent = content.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-                return `<![CDATA[${escapedContent}]]>`;
+            const res = await axios.get(source.url, {
+                timeout: 15000,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (compatible; QRQueueNewsBot/1.0; +https://qrqueue.app)',
+                    Accept: 'application/rss+xml, application/xml, text/xml, */*',
+                },
+                maxRedirects: 5,
             });
-            
-            // Also fix any remaining unencoded ampersands
-            xmlData = xmlData.replace(/&(?!amp;|lt;|gt;|quot;|apos;|#x?[0-9A-Fa-f]+;)/g, '&amp;');
-            
-            const parser = new xml2js.Parser({ 
-                explicitArray: false, 
-                mergeAttrs: true, 
-                strict: false,
-                trim: true,
-                normalizeTags: false
-            });
-            
-            const parsed = await parser.parseStringPromise(xmlData);
-            const channel = parsed?.rss?.channel || parsed?.feed || {};
+            let xmlData = typeof res.data === 'string' ? res.data : String(res.data || '');
+
+            const tryParse = async (xml) => {
+                const parser = new xml2js.Parser({
+                    explicitArray: false,
+                    mergeAttrs: true,
+                    strict: false,
+                    trim: true,
+                    normalizeTags: true,
+                });
+                return parser.parseStringPromise(xml);
+            };
+
+            const parsed = await tryParse(xmlData);
+            const rssRoot = parsed?.rss || parsed?.feed || {};
+            const channel = rssRoot?.channel || parsed?.feed || {};
             const rawItems = channel.item || channel.entry || [];
             const items = Array.isArray(rawItems) ? rawItems : [rawItems];
             

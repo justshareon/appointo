@@ -130,6 +130,58 @@ router.post('/hazards/report', authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /api/fleet/bad-road/nearby?lat=&lng=
+ * How many drivers confirmed bad road at this coordinate cluster.
+ */
+router.get('/bad-road/nearby', authenticateToken, async (req, res) => {
+    try {
+        const lat = parseFloat(req.query.lat);
+        const lng = parseFloat(req.query.lng);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+            return res.status(400).json({ error: 'lat and lng query params required' });
+        }
+        const info = await fleetService.getBadRoadNearby(lat, lng);
+        res.json(info);
+    } catch (err) {
+        LOG.error('Failed bad-road nearby', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
+ * POST /api/fleet/bad-road/probe
+ * User-confirmed bad road probe; creates incident when threshold drivers agree.
+ */
+router.post('/bad-road/probe', authenticateToken, async (req, res) => {
+    try {
+        const driverId = req.user.id;
+        const { latitude, longitude, speed_kmh, confidence, confirmed, auto_detected } = req.body;
+        if (!latitude || !longitude) {
+            return res.status(400).json({ error: 'latitude and longitude are required' });
+        }
+        const result = await fleetService.reportBadRoadProbe(driverId, {
+            latitude,
+            longitude,
+            speed_kmh,
+            confidence,
+            confirmed: confirmed !== false,
+            auto_detected,
+        });
+        if (io && result.incident_created) {
+            io.emit('fleet_hazard_reported', {
+                driver_id: driverId,
+                hazard: { hazard_type: 'bad_road', hazard_id: result.hazard_id },
+                location: { latitude, longitude },
+            });
+        }
+        res.json(result);
+    } catch (err) {
+        LOG.error('Failed bad-road probe', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
  * GET /api/fleet/drivers/:driverId/stats
  * Get driver statistics
  */

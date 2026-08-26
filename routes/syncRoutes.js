@@ -11,6 +11,19 @@ const LOG = require('../utils/logger');
 let isSyncing = false;
 let lastSyncTime = null;
 let lastSyncStatus = null;
+let lastRecentSyncAt = 0;
+const RECENT_SYNC_DEBOUNCE_MS = parseInt(process.env.SYNC_RECENT_DEBOUNCE_MS, 10) || 3 * 60 * 1000;
+
+const mysqlConfigured = () => !!(process.env.DB_HOST || process.env.DB_NAME);
+
+const getCombinedSyncing = () => {
+    try {
+        const { isSyncRunning } = require('../services/autoSyncService');
+        return isSyncing || isSyncRunning();
+    } catch {
+        return isSyncing;
+    }
+};
 
 const setupSyncRoutes = (router) => {
     // Trigger full sync
@@ -63,7 +76,7 @@ const setupSyncRoutes = (router) => {
             const latestRun = await syncStatus.getLatestRun();
             const complete = await syncStatus.isSyncComplete();
             res.json({
-                isSyncing,
+                isSyncing: getCombinedSyncing(),
                 lastSyncTime,
                 lastSyncStatus,
                 latestRun,
@@ -74,7 +87,7 @@ const setupSyncRoutes = (router) => {
             });
         } catch (err) {
             res.json({
-                isSyncing,
+                isSyncing: getCombinedSyncing(),
                 lastSyncTime,
                 lastSyncStatus,
                 error: err.message,
@@ -96,12 +109,71 @@ const setupSyncRoutes = (router) => {
 
     // Keep syncing in background until all modules complete
     router.post('/until-complete', async (req, res) => {
-        if (isSyncing) {
+        if (getCombinedSyncing()) {
             return res.status(409).json({ status: 'in_progress', message: 'Sync loop already running' });
         }
         const { syncUntilComplete } = require('../services/autoSyncService');
         syncUntilComplete('api').catch((err) => LOG.error('[Sync API] until-complete:', err.message));
         res.json({ status: 'started', message: 'Sync will retry until all modules complete' });
+    });
+
+    /**
+     * Page/app load: resume full sync if incomplete; when complete, optionally run 3h memory↔MySQL.
+     * POST /api/sync/ensure-on-load?recent=true
+     */
+    router.post('/ensure-on-load', async (req, res) => {
+        try {
+            if (!mysqlConfigured()) {
+                return res.json({
+                    complete: true,
+                    mysqlConfigured: false,
+                    needsSync: false,
+                    syncing: false,
+                    started: false,
+                });
+            }
+
+            await syncStatus.init();
+            const complete = await syncStatus.isSyncComplete();
+            const syncing = getCombinedSyncing();
+            let started = false;
+            let recentSyncStarted = false;
+
+            if (!complete && !syncing) {
+                const { syncUntilComplete } = require('../services/autoSyncService');
+                LOG.info('[Sync API] ensure-on-load: incomplete — starting until-complete');
+                syncUntilComplete('page-load').catch((err) => {
+                    LOG.error('[Sync API] ensure-on-load until-complete:', err.message);
+                });
+                started = true;
+            }
+
+            const wantRecent = req.query.recent !== 'false';
+            const now = Date.now();
+            if (complete && wantRecent && now - lastRecentSyncAt > RECENT_SYNC_DEBOUNCE_MS && !getCombinedSyncing()) {
+                lastRecentSyncAt = now;
+                const { syncLast3Hours } = require('../syncLast3Hours');
+                LOG.info('[Sync API] ensure-on-load: running recent 3h memory↔MySQL sync');
+                syncLast3Hours({ exit: false }).catch((err) => {
+                    LOG.error('[Sync API] ensure-on-load 3h:', err.message);
+                });
+                recentSyncStarted = true;
+            }
+
+            const moduleState = await syncStatus.getModuleState();
+            res.json({
+                complete,
+                needsSync: !complete,
+                mysqlConfigured: true,
+                syncing: syncing || started,
+                started,
+                recentSyncStarted,
+                summary: moduleState.summary,
+            });
+        } catch (err) {
+            LOG.error('[Sync API] ensure-on-load failed:', err.message);
+            res.status(500).json({ complete: false, error: err.message, syncing: getCombinedSyncing() });
+        }
     });
     
     // Sync specific entity types

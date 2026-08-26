@@ -624,7 +624,11 @@ let inMemoryDb = {
         enable_lazy_loading: true,
         ui_theme: 'facebook',
         news_user_emails: 'newsuser11',
-        news_vendor_emails: 'newsvendor1@test.com'
+        news_vendor_emails: 'newsvendor1@test.com',
+        trade_news_source: 'telegram',
+        trade_news_sources: '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]',
+        news_cache_auto_refresh: true,
+        news_cache_cron: '0 */3 * * *',
     },
     vendor_categories: [
         { id: 'cat_shop', name: 'Shop', created_at: new Date() },
@@ -2749,6 +2753,19 @@ const db = {
                     settings.enable_offer = true;
                     settings.enable_trade = true;
                     settings.enable_trust_score = true;
+                    settings.enable_news = true;
+                    if (!settings.trade_news_sources || String(settings.trade_news_sources).trim() === '') {
+                        settings.trade_news_sources = '[{"id":"google-global","type":"rss","enabled":true,"name":"Google News Global","url":"https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"global_news"},{"id":"google-tech","type":"rss","enabled":true,"name":"Google News Technology","url":"https://news.google.com/rss/search?q=technology&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"new_technology"},{"id":"google-sports","type":"rss","enabled":true,"name":"Google News Sports","url":"https://news.google.com/rss/search?q=sports&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"sports"},{"id":"google-travel","type":"rss","enabled":true,"name":"Google News Travel","url":"https://news.google.com/rss/search?q=travel%20deals&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"travel"},{"id":"google-coupons","type":"rss","enabled":true,"name":"Google News Coupons","url":"https://news.google.com/rss/search?q=local%20coupons%20OR%20food%20coupons&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"food_coupons"},{"id":"google-deals","type":"rss","enabled":true,"name":"Google News Deals","url":"https://news.google.com/rss/search?q=deal%20of%20the%20day%20OR%20flash%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_deals"},{"id":"google-flash-sale","type":"rss","enabled":true,"name":"Google News Flash Sale","url":"https://news.google.com/rss/search?q=flash%20sale%20OR%20limited%20time%20offer%20OR%20mega%20sale&hl=en-IN&gl=IN&ceid=IN:en","country":"IN","category":"trending_offer"},{"id":"slickdeals","type":"rss","enabled":true,"name":"Slickdeals Frontpage","url":"https://slickdeals.net/newsearch.php?mode=frontpage&searcharea=deals&searchin=first&rss=1","category":"trending_deals"},{"id":"dealnews","type":"rss","enabled":true,"name":"DealNews","url":"https://www.dealnews.com/rss/","category":"trending_offer"}]';
+                    }
+                    if (!settings.telegram_bot_token && process.env.TELEGRAM_BOT_TOKEN) {
+                        settings.telegram_bot_token = process.env.TELEGRAM_BOT_TOKEN;
+                    }
+                    if (!settings.gnews_api_key && process.env.GNEWS_API_KEY) {
+                        settings.gnews_api_key = process.env.GNEWS_API_KEY;
+                    }
+                    if (!settings.newsapi_api_key && process.env.NEWSAPI_API_KEY) {
+                        settings.newsapi_api_key = process.env.NEWSAPI_API_KEY;
+                    }
                     inMemoryDb.settings = settings;
                     inMemoryDb.lastSettingsFetch = Date.now();
                     return settings;
@@ -3020,7 +3037,15 @@ const db = {
             enable_trade_extra_tabs: false,
             ui_theme: 'facebook',
         };
-        return { ...defaultSettings, ...inMemoryDb.settings };
+        const merged = { ...defaultSettings, ...inMemoryDb.settings };
+        merged.enable_offer = true;
+        merged.enable_trade = true;
+        merged.enable_trust_score = true;
+        merged.enable_news = true;
+        if (!merged.trade_news_sources || String(merged.trade_news_sources).trim() === '') {
+            merged.trade_news_sources = defaultSettings.trade_news_sources;
+        }
+        return merged;
     },
 
     updateSettings: async (newSettings) => {
@@ -3057,6 +3082,31 @@ const db = {
         }
         
         Object.assign(inMemoryDb.settings, newSettings);
+        return inMemoryDb.settings;
+    }
+    ,
+    persistNewsSettings: async () => {
+        const patch = { enable_news: true };
+        inMemoryDb.settings = { ...(inMemoryDb.settings || {}), ...patch };
+        try {
+            if (getPool()) {
+                await getPool().query(`
+                    CREATE TABLE IF NOT EXISTS system_settings (
+                        key_name VARCHAR(50) PRIMARY KEY,
+                        value TEXT
+                    )
+                `);
+                await getPool().query(
+                    'INSERT INTO system_settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?',
+                    ['enable_news', 'true', 'true']
+                );
+                LOG.info('[Settings] enable_news synced to MySQL');
+            } else {
+                LOG.info('[Settings] enable_news applied in-memory');
+            }
+        } catch (e) {
+            LOG.warning('[Settings] persistNewsSettings skipped: ' + (e.message || e));
+        }
         return inMemoryDb.settings;
     }
     ,

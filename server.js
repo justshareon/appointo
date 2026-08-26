@@ -35,6 +35,7 @@ const newsRoutes = require('./routes/newsRoutes');
 const notificationService = require('./services/notificationService');
 const { setupSyncRoutes } = require('./routes/syncRoutes');
 const { startAutoSync, syncOnStartup } = require('./services/autoSyncService');
+const ensureSyncOnLoadMiddleware = require('./middleware/ensureSyncOnLoad');
 
 function lazyRouter(loader) {
     let router = null;
@@ -72,6 +73,7 @@ app.use(express.json());
 // Disable ETags globally to prevent 304 responses (trading routes need fresh data)
 app.set('etag', false);
 app.use(requestLogger);
+app.use(ensureSyncOnLoadMiddleware);
 
 // Root route for health check
 app.get('/', (req, res) => {
@@ -268,11 +270,14 @@ server.listen(PORT, async () => {
     LOG.info(`Unused features reclaim memory + DB pools after ${Math.round(featureMemory.IDLE_MS / 60000)} min (FEATURE_IDLE_MINUTES)`);
     featureMemory.startWatchdog();
     try {
+        if (typeof db.persistNewsSettings === 'function') {
+            await db.persistNewsSettings();
+        }
         if (typeof db.persistUiChromeSettings === 'function') {
             await db.persistUiChromeSettings();
         }
     } catch (e) {
-        LOG.warning('[Server] persistUiChromeSettings failed: ' + (e.message || e));
+        LOG.warning('[Server] persistNewsSettings/persistUiChromeSettings failed: ' + (e.message || e));
     }
     if (dbMode === 'inmemory') {
         LOG.info(`Seed Users -> Super Admin: 9999999999 | Vendor: 8888888888 | User: 7777777777 | Test Vendor: 3333333333`);

@@ -454,6 +454,7 @@ const fleetService = {
     _getIconForType(type) {
         const icons = {
             pothole: '⚠️',
+            bad_road: '🛣️',
             lane_closure: '🚧',
             wet_road: '🌧️',
             accident: '🚨',
@@ -469,6 +470,7 @@ const fleetService = {
     _getColorForType(type) {
         const colors = {
             pothole: '#F59E0B',
+            bad_road: '#B45309',
             lane_closure: '#EF4444',
             wet_road: '#2A7DE1',
             accident: '#EF4444',
@@ -1000,7 +1002,167 @@ const fleetService = {
     async removeRosterDriver(vendorId, userId) {
         await db.removeUserVendorMapping(userId, vendorId);
         return { success: true };
-    }
+    },
+
+    async getBadRoadConfirmThreshold() {
+        try {
+            const settingsService = require('./settingsService');
+            const settings = await settingsService.getSettings();
+            const raw = settings?.fleet_bad_road_confirm_users ?? settings?.fleet_bad_road_threshold ?? '3';
+            const n = parseInt(String(raw), 10);
+            return Number.isFinite(n) && n > 0 ? n : 3;
+        } catch {
+            return 3;
+        }
+    },
+
+    async _ensureBadRoadProbesTable(pool) {
+        await pool.query(`
+            CREATE TABLE IF NOT EXISTS fleet_bad_road_probes (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                driver_id INT NOT NULL,
+                latitude DECIMAL(10, 6) NOT NULL,
+                longitude DECIMAL(11, 6) NOT NULL,
+                rounded_lat DECIMAL(10, 2) NOT NULL,
+                rounded_lng DECIMAL(11, 2) NOT NULL,
+                speed_kmh DECIMAL(6, 2) NULL,
+                confidence DECIMAL(4, 3) NULL,
+                auto_detected TINYINT(1) DEFAULT 1,
+                confirmed TINYINT(1) DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                INDEX idx_rounded (rounded_lat, rounded_lng),
+                INDEX idx_created (created_at)
+            )
+        `);
+    },
+
+    async getBadRoadNearby(latitude, longitude) {
+        try {
+            await ensureFleetTablesInitialized();
+            if (db.getType() !== 'mysql') return { reports: 0, threshold: 3, incident_logged: false };
+
+            const pool = db.getPool();
+            await this._ensureBadRoadProbesTable(pool);
+            const threshold = await this.getBadRoadConfirmThreshold();
+            const roundedLat = Math.round(latitude * 100) / 100;
+            const roundedLng = Math.round(longitude * 100) / 100;
+
+            const [rows] = await pool.query(`
+                SELECT COUNT(DISTINCT driver_id) AS reporter_count
+                FROM fleet_bad_road_probes
+                WHERE rounded_lat = ? AND rounded_lng = ?
+                  AND confirmed = 1
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            `, [roundedLat, roundedLng]);
+
+            const [incidents] = await pool.query(`
+                SELECT id FROM fleet_hazards
+                WHERE hazard_type IN ('bad_road', 'pothole')
+                  AND ROUND(latitude, 2) = ? AND ROUND(longitude, 2) = ?
+                  AND reported_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                LIMIT 1
+            `, [roundedLat, roundedLng]);
+
+            return {
+                reports: rows[0]?.reporter_count || 0,
+                threshold,
+                incident_logged: incidents.length > 0,
+                rounded_lat: roundedLat,
+                rounded_lng: roundedLng,
+            };
+        } catch (e) {
+            LOG.error('getBadRoadNearby failed', e.message);
+            return { reports: 0, threshold: 3, incident_logged: false };
+        }
+    },
+
+    async reportBadRoadProbe(driverId, probeData) {
+        try {
+            await ensureFleetTablesInitialized();
+            if (db.getType() !== 'mysql') {
+                return { success: true, incident_created: false, reporter_count: 1 };
+            }
+
+            const pool = db.getPool();
+            await this._ensureBadRoadProbesTable(pool);
+
+            const latitude = probeData.latitude;
+            const longitude = probeData.longitude;
+            const confirmed = probeData.confirmed === true || probeData.confirmed === 1;
+            const roundedLat = Math.round(latitude * 100) / 100;
+            const roundedLng = Math.round(longitude * 100) / 100;
+            const threshold = await this.getBadRoadConfirmThreshold();
+
+            if (confirmed) {
+                await pool.query(`
+                    INSERT INTO fleet_bad_road_probes
+                    (driver_id, latitude, longitude, rounded_lat, rounded_lng, speed_kmh, confidence, auto_detected, confirmed)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                `, [
+                    driverId,
+                    latitude,
+                    longitude,
+                    roundedLat,
+                    roundedLng,
+                    probeData.speed_kmh || null,
+                    probeData.confidence || null,
+                    probeData.auto_detected !== false ? 1 : 0,
+                ]);
+            }
+
+            const [countRows] = await pool.query(`
+                SELECT COUNT(DISTINCT driver_id) AS reporter_count
+                FROM fleet_bad_road_probes
+                WHERE rounded_lat = ? AND rounded_lng = ?
+                  AND confirmed = 1
+                  AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+            `, [roundedLat, roundedLng]);
+
+            const reporterCount = countRows[0]?.reporter_count || 0;
+            let incidentCreated = false;
+            let hazardId = null;
+
+            if (confirmed && reporterCount >= threshold) {
+                const [existing] = await pool.query(`
+                    SELECT id FROM fleet_hazards
+                    WHERE hazard_type = 'bad_road'
+                      AND ROUND(latitude, 2) = ? AND ROUND(longitude, 2) = ?
+                      AND reported_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
+                    LIMIT 1
+                `, [roundedLat, roundedLng]);
+
+                if (existing.length === 0) {
+                    const description = `Bad road confirmed by ${reporterCount} drivers (auto-detected bumps + user confirm)`;
+                    const [result] = await pool.query(`
+                        INSERT INTO fleet_hazards
+                        (driver_id, hazard_type, latitude, longitude, description, points_awarded)
+                        VALUES (?, 'bad_road', ?, ?, ?, ?)
+                    `, [driverId, latitude, longitude, description, 8]);
+                    hazardId = result.insertId;
+                    incidentCreated = true;
+
+                    await pool.query(`
+                        INSERT INTO fleet_road_conditions
+                        (type, latitude, longitude, description, reported_by, is_active)
+                        VALUES ('bad_road', ?, ?, ?, ?, TRUE)
+                        ON DUPLICATE KEY UPDATE is_active = TRUE, description = VALUES(description)
+                    `, [latitude, longitude, description, driverId]);
+                }
+            }
+
+            return {
+                success: true,
+                confirmed,
+                reporter_count: reporterCount,
+                threshold,
+                incident_created: incidentCreated,
+                hazard_id: hazardId,
+            };
+        } catch (e) {
+            LOG.error('reportBadRoadProbe failed', e.message);
+            throw e;
+        }
+    },
 };
 
 module.exports = fleetService;
