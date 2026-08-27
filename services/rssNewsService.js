@@ -41,16 +41,39 @@ class RssNewsService {
             const rawItems = channel.item || channel.entry || [];
             const items = Array.isArray(rawItems) ? rawItems : [rawItems];
             
+            const extractImgFromHtml = (html) => {
+                if (!html || typeof html !== 'string') return '';
+                const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+                return match?.[1] && /^https?:\/\//i.test(match[1]) ? match[1] : '';
+            };
+
+            const pickMediaUrl = (value) => {
+                if (!value) return '';
+                if (typeof value === 'string' && /^https?:\/\//i.test(value)) return value;
+                if (typeof value === 'object') {
+                    const url = value.url || value.href || value.$?.url;
+                    if (url && /^https?:\/\//i.test(url)) return url;
+                }
+                if (Array.isArray(value)) {
+                    for (const entry of value) {
+                        const picked = pickMediaUrl(entry);
+                        if (picked) return picked;
+                    }
+                }
+                return '';
+            };
+
             const out = items.slice(0, limit).map((item, idx) => {
                 const title = item.title?.['#text'] || item.title || '';
-                const desc = item.description || item.summary || '';
-                const text = `${title}${desc ? ` - ${desc}` : ''}`.trim();
+                const desc = item.description || item.summary || item['content:encoded'] || '';
+                const descText = typeof desc === 'object' ? (desc['#text'] || desc._ || '') : desc;
+                const text = `${title}${descText ? ` - ${descText}` : ''}`.trim();
                 const link = item.link?.href || item.link || '';
-                const image = 
-                    item['media:content']?.url ||
-                    item['media:thumbnail']?.url ||
-                    item.enclosure?.url ||
-                    (Array.isArray(item.enclosure) ? item.enclosure[0]?.url : '') ||
+                const image =
+                    pickMediaUrl(item['media:content']) ||
+                    pickMediaUrl(item['media:thumbnail']) ||
+                    pickMediaUrl(item.enclosure) ||
+                    extractImgFromHtml(descText) ||
                     '';
                 const pubDate = item.pubDate || item.published || item.updated || new Date().toISOString();
                 

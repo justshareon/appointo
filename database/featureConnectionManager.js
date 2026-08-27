@@ -18,7 +18,8 @@ const LOG = {
     error: (msg, detail = '') => console.error(`[FeatureDB] ${msg}`, detail),
 };
 
-const DB_TYPE = process.env.DB_TYPE || 'mysql';
+const { resolveDbType, isMysqlConfigured } = require('../utils/resolveDbType');
+const DB_TYPE = resolveDbType();
 const IDLE_CLOSE_MS = getFeatureIdleMs();
 
 /** @type {Map<string, { pool: any, refCount: number, idleTimer: NodeJS.Timeout | null }>} */
@@ -79,11 +80,7 @@ function shouldUseSsl() {
 }
 
 function isMysqlEnabled() {
-    return String(process.env.DB_TYPE || DB_TYPE || 'inmemory').toLowerCase() === 'mysql';
-}
-
-function isMysqlConfigured() {
-    return Boolean(process.env.DB_HOST || process.env.DB_NAME);
+    return resolveDbType() === 'mysql';
 }
 
 function liveEntry(feature) {

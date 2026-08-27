@@ -982,29 +982,26 @@ const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
 
 const syncFleetData = async ({ onProgress } = {}) => {
     LOG.info('[Fleet Data Sync] Starting fleet data sync...');
-    
-    // Ensure tables exist
+    const pool = await getPool();
+    let queriesSynced = 0;
+
     try {
-        await (await getPool()).query(`
-            CREATE TABLE IF NOT EXISTS fleet_gates (
-                id INT AUTO_INCREMENT PRIMARY KEY,
-                vendor_id VARCHAR(64) NOT NULL,
-                gate_name VARCHAR(255),
-                location VARCHAR(255),
-                latitude DECIMAL(10, 8),
-                longitude DECIMAL(11, 8),
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                UNIQUE KEY uniq_vendor_gate (vendor_id, gate_name)
-            )
-        `);
+        if (typeof db.ensureFleetTables === 'function') {
+            await db.ensureFleetTables();
+            queriesSynced += 1;
+        }
     } catch (err) {
-        LOG.warning('[Fleet Data Sync] Fleet gates table check (non-fatal):', err.message);
+        LOG.warning('[Fleet Data Sync] Table setup (non-fatal):', err.message);
     }
-    
-    LOG.success('[Fleet Data Sync] Fleet data sync completed');
-    if (onProgress) await onProgress({ version: 1, queriesSynced: 1, itemsSynced: 1, totalItems: 1 });
-    return doneSync({ itemsSynced: 1, version: 1, queriesSynced: 1, totalItems: 1 });
+
+    const { applyMumbaiPuneFleetSeed } = require('./database/features/fleetRouteSeed');
+    await applyMumbaiPuneFleetSeed(pool);
+    queriesSynced += 6;
+
+    const itemsSynced = 1;
+    LOG.success('[Fleet Data Sync] Mumbai–Pune corridor synced to MySQL');
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: 1 });
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: 1 });
 };
 
 // ====================

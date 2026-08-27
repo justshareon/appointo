@@ -316,7 +316,14 @@ async function hydrateFromMysqlRecent(pool) {
   return added;
 }
 
-async function runSyncLast3Hours() {
+async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
+  if (hydrateOnly) {
+    LOG.info(`[Hydrate] Pulling last ${HOURS}h from MySQL into memory`);
+    const pool = await getPool();
+    const hydrated = await hydrateFromMysqlRecent(pool);
+    return { hydrated };
+  }
+
   LOG.info('');
   LOG.info(`═══ Last ${HOURS}h activity sync (memory ↔ MySQL) ═══`);
   LOG.info(`Cutoff: ${cutoffDate.toISOString()}`);
@@ -356,8 +363,8 @@ async function runSyncLast3Hours() {
   return counts;
 }
 
-async function syncLast3Hours({ exit = false } = {}) {
-  const counts = await runSyncLast3Hours();
+async function syncLast3Hours({ exit = false, hydrateOnly = false } = {}) {
+  const counts = await runSyncLast3Hours({ hydrateOnly });
   if (exit) process.exit(0);
   return counts;
 }

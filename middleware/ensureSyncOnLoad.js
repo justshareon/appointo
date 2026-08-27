@@ -4,13 +4,13 @@
  */
 const LOG = require('../utils/logger');
 
+const { isMysqlConfigured } = require('../utils/resolveDbType');
+
 const DEBOUNCE_MS = parseInt(process.env.SYNC_ENSURE_DEBOUNCE_MS, 10) || 30000;
 let lastTriggeredAt = 0;
 
-const mysqlConfigured = () => !!(process.env.DB_HOST || process.env.DB_NAME);
-
 function ensureSyncOnLoadMiddleware(req, res, next) {
-    if (!mysqlConfigured()) return next();
+    if (!isMysqlConfigured()) return next();
     if (req.path.startsWith('/api/sync')) return next();
 
     const now = Date.now();

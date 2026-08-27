@@ -37,7 +37,8 @@ const LOG = {
     warning: (msg) => { if(LOG_CONFIG.ENABLED) console.log(`[DB WARN] ${new Date().toLocaleTimeString()} | ${msg}`) }
 };
 
-const DB_TYPE = process.env.DB_TYPE || 'inmemory';
+const { resolveDbType } = require('../utils/resolveDbType');
+const DB_TYPE = resolveDbType();
 
 // Helper for dynamic seed dates
 const now = new Date();

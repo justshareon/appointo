@@ -240,8 +240,12 @@ server.listen(PORT, async () => {
     LOG.success(`QR Queue Server Started [Mode: ${dbMode.toUpperCase()}]`);
     LOG.info(`Listening on: http://localhost:${PORT}`);
     LOG.info(`DB_TYPE=${dbMode} | DB_HOST=${process.env.DB_HOST || '(none)'} | DB_NAME=${process.env.DB_NAME || '(none)'}`);
-    
-    // Enable auto-sync if in MySQL mode
+
+    const mysqlOnline = !!(process.env.DB_HOST || process.env.DB_NAME);
+    if (mysqlOnline) {
+        LOG.info('[Deploy] MySQL configured — in-memory ↔ MySQL sync on startup + app load (GET /api/sync/status).');
+    }
+
     if (dbMode === 'mysql') {
         LOG.warning('MySQL mode: APIs wait on the remote DB. Slow local loads usually mean network + SQL, not Node.');
         LOG.warning('For faster local, set DB_TYPE=inmemory in backend/.env and restart.');
@@ -256,7 +260,7 @@ server.listen(PORT, async () => {
         const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30;
         startAutoSync(syncIntervalMinutes);
         LOG.info(`[AutoSync] Enabled: syncing every ${syncIntervalMinutes} minutes`);
-    } else if (process.env.DB_HOST || process.env.DB_NAME) {
+    } else if (mysqlOnline) {
         LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
         if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
             syncOnStartup(true);

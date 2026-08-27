@@ -7,6 +7,8 @@ const cron = require('node-cron');
 const LOG = require('../utils/logger');
 const { syncAllToMysql } = require('../syncAllToMysql');
 const syncStatus = require('./syncStatusService');
+const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { hydrateOnStartup } = require('./dbHydrateService');
 
 let syncSchedule = null;
 let isSyncRunning = false;
@@ -17,20 +19,18 @@ const MAX_SYNC_ATTEMPTS = parseInt(process.env.SYNC_MAX_ATTEMPTS, 10) || 0;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const mysqlConfigured = () => !!(process.env.DB_HOST || process.env.DB_NAME);
-
 async function runSyncAttempt(triggerSource, { forceFull = false } = {}) {
     if (isSyncRunning) {
         LOG.warning('[AutoSync] Sync already in progress');
-        return false;
+        return { ok: false, skipped: true, reason: 'in_progress' };
     }
     isSyncRunning = true;
     try {
-        await syncAllToMysql({ triggerSource, forceFull });
-        return true;
+        const result = await syncAllToMysql({ triggerSource, forceFull });
+        return { ok: true, result };
     } catch (err) {
         LOG.error('[AutoSync] Sync attempt failed:', err.message);
-        return false;
+        return { ok: false, error: err.message };
     } finally {
         isSyncRunning = false;
     }
@@ -41,7 +41,7 @@ async function runSyncAttempt(triggerSource, { forceFull = false } = {}) {
  * Does not block — safe to call without await from server startup.
  */
 async function syncUntilComplete(triggerSource = 'startup') {
-    if (!mysqlConfigured()) return;
+    if (!isMysqlConfigured()) return;
     if (completionLoopRunning) {
         LOG.info('[AutoSync] Completion loop already running');
         return;
@@ -52,7 +52,10 @@ async function syncUntilComplete(triggerSource = 'startup') {
         await syncStatus.init();
 
         if (!(await syncStatus.needsSync())) {
-            LOG.info('[AutoSync] All modules already synced — nothing to do');
+            LOG.info('[AutoSync] All modules already synced — hydrating from MySQL');
+            await hydrateOnStartup().catch((err) => {
+                LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
+            });
             return;
         }
 
@@ -74,6 +77,9 @@ async function syncUntilComplete(triggerSource = 'startup') {
                 const state = await syncStatus.getModuleState();
                 syncStatus.printSummary(state.modules, state.summary);
                 LOG.success('[AutoSync] All modules synced successfully');
+                await hydrateOnStartup().catch((err) => {
+                    LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
+                });
                 return;
             }
 
@@ -100,7 +106,7 @@ const startAutoSync = (intervalMinutes = 30) => {
     LOG.info(`[AutoSync] Schedule every ${intervalMinutes} min (runs only while sync incomplete)`);
 
     syncSchedule = cron.schedule(cronExpression, async () => {
-        if (!mysqlConfigured()) return;
+        if (!isMysqlConfigured()) return;
         try {
             await syncStatus.init();
             if (await syncStatus.isSyncComplete()) {
@@ -123,11 +129,13 @@ const stopAutoSync = () => {
     }
 };
 
-/** Non-blocking: starts background sync-until-complete after server is up. */
 const syncOnStartup = (enabled = true) => {
-    if (!enabled || !mysqlConfigured()) return;
+    if (!enabled || !isMysqlConfigured()) return;
 
     LOG.info('[AutoSync] Checking sync_module_state on startup...');
+    hydrateOnStartup().catch((err) => {
+        LOG.warning('[AutoSync] Initial hydrate skipped:', err.message);
+    });
     syncUntilComplete('startup').catch((err) => {
         LOG.error('[AutoSync] Startup sync loop error:', err.message);
     });
