@@ -780,7 +780,7 @@ router.post('/refresh', async (req, res) => {
                 const beforeCount = await stockDataService.getAllStocks();
                 LOG.info(`[Trading Routes] Records before sync: ${beforeCount.length}`);
                 
-                await syncJob.sync();
+                await syncJob.sync(true, { restartExcel: true });
                 
                 const afterCount = await stockDataService.getAllStocks();
                 LOG.info(`[Trading Routes] Records after sync: ${afterCount.length}`);

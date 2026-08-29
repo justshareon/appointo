@@ -410,6 +410,9 @@ async function loadHeavy(feature) {
     const promise = (async () => {
         LOG.info(`Loading trade market data (heap ${heapMb()}MB)`);
         try {
+            if (global.excelFileSyncJob) {
+                await global.excelFileSyncJob.ensureTodayDataSynced();
+            }
             if (global.boardMeetingsSyncJob) await global.boardMeetingsSyncJob.sync(true);
             if (global.corporateActionsSyncJob) await global.corporateActionsSyncJob.sync(true);
             if (global.mutualFundSyncJob) await global.mutualFundSyncJob.sync(true);

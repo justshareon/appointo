@@ -75,6 +75,7 @@ const ensureCoreSchema = async () => {
             features_offer BOOLEAN DEFAULT FALSE,
             features_qless BOOLEAN DEFAULT FALSE,
             features_fleet BOOLEAN DEFAULT FALSE,
+            features_r_detector BOOLEAN DEFAULT FALSE,
             features_realestate BOOLEAN DEFAULT FALSE,
             features_trust_score BOOLEAN DEFAULT FALSE,
             visibility_top_rated BOOLEAN DEFAULT FALSE,
@@ -391,29 +392,21 @@ const syncVendors = async ({ startOffset = 0, onProgress } = {}) => {
     const totalItems = vendors.length;
     if (startOffset > 0) LOG.info(`[Vendors Sync] Resuming from ${startOffset}/${totalItems}...`);
     else LOG.info(`[Vendors Sync] Starting sync of ${totalItems} vendors...`);
-    
-    // Ensure columns first
+
+    const {
+        ALTER_VENDOR_FEATURE_SQL,
+        BASE_VENDOR_INSERT_COLUMNS,
+        vendorRowFromSeed,
+        vendorInsertPlaceholders,
+        vendorUpsertUpdateClause,
+    } = require('./utils/vendorFeatureColumns');
+
     try {
-        await (await getPool()).query(`
-            ALTER TABLE vendors
-            ADD COLUMN IF NOT EXISTS features_queue TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_matchmaking TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_cyber TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_trade TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_offer TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_qless TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_fleet TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_realestate TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS features_trust_score TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS visibility_top_rated TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS visibility_list TINYINT(1) DEFAULT 1,
-            ADD COLUMN IF NOT EXISTS visibility_feed TINYINT(1) DEFAULT 0,
-            ADD COLUMN IF NOT EXISTS location_name VARCHAR(255)
-        `);
+        await (await getPool()).query(ALTER_VENDOR_FEATURE_SQL);
     } catch (err) {
         LOG.warning('[Vendors Sync] Column check (non-fatal):', err.message);
     }
-    
+
     let itemsSynced = 0;
     let queriesSynced = 0;
     const pool = await getPool();
@@ -421,63 +414,13 @@ const syncVendors = async ({ startOffset = 0, onProgress } = {}) => {
     for (let idx = startOffset; idx < vendors.length; idx++) {
         const v = vendors[idx];
         try {
+            const row = vendorRowFromSeed(v);
+            const values = BASE_VENDOR_INSERT_COLUMNS.map((col) => row[col]);
             const [result] = await pool.query(
-                `INSERT INTO vendors (
-                    id, owner_id, shop_name, category, is_active, is_promoted,
-                    latitude, longitude, google_link, instagram_handle, facebook_link,
-                    features_products, features_payments, features_appointments, features_queue,
-                    features_matchmaking, features_cyber, features_trade, features_offer, features_qless,
-                    features_fleet, features_realestate, features_trust_score,
-                    visibility_top_rated, visibility_list, visibility_feed, location_name
-                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                 ON DUPLICATE KEY UPDATE
-                    owner_id = VALUES(owner_id),
-                    shop_name = VALUES(shop_name),
-                    category = VALUES(category),
-                    is_active = VALUES(is_active),
-                    features_products = VALUES(features_products),
-                    features_payments = VALUES(features_payments),
-                    features_appointments = VALUES(features_appointments),
-                    features_queue = VALUES(features_queue),
-                    features_matchmaking = VALUES(features_matchmaking),
-                    features_cyber = VALUES(features_cyber),
-                    features_trade = VALUES(features_trade),
-                    features_offer = VALUES(features_offer),
-                    features_qless = VALUES(features_qless),
-                    features_fleet = VALUES(features_fleet),
-                    features_realestate = VALUES(features_realestate),
-                    features_trust_score = VALUES(features_trust_score),
-                    visibility_list = VALUES(visibility_list),
-                    location_name = VALUES(location_name)`,
-                [
-                    v.id,
-                    v.owner_id || '',
-                    v.shop_name || '',
-                    v.category || '',
-                    v.is_active ? 1 : 0,
-                    v.is_promoted ? 1 : 0,
-                    v.latitude || 0,
-                    v.longitude || 0,
-                    v.google_link || '',
-                    v.instagram_handle || '',
-                    v.facebook_link || '',
-                    v.features_products ? 1 : 0,
-                    v.features_payments ? 1 : 0,
-                    v.features_appointments ? 1 : 0,
-                    v.features_queue ? 1 : 0,
-                    v.features_matchmaking ? 1 : 0,
-                    v.features_cyber ? 1 : 0,
-                    v.features_trade ? 1 : 0,
-                    v.features_offer ? 1 : 0,
-                    v.features_qless ? 1 : 0,
-                    v.features_fleet ? 1 : 0,
-                    v.features_realestate ? 1 : 0,
-                    v.features_trust_score ? 1 : 0,
-                    v.visibility_top_rated ? 1 : 0,
-                    v.visibility_list !== false ? 1 : 0,
-                    v.visibility_feed ? 1 : 0,
-                    v.location_name || ''
-                ]
+                `INSERT INTO vendors (${BASE_VENDOR_INSERT_COLUMNS.join(', ')})
+                 VALUES (${vendorInsertPlaceholders()})
+                 ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
+                values
             );
             queriesSynced += 1;
             if (result?.affectedRows) itemsSynced += 1;
@@ -488,7 +431,7 @@ const syncVendors = async ({ startOffset = 0, onProgress } = {}) => {
             await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
         }
     }
-    
+
     LOG.success(`[Vendors Sync] Completed: ${itemsSynced} vendors synced to MySQL`);
     return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
 };

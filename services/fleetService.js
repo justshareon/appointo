@@ -1,5 +1,6 @@
 const db = require('../database');
 const LOG = require('../utils/logger');
+const { resolveCityFromCoords } = require('../utils/resolveCity');
 
 // Ensure fleet tables are created on first use
 let fleetTablesInitialized = false;
@@ -253,6 +254,65 @@ const fleetService = {
         }
     },
 
+    _normalizeHazardType(raw) {
+        const allowed = new Set(['pothole', 'lane_closure', 'wet_road', 'accident', 'construction', 'other']);
+        const map = {
+            bad_road: 'pothole',
+            debris: 'other',
+            broken_light: 'other',
+            weather: 'wet_road',
+        };
+        const key = String(raw || 'other').toLowerCase();
+        if (allowed.has(key)) return key;
+        return map[key] || 'other';
+    },
+
+    /**
+     * List recent hazard reports (all drivers) — optional nearby filter.
+     */
+    async getHazards({ latitude, longitude, radiusMiles = 25, limit = 50 } = {}) {
+        try {
+            await ensureFleetTablesInitialized();
+            if (db.getType() !== 'mysql') {
+                return (db.inMemoryDb?.fleet_hazards || []).slice(0, limit);
+            }
+            const pool = db.getPool();
+            const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+            const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
+
+            if (hasCoords) {
+                const [rows] = await pool.query(`
+                    SELECT h.*, u.name AS driver_name,
+                      (3959 * acos(
+                        cos(radians(?)) * cos(radians(h.latitude)) *
+                        cos(radians(h.longitude) - radians(?)) +
+                        sin(radians(?)) * sin(radians(h.latitude))
+                      )) AS distance_miles
+                    FROM fleet_hazards h
+                    LEFT JOIN users u ON h.driver_id = u.id
+                    WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                    HAVING distance_miles <= ?
+                    ORDER BY h.reported_at DESC
+                    LIMIT ?
+                `, [latitude, longitude, latitude, radiusMiles, safeLimit]);
+                return rows;
+            }
+
+            const [rows] = await pool.query(`
+                SELECT h.*, u.name AS driver_name
+                FROM fleet_hazards h
+                LEFT JOIN users u ON h.driver_id = u.id
+                WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                ORDER BY h.reported_at DESC
+                LIMIT ?
+            `, [safeLimit]);
+            return rows;
+        } catch (e) {
+            LOG.error('Failed to get hazards', e.message);
+            return [];
+        }
+    },
+
     /**
      * Report a hazard
      */
@@ -262,8 +322,7 @@ const fleetService = {
             if (db.getType() === 'mysql') {
                 const pool = db.getPool();
                 
-                // Accept both 'type' and 'hazard_type' for compatibility
-                const hazardType = hazardData.hazard_type || hazardData.type || 'other';
+                const hazardType = this._normalizeHazardType(hazardData.hazard_type || hazardData.type || 'other');
                 
                 // Dynamic points based on hazard type and severity
                 const pointsMap = {
@@ -275,11 +334,14 @@ const fleetService = {
                     'other': 5           // Default
                 };
                 const pointsAwarded = pointsMap[hazardType] || 5;
-                
+                const geo = resolveCityFromCoords(hazardData.latitude, hazardData.longitude);
+                const city = hazardData.city || geo.city;
+                const region = hazardData.region || geo.region;
+
                 const [result] = await pool.query(`
                     INSERT INTO fleet_hazards 
-                    (driver_id, hazard_type, latitude, longitude, description, image_url, points_awarded)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (driver_id, hazard_type, latitude, longitude, description, image_url, points_awarded, city, region)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 `, [
                     driverId,
                     hazardType,
@@ -287,7 +349,9 @@ const fleetService = {
                     hazardData.longitude,
                     hazardData.description || '',
                     hazardData.image_url || '',
-                    pointsAwarded
+                    pointsAwarded,
+                    city,
+                    region,
                 ]);
                 
                 // Check if this location should be marked as suspicious
@@ -1036,10 +1100,18 @@ const fleetService = {
         `);
     },
 
-    async getBadRoadNearby(latitude, longitude) {
+    async getBadRoadNearby(latitude, longitude, driverId = null) {
         try {
             await ensureFleetTablesInitialized();
-            if (db.getType() !== 'mysql') return { reports: 0, threshold: 3, incident_logged: false };
+            if (db.getType() !== 'mysql') {
+                return {
+                    reports: 0,
+                    threshold: 3,
+                    incident_logged: false,
+                    user_already_reported: false,
+                    should_prompt: false,
+                };
+            }
 
             const pool = db.getPool();
             await this._ensureBadRoadProbesTable(pool);
@@ -1055,6 +1127,20 @@ const fleetService = {
                   AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
             `, [roundedLat, roundedLng]);
 
+            const reports = rows[0]?.reporter_count || 0;
+
+            let userAlreadyReported = false;
+            if (driverId) {
+                const [mine] = await pool.query(`
+                    SELECT id FROM fleet_bad_road_probes
+                    WHERE driver_id = ? AND rounded_lat = ? AND rounded_lng = ?
+                      AND confirmed = 1
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+                    LIMIT 1
+                `, [driverId, roundedLat, roundedLng]);
+                userAlreadyReported = mine.length > 0;
+            }
+
             const [incidents] = await pool.query(`
                 SELECT id FROM fleet_hazards
                 WHERE hazard_type IN ('bad_road', 'pothole')
@@ -1063,16 +1149,27 @@ const fleetService = {
                 LIMIT 1
             `, [roundedLat, roundedLng]);
 
+            const incidentLogged = incidents.length > 0;
+            const shouldPrompt = !userAlreadyReported && !incidentLogged && reports >= Math.max(1, threshold - 1);
+
             return {
-                reports: rows[0]?.reporter_count || 0,
+                reports,
                 threshold,
-                incident_logged: incidents.length > 0,
+                incident_logged: incidentLogged,
+                user_already_reported: userAlreadyReported,
+                should_prompt: shouldPrompt,
                 rounded_lat: roundedLat,
                 rounded_lng: roundedLng,
             };
         } catch (e) {
             LOG.error('getBadRoadNearby failed', e.message);
-            return { reports: 0, threshold: 3, incident_logged: false };
+            return {
+                reports: 0,
+                threshold: 3,
+                incident_logged: false,
+                user_already_reported: false,
+                should_prompt: false,
+            };
         }
     },
 
@@ -1080,34 +1177,52 @@ const fleetService = {
         try {
             await ensureFleetTablesInitialized();
             if (db.getType() !== 'mysql') {
-                return { success: true, incident_created: false, reporter_count: 1 };
+                return {
+                    success: true,
+                    incident_created: false,
+                    reporter_count: 0,
+                    threshold: 3,
+                };
             }
 
             const pool = db.getPool();
             await this._ensureBadRoadProbesTable(pool);
 
-            const latitude = probeData.latitude;
-            const longitude = probeData.longitude;
+            const latitude = Number(probeData.latitude);
+            const longitude = Number(probeData.longitude);
+            if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
+                throw new Error('Invalid latitude or longitude');
+            }
             const confirmed = probeData.confirmed === true || probeData.confirmed === 1;
             const roundedLat = Math.round(latitude * 100) / 100;
             const roundedLng = Math.round(longitude * 100) / 100;
             const threshold = await this.getBadRoadConfirmThreshold();
 
             if (confirmed) {
-                await pool.query(`
-                    INSERT INTO fleet_bad_road_probes
-                    (driver_id, latitude, longitude, rounded_lat, rounded_lng, speed_kmh, confidence, auto_detected, confirmed)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
-                `, [
-                    driverId,
-                    latitude,
-                    longitude,
-                    roundedLat,
-                    roundedLng,
-                    probeData.speed_kmh || null,
-                    probeData.confidence || null,
-                    probeData.auto_detected !== false ? 1 : 0,
-                ]);
+                const [dup] = await pool.query(`
+                    SELECT id FROM fleet_bad_road_probes
+                    WHERE driver_id = ? AND rounded_lat = ? AND rounded_lng = ?
+                      AND confirmed = 1
+                      AND created_at >= DATE_SUB(NOW(), INTERVAL 48 HOUR)
+                    LIMIT 1
+                `, [driverId, roundedLat, roundedLng]);
+
+                if (!dup.length) {
+                    await pool.query(`
+                        INSERT INTO fleet_bad_road_probes
+                        (driver_id, latitude, longitude, rounded_lat, rounded_lng, speed_kmh, confidence, auto_detected, confirmed)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+                    `, [
+                        driverId,
+                        latitude,
+                        longitude,
+                        roundedLat,
+                        roundedLng,
+                        probeData.speed_kmh || null,
+                        probeData.confidence || null,
+                        probeData.auto_detected !== false ? 1 : 0,
+                    ]);
+                }
             }
 
             const [countRows] = await pool.query(`
@@ -1125,7 +1240,7 @@ const fleetService = {
             if (confirmed && reporterCount >= threshold) {
                 const [existing] = await pool.query(`
                     SELECT id FROM fleet_hazards
-                    WHERE hazard_type = 'bad_road'
+                    WHERE hazard_type IN ('pothole', 'other')
                       AND ROUND(latitude, 2) = ? AND ROUND(longitude, 2) = ?
                       AND reported_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                     LIMIT 1
@@ -1133,20 +1248,14 @@ const fleetService = {
 
                 if (existing.length === 0) {
                     const description = `Bad road confirmed by ${reporterCount} drivers (auto-detected bumps + user confirm)`;
-                    const [result] = await pool.query(`
-                        INSERT INTO fleet_hazards
-                        (driver_id, hazard_type, latitude, longitude, description, points_awarded)
-                        VALUES (?, 'bad_road', ?, ?, ?, ?)
-                    `, [driverId, latitude, longitude, description, 8]);
-                    hazardId = result.insertId;
+                    const hazardResult = await this.reportHazard(driverId, {
+                        hazard_type: 'pothole',
+                        latitude,
+                        longitude,
+                        description,
+                    });
+                    hazardId = hazardResult?.hazard_id || hazardResult?.id || null;
                     incidentCreated = true;
-
-                    await pool.query(`
-                        INSERT INTO fleet_road_conditions
-                        (type, latitude, longitude, description, reported_by, is_active)
-                        VALUES ('bad_road', ?, ?, ?, ?, TRUE)
-                        ON DUPLICATE KEY UPDATE is_active = TRUE, description = VALUES(description)
-                    `, [latitude, longitude, description, driverId]);
                 }
             }
 

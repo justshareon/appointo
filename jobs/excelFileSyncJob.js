@@ -8,7 +8,10 @@
  */
 const cron = require('node-cron');
 const config = require('../config/tradingConfig');
+const path = require('path');
+const fs = require('fs');
 const excelFileService = require('../services/excelFileService');
+const excelLauncherService = require('../services/excelLauncherService');
 const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
 const LOG = require('../utils/logger');
@@ -189,8 +192,8 @@ class ExcelFileSyncJob {
             return;
         }
 
-        // Do not preload Google Sheets into heap at boot — lazy-load on first /trade request
-        LOG.info('[Excel File Sync] Initial sheet sync deferred until first trade request');
+        // Sync on first trade dashboard request if today's data is missing
+        LOG.info('[Excel File Sync] Initial sync deferred until first /api/trading request (if data not from today)');
         
         LOG.info('[Excel File Sync] ========================================');
     }
@@ -221,7 +224,7 @@ class ExcelFileSyncJob {
             }
             
             // Start sync with force=true on manual trigger
-            await this.sync(true);
+            await this.sync(true, { restartExcel: true });
             
             return res.status(200).json({
                 success: true,
@@ -257,7 +260,7 @@ class ExcelFileSyncJob {
             }
             
             // Force sync with force=true
-            await this.sync(true);
+            await this.sync(true, { restartExcel: true });
             
             return res.status(200).json({
                 success: true,
@@ -326,10 +329,15 @@ class ExcelFileSyncJob {
                     // Assume first row is headers
                     const headers = rows[0];
                     const dataRows = rows.slice(1);
+                    const sheetKey = sheetName.toLowerCase();
 
                     // Map data to objects
+                    const sheetType = sheetKey === 'gainers' ? 'gainers'
+                        : sheetKey === 'decliners' ? 'decliners'
+                        : sheetKey === 'actives' ? 'actives'
+                        : 'data';
                     const mappedData = dataRows.map(row => {
-                        const obj = {};
+                        const obj = { data_type: sheetType };
                         headers.forEach((header, index) => {
                             const key = header.toLowerCase().replace(/\s/g, '_').replace(/[()]/g, '');
                             obj[key] = row[index] || null;
@@ -338,7 +346,6 @@ class ExcelFileSyncJob {
                     });
 
                     // Map to appropriate array based on sheet name
-                    const sheetKey = sheetName.toLowerCase();
                     if (sheetKey === 'gainers') allData.gainers = mappedData;
                     else if (sheetKey === 'decliners') allData.decliners = mappedData;
                     else if (sheetKey === 'actives') allData.actives = mappedData;
@@ -362,18 +369,63 @@ class ExcelFileSyncJob {
         }
     }
 
+    getLocalExcelPath() {
+        const configured = config.excelFile?.filePath;
+        const candidate = configured
+            ? path.resolve(__dirname, '..', configured.replace(/^\.\//, ''))
+            : excelFileService.getExcelFilePath();
+        return path.resolve(candidate);
+    }
+
+    shouldPreferLocalExcel() {
+        if (config.excelFile?.preferLocal === false) return false;
+        return fs.existsSync(this.getLocalExcelPath());
+    }
+
     /**
-     * Fallback: Read from local Excel file if Google Sheets fails
+     * Open Excel workbook, wait for data load, then read local file
      */
-    async readFromLocalExcel() {
-        LOG.warning('[Excel File Sync] Falling back to local Excel file');
+    async readFromLocalExcel({ openExcel = true, restartExcel = false, waitMs } = {}) {
+        const filePath = this.getLocalExcelPath();
+        if (!fs.existsSync(filePath)) {
+            throw new Error(`Local Excel file not found: ${filePath}`);
+        }
+
+        if (openExcel) {
+            if (restartExcel) {
+                LOG.info('[Excel File Sync] Refresh: close Excel → reopen → wait → then read file…');
+                await excelLauncherService.restartOpenWaitAndSave(filePath, waitMs);
+            } else {
+                LOG.info('[Excel File Sync] Opening Excel and waiting for data to load...');
+                await excelLauncherService.openWaitAndSave(filePath, waitMs);
+            }
+        }
+
+        LOG.info('[Excel File Sync] Reading local Excel file after load wait');
+        const data = await excelFileService.readAllSheetsByType();
+        LOG.success('[Excel File Sync] Local Excel read successful');
+        return data;
+    }
+
+    /**
+     * Read stock data — local Excel (with open+wait) first when file exists
+     */
+    async readStockData({ openExcel = true, restartExcel = false, waitMs } = {}) {
+        if (this.shouldPreferLocalExcel()) {
+            try {
+                return await this.readFromLocalExcel({ openExcel, restartExcel, waitMs });
+            } catch (localError) {
+                LOG.warning(`[Excel File Sync] Local Excel failed: ${localError.message}`);
+                if (!this.SPREADSHEET_ID) throw localError;
+                LOG.info('[Excel File Sync] Falling back to Google Sheets...');
+            }
+        }
+
         try {
-            const data = await excelFileService.readAllSheetsByType();
-            LOG.success('[Excel File Sync] Local Excel fallback successful');
-            return data;
-        } catch (error) {
-            LOG.error('[Excel File Sync] Local Excel fallback failed:', error.message);
-            throw error;
+            return await this.readFromGoogleSheets();
+        } catch (googleError) {
+            LOG.warning(`[Excel File Sync] Google Sheets failed: ${googleError.message}`);
+            return this.readFromLocalExcel({ openExcel, restartExcel, waitMs });
         }
     }
 
@@ -427,8 +479,8 @@ class ExcelFileSyncJob {
                     FROM live_stock_data
                 `);
                 
-                const count = result?.count || 0;
-                const lastUpdate = result?.lastUpdate;
+                const count = result[0]?.count || 0;
+                const lastUpdate = result[0]?.lastUpdate;
                 
                 if (count === 0) {
                     LOG.info('[Excel File Sync] No data in database - first sync needed');
@@ -458,16 +510,21 @@ class ExcelFileSyncJob {
         }
     }
 
-    async sync(forceSync = false) {
+    async sync(forceSync = false, options = {}) {
         if (this.isRunning) {
             LOG.warning('[Excel File Sync] Already running, skipping...');
             return;
         }
 
+        const restartExcel = !!(forceSync || options.restartExcel);
+        const waitMs = options.waitMs || (restartExcel
+            ? excelLauncherService.getRefreshWaitMs()
+            : excelLauncherService.getWaitMs());
+
         this.isRunning = true;
         const syncStartTime = Date.now();
         LOG.info(`[Excel File Sync] ========================================`);
-        LOG.info(`[Excel File Sync] 🔄 Starting sync (force: ${forceSync}) at ${new Date().toISOString()}`);
+        LOG.info(`[Excel File Sync] 🔄 Starting sync (force: ${forceSync}, restartExcel: ${restartExcel}, wait: ${Math.round(waitMs / 1000)}s) at ${new Date().toISOString()}`);
 
         try {
             // if (!forceSync) {
@@ -488,15 +545,21 @@ class ExcelFileSyncJob {
             //     }
             // }
 
-            // Read data from Google Sheets (with fallback to local file)
-            let sheetsData;
-            try {
-                sheetsData = await this.readFromGoogleSheets();
-            } catch (googleError) {
-                LOG.warning(`[Excel File Sync] Google Sheets failed: ${googleError.message}`);
-                LOG.info('[Excel File Sync] Attempting local file fallback...');
-                sheetsData = await this.readFromLocalExcel();
+            if (!forceSync) {
+                const syncedInCurrentMinute = await this.wasSyncedInCurrentMinute();
+                if (syncedInCurrentMinute) {
+                    LOG.info('[Excel File Sync] Skipped — already synced in the current minute');
+                    this.lastSyncStatus = 'skipped';
+                    this.isRunning = false;
+                    return;
+                }
             }
+
+            const sheetsData = await this.readStockData({
+                openExcel: true,
+                restartExcel,
+                waitMs,
+            });
             
             const allStockData = [
                 ...sheetsData.gainers,
@@ -670,6 +733,25 @@ class ExcelFileSyncJob {
         }
     }
 
+    /**
+     * Kick off sync when dashboard opens and today's data is missing (non-blocking)
+     */
+    async ensureTodayDataSynced() {
+        if (this.isRunning) return { triggered: false, reason: 'already_running' };
+        try {
+            const hasToday = await this.checkIfDataExistsForToday();
+            if (hasToday) return { triggered: false, reason: 'already_synced_today' };
+            LOG.info('[Excel File Sync] Today\'s data missing — starting Excel open + sync');
+            this.sync(true).catch((err) => {
+                LOG.error('[Excel File Sync] Background ensure-today sync failed:', err.message);
+            });
+            return { triggered: true, reason: 'sync_started' };
+        } catch (err) {
+            LOG.warning('[Excel File Sync] ensureTodayDataSynced:', err.message);
+            return { triggered: false, reason: err.message };
+        }
+    }
+
     getStatus() {
         return {
             isRunning: this.isRunning,
@@ -681,6 +763,10 @@ class ExcelFileSyncJob {
             enabled: config.schedule?.enabled || false,
             googleSheetsId: this.SPREADSHEET_ID,
             serviceAccount: process.env.GOOGLE_CLIENT_EMAIL,
+            preferLocalExcel: this.shouldPreferLocalExcel(),
+            excelFilePath: this.getLocalExcelPath(),
+            excelLoadWaitMs: excelLauncherService.getWaitMs(),
+            excelOpenEnabled: excelLauncherService.isEnabled(),
             nextExecution: this.cronJob ? (this.cronJob.nextDates() instanceof Date ? this.cronJob.nextDates().toISOString() : 'Unknown') : 'Not scheduled'
         };
     }

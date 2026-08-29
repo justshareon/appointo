@@ -15,6 +15,12 @@ module.exports = {
     excelFile: {
         filePath: process.env.EXCEL_FILE_PATH || './India_Stock_Market_Tracker_v1.0.xlsx', // Path to Excel file
         sheetName: process.env.EXCEL_SHEET_NAME || null, // Sheet name (null = first sheet)
+        // Open Excel on Windows, wait for formulas/data, save, then read file for sync
+        openBeforeSync: process.env.EXCEL_OPEN_BEFORE_SYNC !== 'false',
+        loadWaitMs: parseInt(process.env.EXCEL_LOAD_WAIT_MS, 10) || 4 * 60 * 1000,
+        refreshWaitMs: parseInt(process.env.EXCEL_REFRESH_WAIT_MS, 10) || 3 * 60 * 1000,
+        // Prefer local .xlsx over Google Sheets when file exists
+        preferLocal: process.env.EXCEL_PREFER_LOCAL !== 'false',
     },
     database: {
         host: process.env.DB_HOST || 'localhost',

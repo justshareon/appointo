@@ -3,6 +3,7 @@ const gdeltNewsService = require('./gdeltNewsService');
 const rssNewsService = require('./rssNewsService');
 const newsApiService = require('./newsApiService');
 const gnewsService = require('./gnewsService');
+const { sortNewsItems, sortSources, sortCategories, productsToLocalNewsItems } = require('./newsLocalPriority');
 
 const parseFilters = (raw) => {
     if (!raw) return {};
@@ -124,13 +125,43 @@ class NewsAggregatorService {
                 items: perCategoryLimit > 0 ? list.slice(0, perCategoryLimit) : list
             }))
             .filter(c => c.items.length > 0);
-        return { categories: categoriesOut };
+        return { categories: sortCategories(categoriesOut, settings) };
+    }
+
+    async fetchLocalVendorOffers(settings, limit = 30) {
+        try {
+            const db = require('../database');
+            let products = [];
+            if (typeof db.getAllProductsWithVendors === 'function') {
+                products = await db.getAllProductsWithVendors();
+            } else {
+                const inMemoryDb = db.inMemoryDb || {};
+                const vendors = inMemoryDb.vendors || [];
+                const vendorMap = new Map(vendors.map((v) => [String(v.id), v]));
+                products = (inMemoryDb.products || []).map((p) => {
+                    const v = vendorMap.get(String(p.vendor_id));
+                    return {
+                        ...p,
+                        shop_name: p.shop_name || v?.shop_name,
+                        city: p.city || v?.city,
+                        locality: p.locality || v?.location_name || v?.locality,
+                    };
+                });
+            }
+            return productsToLocalNewsItems(products, settings).slice(0, limit);
+        } catch (_) {
+            return [];
+        }
     }
 
     async fetchNews(settings, limit = 50) {
-        const sources = parseSources(settings.trade_news_sources);
+        const sources = sortSources(parseSources(settings.trade_news_sources));
 
         let items = [];
+
+        // Local vendor offers from app database — highest priority
+        const localOffers = await this.fetchLocalVendorOffers(settings, Math.min(limit, 40));
+        items = items.concat(localOffers);
 
         if (sources.length) {
             for (const source of sources) {
@@ -184,7 +215,8 @@ class NewsAggregatorService {
 
         const withDefaults = applyDefaultLocation(items, settings);
         const deduped = dedupeItems(withDefaults);
-        return this.groupItems(deduped, settings);
+        const prioritized = sortNewsItems(deduped, settings);
+        return this.groupItems(prioritized, settings);
     }
 }
 

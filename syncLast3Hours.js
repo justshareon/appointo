@@ -64,34 +64,31 @@ async function syncRecentUsers(pool) {
 }
 
 async function syncRecentVendors(pool) {
-  // Vendors rarely have created_at — sync any in-memory vendor missing from MySQL (missed creates)
+  const {
+    ALTER_VENDOR_FEATURE_SQL,
+    BASE_VENDOR_INSERT_COLUMNS,
+    vendorRowFromSeed,
+    vendorInsertPlaceholders,
+    vendorUpsertUpdateClause,
+  } = require('./utils/vendorFeatureColumns');
+
+  try {
+    await pool.query(ALTER_VENDOR_FEATURE_SQL);
+  } catch (e) {
+    LOG.warning(`[3h] vendor columns: ${e.message}`);
+  }
+
   let n = 0;
   for (const v of mem().vendors || []) {
     const [existing] = await pool.query('SELECT id FROM vendors WHERE id = ? LIMIT 1', [v.id]);
     if (existing?.length) continue;
+    const row = vendorRowFromSeed(v);
+    const values = BASE_VENDOR_INSERT_COLUMNS.map((col) => row[col]);
     await pool.query(
-      `INSERT INTO vendors (
-          id, owner_id, shop_name, category, is_active, is_promoted,
-          latitude, longitude, features_products, features_payments, features_appointments, features_queue,
-          visibility_list, location_name
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON DUPLICATE KEY UPDATE shop_name=VALUES(shop_name), owner_id=VALUES(owner_id), visibility_list=VALUES(visibility_list)`,
-      [
-        v.id,
-        v.owner_id || '',
-        v.shop_name || '',
-        v.category || '',
-        v.is_active !== false ? 1 : 0,
-        v.is_promoted ? 1 : 0,
-        v.latitude || 0,
-        v.longitude || 0,
-        v.features_products !== false ? 1 : 0,
-        v.features_payments !== false ? 1 : 0,
-        v.features_appointments !== false ? 1 : 0,
-        v.features_queue !== false ? 1 : 0,
-        v.visibility_list !== false ? 1 : 0,
-        v.location_name || '',
-      ]
+      `INSERT INTO vendors (${BASE_VENDOR_INSERT_COLUMNS.join(', ')})
+       VALUES (${vendorInsertPlaceholders()})
+       ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
+      values
     );
     n += 1;
     LOG.info(`[3h] vendor inserted ${v.id} (${v.shop_name})`);
@@ -311,6 +308,35 @@ async function hydrateFromMysqlRecent(pool) {
     });
   } catch (e) {
     LOG.warning(`[3h] hydrate orders: ${e.message}`);
+  }
+
+  try {
+    const [vendors] = await pool.query('SELECT * FROM vendors');
+    const vendorIds = new Set((mem().vendors || []).map((v) => String(v.id)));
+    (vendors || []).forEach((v) => {
+      if (!vendorIds.has(String(v.id))) {
+        mem().vendors.push(v);
+        vendorIds.add(String(v.id));
+        added += 1;
+      }
+    });
+  } catch (e) {
+    LOG.warning(`[3h] hydrate vendors: ${e.message}`);
+  }
+
+  try {
+    const [mappings] = await pool.query('SELECT * FROM user_vendor_mappings');
+    const key = (m) => `${m.user_id}|${m.vendor_id}`;
+    const have = new Set((mem().user_vendor_mappings || []).map(key));
+    (mappings || []).forEach((m) => {
+      if (!have.has(key(m))) {
+        mem().user_vendor_mappings.push(m);
+        have.add(key(m));
+        added += 1;
+      }
+    });
+  } catch (e) {
+    LOG.warning(`[3h] hydrate mappings: ${e.message}`);
   }
 
   return added;

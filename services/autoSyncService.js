@@ -9,13 +9,19 @@ const { syncAllToMysql } = require('../syncAllToMysql');
 const syncStatus = require('./syncStatusService');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
 const { hydrateOnStartup } = require('./dbHydrateService');
+const { runDriftSync } = require('./driftSyncService');
 
 let syncSchedule = null;
+let driftSchedule = null;
 let isSyncRunning = false;
 let completionLoopRunning = false;
 
 const RETRY_DELAY_MS = parseInt(process.env.SYNC_RETRY_DELAY_MS, 10) || 60000;
 const MAX_SYNC_ATTEMPTS = parseInt(process.env.SYNC_MAX_ATTEMPTS, 10) || 0;
+const AUTO_DRIFT_SYNC = process.env.AUTO_DRIFT_SYNC !== 'false';
+const DRIFT_INTERVAL_MINUTES = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10)
+  || parseInt(process.env.SYNC_INTERVAL_MINUTES, 10)
+  || 15;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -56,6 +62,11 @@ async function syncUntilComplete(triggerSource = 'startup') {
             await hydrateOnStartup().catch((err) => {
                 LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
             });
+            if (AUTO_DRIFT_SYNC) {
+                runDriftSync('startup-complete').catch((err) => {
+                    LOG.warning('[AutoSync] Startup drift sync skipped:', err.message);
+                });
+            }
             return;
         }
 
@@ -80,6 +91,11 @@ async function syncUntilComplete(triggerSource = 'startup') {
                 await hydrateOnStartup().catch((err) => {
                     LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
                 });
+                if (AUTO_DRIFT_SYNC) {
+                    await runDriftSync('bulk-complete').catch((err) => {
+                        LOG.warning('[AutoSync] Post-bulk drift sync skipped:', err.message);
+                    });
+                }
                 return;
             }
 
@@ -103,20 +119,44 @@ const startAutoSync = (intervalMinutes = 30) => {
     }
 
     const cronExpression = `*/${intervalMinutes} * * * *`;
-    LOG.info(`[AutoSync] Schedule every ${intervalMinutes} min (runs only while sync incomplete)`);
+    LOG.info(`[AutoSync] Bulk-resume schedule every ${intervalMinutes} min (while sync incomplete)`);
 
     syncSchedule = cron.schedule(cronExpression, async () => {
         if (!isMysqlConfigured()) return;
         try {
             await syncStatus.init();
             if (await syncStatus.isSyncComplete()) {
-                LOG.info('[AutoSync] Cron: all modules complete — skip');
+                LOG.info('[AutoSync] Cron: bulk sync complete — skip resume loop');
                 return;
             }
             LOG.info('[AutoSync] Cron: sync still incomplete — resuming');
             await syncUntilComplete('cron');
         } catch (err) {
             LOG.error('[AutoSync] Cron sync error:', err.message);
+        }
+    });
+
+    if (AUTO_DRIFT_SYNC) {
+        startDriftSync(DRIFT_INTERVAL_MINUTES);
+    }
+};
+
+const startDriftSync = (intervalMinutes = DRIFT_INTERVAL_MINUTES) => {
+    if (driftSchedule) return;
+    const mins = Math.max(5, intervalMinutes || DRIFT_INTERVAL_MINUTES);
+    const cronExpression = `*/${mins} * * * *`;
+    LOG.info(`[AutoSync] Drift sync every ${mins} min (memory ↔ MySQL)`);
+    driftSchedule = cron.schedule(cronExpression, async () => {
+        if (!isMysqlConfigured()) return;
+        try {
+            await syncStatus.init();
+            if (!(await syncStatus.isSyncComplete())) {
+                LOG.info('[AutoSync] Drift cron: bulk sync incomplete — deferring');
+                return;
+            }
+            await runDriftSync('cron');
+        } catch (err) {
+            LOG.error('[AutoSync] Drift cron error:', err.message);
         }
     });
 };
@@ -126,6 +166,11 @@ const stopAutoSync = () => {
         syncSchedule.stop();
         syncSchedule = null;
         LOG.info('[AutoSync] Auto-sync schedule stopped');
+    }
+    if (driftSchedule) {
+        driftSchedule.stop();
+        driftSchedule = null;
+        LOG.info('[AutoSync] Drift sync schedule stopped');
     }
 };
 
@@ -143,6 +188,7 @@ const syncOnStartup = (enabled = true) => {
 
 module.exports = {
     startAutoSync,
+    startDriftSync,
     stopAutoSync,
     syncOnStartup,
     syncUntilComplete,

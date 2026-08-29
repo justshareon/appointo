@@ -136,10 +136,10 @@ const setupSyncRoutes = (router) => {
             const now = Date.now();
             if (complete && wantRecent && now - lastRecentSyncAt > RECENT_SYNC_DEBOUNCE_MS && !getCombinedSyncing()) {
                 lastRecentSyncAt = now;
-                const { syncLast3Hours } = require('../syncLast3Hours');
-                LOG.info('[Sync API] ensure-on-load: running recent 3h memory↔MySQL sync');
-                syncLast3Hours({ exit: false }).catch((err) => {
-                    LOG.error('[Sync API] ensure-on-load 3h:', err.message);
+                const { runDriftSync } = require('../services/driftSyncService');
+                LOG.info('[Sync API] ensure-on-load: running automatic memory↔MySQL drift sync');
+                runDriftSync('page-load').catch((err) => {
+                    LOG.error('[Sync API] ensure-on-load drift:', err.message);
                 });
                 recentSyncStarted = true;
             }
@@ -216,6 +216,16 @@ const setupSyncRoutes = (router) => {
                 startedAt: lastSyncTime,
             };
             res.status(500).json(lastSyncStatus);
+        }
+    });
+
+    router.post('/drift', async (req, res) => {
+        try {
+            const { runDriftSync } = require('../services/driftSyncService');
+            const result = await runDriftSync('api');
+            res.json({ status: result.ok ? 'success' : 'error', ...result });
+        } catch (err) {
+            res.status(500).json({ status: 'error', error: err.message });
         }
     });
 

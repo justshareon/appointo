@@ -85,6 +85,29 @@ router.get('/road-conditions', authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /api/fleet/hazards
+ * Recent hazard reports (all drivers) — optional lat/lng filter.
+ */
+router.get('/hazards', authenticateToken, async (req, res) => {
+    try {
+        const lat = req.query.lat != null ? parseFloat(req.query.lat) : null;
+        const lng = req.query.lng != null ? parseFloat(req.query.lng) : null;
+        const radius = parseFloat(req.query.radius) || 25;
+        const limit = parseInt(req.query.limit, 10) || 50;
+        const hazards = await fleetService.getHazards({
+            latitude: lat,
+            longitude: lng,
+            radiusMiles: radius,
+            limit,
+        });
+        res.json(hazards);
+    } catch (err) {
+        LOG.error('Failed to get hazards', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+/**
  * POST /api/fleet/hazards/report
  * Report a hazard
  */
@@ -140,7 +163,7 @@ router.get('/bad-road/nearby', authenticateToken, async (req, res) => {
         if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
             return res.status(400).json({ error: 'lat and lng query params required' });
         }
-        const info = await fleetService.getBadRoadNearby(lat, lng);
+        const info = await fleetService.getBadRoadNearby(lat, lng, req.user?.id);
         res.json(info);
     } catch (err) {
         LOG.error('Failed bad-road nearby', err.message);
@@ -155,13 +178,15 @@ router.get('/bad-road/nearby', authenticateToken, async (req, res) => {
 router.post('/bad-road/probe', authenticateToken, async (req, res) => {
     try {
         const driverId = req.user.id;
-        const { latitude, longitude, speed_kmh, confidence, confirmed, auto_detected } = req.body;
-        if (!latitude || !longitude) {
+        const { speed_kmh, confidence, confirmed, auto_detected } = req.body;
+        const lat = parseFloat(req.body.latitude);
+        const lng = parseFloat(req.body.longitude);
+        if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
             return res.status(400).json({ error: 'latitude and longitude are required' });
         }
         const result = await fleetService.reportBadRoadProbe(driverId, {
-            latitude,
-            longitude,
+            latitude: lat,
+            longitude: lng,
             speed_kmh,
             confidence,
             confirmed: confirmed !== false,
@@ -171,7 +196,7 @@ router.post('/bad-road/probe', authenticateToken, async (req, res) => {
             io.emit('fleet_hazard_reported', {
                 driver_id: driverId,
                 hazard: { hazard_type: 'bad_road', hazard_id: result.hazard_id },
-                location: { latitude, longitude },
+                location: { latitude: lat, longitude: lng },
             });
         }
         res.json(result);

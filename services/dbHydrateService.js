@@ -58,6 +58,16 @@ async function hydrateOnStartup() {
 
                 usersAdded = (mem.users?.length || 0) - beforeUsers;
                 vendorsAdded = (mem.vendors?.length || 0) - beforeVendors;
+
+                const [mysqlMappings] = await pool.query('SELECT * FROM user_vendor_mappings');
+                const mapKey = (m) => `${m.user_id}|${m.vendor_id}`;
+                const haveMaps = new Set((mem.user_vendor_mappings || []).map(mapKey));
+                (mysqlMappings || []).forEach((m) => {
+                    if (!haveMaps.has(mapKey(m))) {
+                        mem.user_vendor_mappings.push(m);
+                        haveMaps.add(mapKey(m));
+                    }
+                });
             } catch (err) {
                 LOG.warning(`[Hydrate] Core pull failed: ${err.message}`);
             }

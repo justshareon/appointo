@@ -31,7 +31,7 @@ const ensureWritePool = async () => {
     }
 };
 
-const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'realestate', 'cyber', 'trust_score', 'news'];
+const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'r_detector', 'realestate', 'cyber', 'trust_score', 'news'];
 const isFeatureFlagOn = (v, feature) => {
     const val = v?.[`features_${feature}`];
     return val === true || val === 1 || val === '1';
@@ -140,6 +140,8 @@ let inMemoryDb = {
         { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_trust1', name: 'Trust User 1', email: 'trust1@test.com', mobile: '8000000101', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' },
+        { id: 'usr_rdetectoruser1', name: 'Ravi Deshmukh', email: 'rdetectoruser1@test.com', mobile: '8000000037', role: 'user', location_name: 'Pune' },
+        { id: 'usr_rdetectorvendor1', name: 'Meera Kulkarni', email: 'rdetectorvendor1@test.com', mobile: '8000000038', role: 'vendor', location_name: 'Mumbai' },
         // Runtime demo accounts (must exist in MySQL via sync)
         { id: 'usr_anuj', name: 'Anuj', email: 'anuj@test.com', mobile: '9000000001', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_sam', name: 'Sam', email: 'sam@test.com', mobile: '9000000002', role: 'user', location_name: 'Mumbai' },
@@ -453,6 +455,30 @@ let inMemoryDb = {
             visibility_feed: false
         },
         {
+            id: 'v_rdetector1',
+            owner_id: 'usr_rdetectorvendor1',
+            shop_name: 'Maharashtra Road Monitor',
+            category: 'R-Detector',
+            is_active: true,
+            is_promoted: false,
+            latitude: 18.5204,
+            longitude: 73.8567,
+            location_name: 'Mumbai & Pune',
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_r_detector: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        },
+        {
             id: 'v_siddhi',
             owner_id: 'usr_siddhi',
             shop_name: 'Siddhi Vendor',
@@ -602,6 +628,7 @@ let inMemoryDb = {
         { id: 17, user_id: 'usr_match_u1', vendor_id: 'v_match_super' },
         { id: 18, user_id: 'usr_match_u2', vendor_id: 'v_match_super' },
         { id: 19, user_id: 'usr_trust1', vendor_id: 'v_trust1' },
+        { id: 24, user_id: 'usr_rdetectoruser1', vendor_id: 'v_rdetector1' },
         { id: 20, user_id: 'usr_anuj', vendor_id: 'v_siddhi' },
         { id: 21, user_id: 'usr_sam', vendor_id: 'v_siddhi' },
     ],
@@ -616,6 +643,7 @@ let inMemoryDb = {
         enable_trade: true,
         enable_qless: true,
         enable_fleet: true,
+        enable_r_detector: true,
         enable_realestate: true,
         enable_cyber: true,
         enable_trust_score: true,
@@ -904,22 +932,8 @@ let vendorFeatureColumnsReady = false;
 const ensureVendorFeatureColumns = async () => {
     if (!getPool() || vendorFeatureColumnsReady) return;
     try {
-        await getPool().query(`
-            ALTER TABLE vendors
-                ADD COLUMN IF NOT EXISTS features_queue TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_matchmaking TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_cyber TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_trade TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_offer TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_qless TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_fleet TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_realestate TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_trust_score TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS features_news TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS visibility_top_rated TINYINT(1) DEFAULT 0,
-                ADD COLUMN IF NOT EXISTS visibility_list TINYINT(1) DEFAULT 1,
-                ADD COLUMN IF NOT EXISTS visibility_feed TINYINT(1) DEFAULT 0
-        `);
+        const { ALTER_VENDOR_FEATURE_SQL } = require('./utils/vendorFeatureColumns');
+        await getPool().query(ALTER_VENDOR_FEATURE_SQL);
         vendorFeatureColumnsReady = true;
         LOG.success('[Database] Vendor feature/visibility columns ensured');
     } catch (err) {
@@ -1048,44 +1062,12 @@ const ensureAllUsersAndVendors = async () => {
 
             let vendorsCreated = 0;
             if (missingVendors.length) {
+                const { BASE_VENDOR_INSERT_COLUMNS, vendorRowFromSeed } = require('./utils/vendorFeatureColumns');
                 vendorsCreated = await insertMany(
                     pool,
                     'vendors',
-                    [
-                        'id', 'owner_id', 'shop_name', 'category', 'is_active', 'is_promoted',
-                        'latitude', 'longitude', 'google_link', 'instagram_handle', 'facebook_link',
-                        'features_products', 'features_payments', 'features_appointments', 'features_queue',
-                        'features_matchmaking', 'features_cyber', 'features_trade', 'features_offer', 'features_qless',
-                        'features_fleet', 'features_realestate', 'visibility_top_rated', 'visibility_list', 'visibility_feed', 'location_name',
-                    ],
-                    missingVendors.map((vendor) => ({
-                        id: vendor.id,
-                        owner_id: vendor.owner_id,
-                        shop_name: vendor.shop_name,
-                        category: vendor.category,
-                        is_active: vendor.is_active ? 1 : 0,
-                        is_promoted: vendor.is_promoted ? 1 : 0,
-                        latitude: vendor.latitude || 0,
-                        longitude: vendor.longitude || 0,
-                        google_link: vendor.google_link || '',
-                        instagram_handle: vendor.instagram_handle || '',
-                        facebook_link: vendor.facebook_link || '',
-                        features_products: vendor.features_products !== false ? 1 : 0,
-                        features_payments: vendor.features_payments !== false ? 1 : 0,
-                        features_appointments: vendor.features_appointments !== false ? 1 : 0,
-                        features_queue: vendor.features_queue !== false ? 1 : 0,
-                        features_matchmaking: vendor.features_matchmaking ? 1 : 0,
-                        features_cyber: vendor.features_cyber ? 1 : 0,
-                        features_trade: vendor.features_trade ? 1 : 0,
-                        features_offer: vendor.features_offer ? 1 : 0,
-                        features_qless: vendor.features_qless ? 1 : 0,
-                        features_fleet: vendor.features_fleet ? 1 : 0,
-                        features_realestate: vendor.features_realestate ? 1 : 0,
-                        visibility_top_rated: vendor.visibility_top_rated ? 1 : 0,
-                        visibility_list: vendor.visibility_list !== false ? 1 : 0,
-                        visibility_feed: vendor.visibility_feed ? 1 : 0,
-                        location_name: vendor.location_name || '',
-                    })),
+                    BASE_VENDOR_INSERT_COLUMNS,
+                    missingVendors.map((vendor) => vendorRowFromSeed(vendor)),
                     { ignore: true }
                 );
             }
@@ -1967,7 +1949,7 @@ const db = {
                 const baseWhere = activeOnly ? 'v.is_active = TRUE' : '1=1';
                 const featureOnly = featureKey ? `AND IFNULL(v.features_${featureKey}, 0) = 1` : '';
                 const excludeServiceVendors = (!featureKey && !includeTradeOffer)
-                    ? 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)'
+                    ? 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_r_detector IS NULL OR v.features_r_detector = 0 OR v.features_r_detector = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)'
                     : '';
                 const whereParts = [baseWhere];
                 if (featureOnly) whereParts.push(featureOnly);
@@ -2399,55 +2381,19 @@ const db = {
         try {
             const pool = await ensureWritePool();
             if (pool) {
+                const {
+                    BASE_VENDOR_INSERT_COLUMNS,
+                    vendorRowFromSeed,
+                    vendorInsertPlaceholders,
+                    vendorUpsertUpdateClause,
+                } = require('./utils/vendorFeatureColumns');
+                const row = vendorRowFromSeed(normalizedVendor);
+                const values = BASE_VENDOR_INSERT_COLUMNS.map((col) => row[col]);
                 await pool.query(
-                    `INSERT INTO vendors (
-                        id, owner_id, shop_name, category, is_active, is_promoted,
-                        latitude, longitude, google_link, instagram_handle, facebook_link,
-                        features_products, features_payments, features_appointments, features_queue,
-                        features_matchmaking, features_cyber, features_trade, features_offer, features_qless,
-                        features_fleet, features_realestate, features_trust_score,
-                        visibility_top_rated, visibility_list, visibility_feed, location_name
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                     ON DUPLICATE KEY UPDATE
-                        owner_id = VALUES(owner_id),
-                        shop_name = VALUES(shop_name),
-                        category = VALUES(category),
-                        is_active = VALUES(is_active),
-                        features_products = VALUES(features_products),
-                        features_payments = VALUES(features_payments),
-                        features_appointments = VALUES(features_appointments),
-                        features_queue = VALUES(features_queue),
-                        visibility_list = VALUES(visibility_list),
-                        location_name = VALUES(location_name)`,
-                    [
-                        normalizedVendor.id,
-                        normalizedVendor.owner_id || '',
-                        normalizedVendor.shop_name || '',
-                        normalizedVendor.category || '',
-                        normalizedVendor.is_active !== false ? 1 : 0,
-                        normalizedVendor.is_promoted ? 1 : 0,
-                        normalizedVendor.latitude || 0,
-                        normalizedVendor.longitude || 0,
-                        normalizedVendor.google_link || '',
-                        normalizedVendor.instagram_handle || '',
-                        normalizedVendor.facebook_link || '',
-                        normalizedVendor.features_products !== false ? 1 : 0,
-                        normalizedVendor.features_payments !== false ? 1 : 0,
-                        normalizedVendor.features_appointments !== false ? 1 : 0,
-                        normalizedVendor.features_queue !== false ? 1 : 0,
-                        normalizedVendor.features_matchmaking ? 1 : 0,
-                        normalizedVendor.features_cyber ? 1 : 0,
-                        normalizedVendor.features_trade ? 1 : 0,
-                        normalizedVendor.features_offer ? 1 : 0,
-                        normalizedVendor.features_qless ? 1 : 0,
-                        normalizedVendor.features_fleet ? 1 : 0,
-                        normalizedVendor.features_realestate ? 1 : 0,
-                        normalizedVendor.features_trust_score ? 1 : 0,
-                        normalizedVendor.visibility_top_rated ? 1 : 0,
-                        normalizedVendor.visibility_list !== false ? 1 : 0,
-                        normalizedVendor.visibility_feed ? 1 : 0,
-                        normalizedVendor.location_name || '',
-                    ]
+                    `INSERT INTO vendors (${BASE_VENDOR_INSERT_COLUMNS.join(', ')})
+                     VALUES (${vendorInsertPlaceholders()})
+                     ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
+                    values
                 );
             }
         } catch (err) {
@@ -2635,6 +2581,7 @@ const db = {
                         enable_trade: true,
                         enable_qless: true,
                         enable_fleet: true,
+                        enable_r_detector: true,
                         enable_realestate: true,
                         enable_cyber: true,
                         enable_trust_score: true,
@@ -2781,6 +2728,7 @@ const db = {
                         enable_trade: true,
                         enable_qless: true,
                         enable_fleet: true,
+                        enable_r_detector: true,
                         enable_realestate: true,
                         enable_cyber: true,
                         enable_trust_score: true,
@@ -2888,6 +2836,7 @@ const db = {
             enable_trade: true,
             enable_qless: true,
             enable_fleet: true,
+            enable_r_detector: true,
             enable_realestate: true,
             enable_cyber: true,
             enable_trust_score: true,

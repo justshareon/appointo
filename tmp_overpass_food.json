@@ -1,0 +1,1095 @@
+{
+  "version": 0.6,
+  "generator": "Overpass API 0.7.62.11 87bfad18",
+  "osm3s": {
+    "timestamp_osm_base": "2026-08-28T16:44:21Z",
+    "copyright": "The data included in this document is from www.openstreetmap.org. The data is made available under ODbL."
+  },
+  "elements": [
+
+{
+  "type": "node",
+  "id": 904127937,
+  "lat": 19.0354809,
+  "lon": 73.0634165,
+  "tags": {
+    "amenity": "fast_food",
+    "brand": "Domino's",
+    "brand:ks": "ڈومینوز",
+    "brand:pa": "ਡੋਮੀਨੋਜ਼",
+    "brand:ur": "ڈومینوز",
+    "brand:wikidata": "Q839466",
+    "brand:wikipedia": "en:Domino's Pizza",
+    "cuisine": "pizza",
+    "name": "Domino's",
+    "name:ks": "ڈومینوز",
+    "name:pa": "ਡੋਮੀਨੋਜ਼",
+    "name:ur": "ڈومینوز",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 904128846,
+  "lat": 19.0308533,
+  "lon": 73.0665721,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housenumber": "Little World Mall",
+    "addr:postcode": "410210",
+    "addr:street": "Pravesh Marg",
+    "amenity": "fast_food",
+    "brand": "McDonald's",
+    "brand:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "brand:ur": "مکڈونلڈز",
+    "brand:wikidata": "Q38076",
+    "brand:wikipedia": "en:McDonald's",
+    "brand:wikipedia:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "brand:wikipedia:ur": "مکڈونلڈز",
+    "cuisine": "burger",
+    "name": "McDonald's",
+    "name:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "name:ur": "مکڈونلڈز",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 1199949660,
+  "lat": 18.9701838,
+  "lon": 73.1319872,
+  "tags": {
+    "amenity": "fast_food",
+    "name": "Datta Snacks Corner"
+  }
+},
+{
+  "type": "node",
+  "id": 1219042911,
+  "lat": 19.0081693,
+  "lon": 73.1074495,
+  "tags": {
+    "amenity": "fast_food",
+    "name": "Watermelon stalls"
+  }
+},
+{
+  "type": "node",
+  "id": 3204164179,
+  "lat": 19.0225317,
+  "lon": 73.0905440,
+  "tags": {
+    "addr:city": "kamothe, navi mumbai",
+    "addr:postcode": "410 209",
+    "amenity": "fast_food",
+    "cuisine": "indian;sweets_shop",
+    "name": "nilkhand"
+  }
+},
+{
+  "type": "node",
+  "id": 3204164181,
+  "lat": 19.0258671,
+  "lon": 73.0936778,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "Pizza Hut",
+    "name:en": "dominos pizza"
+  }
+},
+{
+  "type": "node",
+  "id": 3204447125,
+  "lat": 19.0217677,
+  "lon": 73.0861446,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "sec 35",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "all_types_of_food",
+    "name": "rivar side",
+    "opening_hours": "24 har",
+    "smoking": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 3204452316,
+  "lat": 19.0218821,
+  "lon": 73.0856963,
+  "tags": {
+    "addr:housenumber": "sec 35",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "all_types_of_food",
+    "name": "tawa hotel",
+    "opening_hours": "24har",
+    "smoking": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 3205956154,
+  "lat": 19.0198185,
+  "lon": 73.0883536,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "sec 34",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "sweets_shop",
+    "name": "Neelkanth Snacks & Sweets",
+    "opening_hours": "09:00-24:00",
+    "smoking": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 3205963762,
+  "lat": 19.0200577,
+  "lon": 73.0886146,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "sec 35",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "indian_aagri",
+    "name": "malvan tadka",
+    "opening_hours": "09:00-24:00",
+    "smoking": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 3213864019,
+  "lat": 19.0174850,
+  "lon": 73.0870883,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "sec 34",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "regional",
+    "name": "manmohan sweets shop",
+    "opening_hours": "09:00-23:00",
+    "smoking": "separated"
+  }
+},
+{
+  "type": "node",
+  "id": 3213880636,
+  "lat": 19.0197876,
+  "lon": 73.0889097,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "sec 35",
+    "amenity": "restaurant",
+    "capacity": "200",
+    "cuisine": "regional",
+    "name": "krishna hotel",
+    "opening_hours": "Mo-Su 10:00-22:00"
+  }
+},
+{
+  "type": "node",
+  "id": 3217144942,
+  "lat": 19.0195489,
+  "lon": 73.0887761,
+  "tags": {
+    "addr:housenumber": "sec",
+    "amenity": "restaurant",
+    "cuisine": "regional",
+    "name": "vimum food"
+  }
+},
+{
+  "type": "node",
+  "id": 3438547095,
+  "lat": 19.0339682,
+  "lon": 73.0641445,
+  "tags": {
+    "amenity": "cafe",
+    "brand": "Cafe Coffee Day",
+    "brand:wikidata": "Q5017235",
+    "cuisine": "coffee_shop",
+    "name": "Cafe Coffee Day",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 3761183293,
+  "lat": 19.0492592,
+  "lon": 73.0757458,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housenumber": "Plot No:17 &18",
+    "addr:postcode": "410210",
+    "addr:street": "Sector 19",
+    "amenity": "fast_food",
+    "brand": "Smokin' Joe's",
+    "brand:wikidata": "Q7546011",
+    "cuisine": "pizza",
+    "name": "Smokin' Joe's",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 3761224964,
+  "lat": 19.0312334,
+  "lon": 73.0657311,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housenumber": "Sector 2",
+    "addr:postcode": "410210",
+    "addr:street": "Kharghar Station Road",
+    "amenity": "fast_food",
+    "brand": "Subway",
+    "brand:pa": "ਸਬਵੇਅ",
+    "brand:ur": "سب وے",
+    "brand:wikidata": "Q244457",
+    "brand:wikipedia": "en:Subway (restaurant)",
+    "cuisine": "sandwich",
+    "name": "Subway",
+    "name:pa": "ਸਬਵੇਅ",
+    "name:ur": "سب وے",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 3761227045,
+  "lat": 19.0303490,
+  "lon": 73.0644174,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housenumber": "Sector 2",
+    "addr:postcode": "410210",
+    "addr:street": "Kharghar Station Road",
+    "amenity": "restaurant",
+    "name": "Royal Rasoi"
+  }
+},
+{
+  "type": "node",
+  "id": 3761571982,
+  "lat": 19.0422912,
+  "lon": 73.0722876,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housenumber": "Sector 13",
+    "addr:postcode": "410210",
+    "amenity": "restaurant",
+    "cuisine": "regional",
+    "name": "Ambika Palace"
+  }
+},
+{
+  "type": "node",
+  "id": 3762543633,
+  "lat": 19.0475159,
+  "lon": 73.0651283,
+  "tags": {
+    "addr:street": "Sector 13",
+    "amenity": "restaurant",
+    "name": "Hotel Basera"
+  }
+},
+{
+  "type": "node",
+  "id": 4573028753,
+  "lat": 19.0291924,
+  "lon": 73.0629645,
+  "tags": {
+    "amenity": "cafe",
+    "brand": "Cafe Coffee Day",
+    "brand:wikidata": "Q5017235",
+    "brand:wikipedia": "en:Café Coffee Day",
+    "cuisine": "coffee_shop",
+    "name": "Cafe Coffee Day",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 4573028754,
+  "lat": 19.0354287,
+  "lon": 73.0673875,
+  "tags": {
+    "amenity": "cafe",
+    "brand": "Barista",
+    "brand:wikidata": "Q644735",
+    "brand:wikipedia": "en:Barista (company)",
+    "cuisine": "coffee_shop",
+    "name": "Barista",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 4609348403,
+  "lat": 19.0337319,
+  "lon": 73.0636087,
+  "tags": {
+    "addr:housenumber": "A 29",
+    "addr:street": "Belpada Rd",
+    "amenity": "restaurant",
+    "name:en": "The Original Khubz Restaurant",
+    "phone": "02265000255"
+  }
+},
+{
+  "type": "node",
+  "id": 4791993626,
+  "lat": 19.0433879,
+  "lon": 73.1020390,
+  "tags": {
+    "amenity": "restaurant",
+    "name:en": "Pallavi Avida"
+  }
+},
+{
+  "type": "node",
+  "id": 4936669707,
+  "lat": 18.9914451,
+  "lon": 73.1236111,
+  "tags": {
+    "amenity": "restaurant",
+    "cuisine": "indian",
+    "delivery": "yes",
+    "internet_access": "no",
+    "name": "Neelkamal",
+    "opening_hours": "08:30-12:30,15:30-23:59",
+    "smoking": "outside",
+    "takeaway": "yes",
+    "wheelchair": "limited"
+  }
+},
+{
+  "type": "node",
+  "id": 5001078721,
+  "lat": 19.0269921,
+  "lon": 73.1015559,
+  "tags": {
+    "amenity": "restaurant",
+    "name:en": "Mirchi Hotel"
+  }
+},
+{
+  "type": "node",
+  "id": 5021350125,
+  "lat": 19.0388518,
+  "lon": 73.1026366,
+  "tags": {
+    "amenity": "restaurant",
+    "name:en": "Utsav Restaurant"
+  }
+},
+{
+  "type": "node",
+  "id": 5190284687,
+  "lat": 18.9883341,
+  "lon": 73.1280732,
+  "tags": {
+    "amenity": "fast_food",
+    "name": "Ruchi Lunch Home"
+  }
+},
+{
+  "type": "node",
+  "id": 5190298600,
+  "lat": 18.9883571,
+  "lon": 73.1279364,
+  "tags": {
+    "amenity": "cafe",
+    "name": "Cafe Nine"
+  }
+},
+{
+  "type": "node",
+  "id": 5375731558,
+  "lat": 19.0448864,
+  "lon": 73.0643216,
+  "tags": {
+    "addr:city": "Kharghar, Navi Mumbai",
+    "addr:housenumber": "Sector-12",
+    "addr:postcode": "410210",
+    "addr:street": "Raintree Marg",
+    "amenity": "restaurant",
+    "capacity": "20-30",
+    "cuisine": "regional",
+    "delivery": "yes",
+    "diet:vegetarian": "yes",
+    "name": "Pranam Hotel",
+    "outdoor_seating": "no",
+    "smoking": "no",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 5432661221,
+  "lat": 19.0018745,
+  "lon": 73.1176381,
+  "tags": {
+    "addr:postcode": "410206",
+    "amenity": "restaurant",
+    "cuisine": "italian",
+    "name:en": "Siciliano",
+    "opening_hours": "Mo-Su 10:00-23:30",
+    "phone": "02265222828"
+  }
+},
+{
+  "type": "node",
+  "id": 5614612327,
+  "lat": 19.0448824,
+  "lon": 73.0647952,
+  "tags": {
+    "addr:city": "Kharghar, Navi Mumbai",
+    "addr:housenumber": "Sector 12",
+    "addr:postcode": "410210",
+    "addr:street": "Raintree Marg",
+    "amenity": "restaurant",
+    "capacity": "10",
+    "delivery": "yes",
+    "name": "Runway Plaza",
+    "outdoor_seating": "no",
+    "payment:cash": "yes",
+    "payment:coins": "yes",
+    "payment:credit_cards": "yes",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 5614629647,
+  "lat": 19.0469057,
+  "lon": 73.0717561,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:postcode": "410210",
+    "addr:street": "Shilp Chowk",
+    "amenity": "restaurant",
+    "capacity": "50",
+    "delivery": "yes",
+    "name": "Hotel Tulsi",
+    "outdoor_seating": "no",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 5956400508,
+  "lat": 18.9914153,
+  "lon": 73.1236476,
+  "tags": {
+    "amenity": "cafe",
+    "internet_access": "no",
+    "name": "Ribbons & Ballons"
+  }
+},
+{
+  "type": "node",
+  "id": 5956459482,
+  "lat": 18.9911308,
+  "lon": 73.1241178,
+  "tags": {
+    "amenity": "cafe",
+    "name": "Choco cream"
+  }
+},
+{
+  "type": "node",
+  "id": 5956459775,
+  "lat": 18.9910693,
+  "lon": 73.1240883,
+  "tags": {
+    "amenity": "fast_food",
+    "name": "Binger"
+  }
+},
+{
+  "type": "node",
+  "id": 5956789384,
+  "lat": 18.9889851,
+  "lon": 73.1273352,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "The Bombay Fries"
+  }
+},
+{
+  "type": "node",
+  "id": 6192058422,
+  "lat": 18.9909231,
+  "lon": 73.1242907,
+  "tags": {
+    "amenity": "fast_food",
+    "cuisine": "indian",
+    "delivery": "yes",
+    "name": "King of Rolls",
+    "smoking": "no",
+    "takeaway": "yes",
+    "wheelchair": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 8244771801,
+  "lat": 19.0479393,
+  "lon": 73.0688648,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "alpha quick bites fast food"
+  }
+},
+{
+  "type": "node",
+  "id": 8374145167,
+  "lat": 19.0182818,
+  "lon": 73.0969049,
+  "tags": {
+    "addr:city": "navi mumbai",
+    "addr:housenumber": "aishwarya hotel",
+    "addr:postcode": "410209",
+    "amenity": "restaurant",
+    "name": "aishwarya hotel"
+  }
+},
+{
+  "type": "node",
+  "id": 9417051259,
+  "lat": 19.0306495,
+  "lon": 73.0666224,
+  "tags": {
+    "addr:city": "Kharghar",
+    "addr:housename": "Little World Mall",
+    "addr:postcode": "410210",
+    "addr:street": "Pravesh Marg",
+    "amenity": "restaurant",
+    "cuisine": "regional",
+    "name": "Global Desi Tadka"
+  }
+},
+{
+  "type": "node",
+  "id": 10235103207,
+  "lat": 19.0058356,
+  "lon": 73.1071436,
+  "tags": {
+    "addr:city": "Panvel",
+    "addr:housenumber": "sector-17",
+    "addr:postcode": "410206",
+    "air_conditioning": "yes",
+    "amenity": "restaurant",
+    "bar": "yes",
+    "cuisine": "regional;chinese",
+    "delivery": "yes",
+    "diet:non-vegetarian": "yes",
+    "diet:vegetarian": "yes",
+    "name": "Venkat\"s manthra",
+    "opening_hours": "11:00-12:00",
+    "phone": "+91 91365 92574",
+    "website": "https://venkatmantraa.co.in/"
+  }
+},
+{
+  "type": "node",
+  "id": 10285385944,
+  "lat": 18.9553992,
+  "lon": 73.1633329,
+  "tags": {
+    "amenity": "fast_food",
+    "cuisine": "indian",
+    "name": "Namaste Fast Food Corner"
+  }
+},
+{
+  "type": "node",
+  "id": 11264953770,
+  "lat": 19.0483960,
+  "lon": 73.0649759,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "Tawa Multicuisine Restaurant",
+    "name:en": "Tawa Multicuisine Restaurant",
+    "name:hi": "तवा",
+    "name:mr": "तवा"
+  }
+},
+{
+  "type": "node",
+  "id": 12772631012,
+  "lat": 19.0353923,
+  "lon": 73.0635670,
+  "tags": {
+    "air_conditioning": "yes",
+    "amenity": "restaurant",
+    "bar": "no",
+    "changing_table": "no",
+    "internet_access": "no",
+    "name": "Hot Momos",
+    "smoking": "no",
+    "takeaway": "yes",
+    "toilets:access": "private",
+    "toilets:wheelchair": "no"
+  }
+},
+{
+  "type": "node",
+  "id": 13373736201,
+  "lat": 18.9651444,
+  "lon": 73.1953099,
+  "tags": {
+    "amenity": "cafe",
+    "name": "The Wise Cafe"
+  }
+},
+{
+  "type": "node",
+  "id": 13483803089,
+  "lat": 19.0017464,
+  "lon": 73.1257381,
+  "tags": {
+    "addr:city": "new panvel",
+    "addr:district": "Raigarh",
+    "addr:postcode": "410206",
+    "amenity": "cafe",
+    "cuisine": "pizza;coffee;italian",
+    "name": "pico cafe",
+    "opening_hours": "we-mo 12-11 pm",
+    "outdoor_seating": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13510342155,
+  "lat": 19.0330398,
+  "lon": 73.0660518,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "Swaraj Three Star Hotel"
+  }
+},
+{
+  "type": "node",
+  "id": 13542450291,
+  "lat": 18.9839757,
+  "lon": 73.1198502,
+  "tags": {
+    "amenity": "restaurant",
+    "cuisine": "indian",
+    "name": "Hotel Chinagate Family Restaurant",
+    "takeaway": "yes",
+    "toilets": "yes",
+    "toilets:unisex": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13813965838,
+  "lat": 19.0339332,
+  "lon": 73.0639758,
+  "tags": {
+    "amenity": "fast_food",
+    "brand": "Wow! Momo",
+    "brand:wikidata": "Q8037446",
+    "cuisine": "momo",
+    "name": "Wow! Momo",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13813985053,
+  "lat": 19.0337853,
+  "lon": 73.0637843,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "Zorko",
+    "panoramax": "b0941292-51ec-40e0-a9a7-442017b890f9"
+  }
+},
+{
+  "type": "node",
+  "id": 13813987123,
+  "lat": 19.0336681,
+  "lon": 73.0635957,
+  "tags": {
+    "amenity": "fast_food",
+    "cuisine": "juice",
+    "name": "Soda Juice Center",
+    "panoramax": "b6dd085c-436d-4cd1-a4d2-706123ea601e"
+  }
+},
+{
+  "type": "node",
+  "id": 13814083796,
+  "lat": 19.0337178,
+  "lon": 73.0635729,
+  "tags": {
+    "amenity": "restaurant",
+    "name": "Food Way Inn"
+  }
+},
+{
+  "type": "node",
+  "id": 13814122954,
+  "lat": 19.0337861,
+  "lon": 73.0635209,
+  "tags": {
+    "amenity": "fast_food",
+    "name": "MIMOMO(All Day Asian Cafe)"
+  }
+},
+{
+  "type": "node",
+  "id": 13870297540,
+  "lat": 18.9883275,
+  "lon": 73.0543024,
+  "tags": {
+    "amenity": "restaurant",
+    "baby_feeding": "no",
+    "changing_table": "no",
+    "indoor_seating": "40",
+    "internet_access:fee": "no",
+    "level": "1",
+    "name": "Gully Kitchen",
+    "reservation": "no",
+    "self_service": "yes",
+    "takeaway": "no",
+    "toilets:wheelchair": "designated",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877687774,
+  "lat": 18.9891457,
+  "lon": 73.0539772,
+  "tags": {
+    "amenity": "cafe",
+    "baby_feeding": "no",
+    "brand": "Tim Hortons",
+    "changing_table": "no",
+    "cuisine": "coffee_shop",
+    "food": "prepared_meals",
+    "indoor_seating": "yes",
+    "internet_access:fee": "no",
+    "name": "Tim Hortons",
+    "opening_hours": "24/7",
+    "takeaway": "yes",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877769905,
+  "lat": 18.9892048,
+  "lon": 73.0531424,
+  "tags": {
+    "amenity": "cafe",
+    "changing_table": "no",
+    "cuisine": "coffee_shop",
+    "food": "prepared_meals",
+    "indoor_seating": "yes",
+    "internet_access": "yes",
+    "internet_access:fee": "no",
+    "level": "Arrival",
+    "name": "South Spice Terminal",
+    "opening_hours": "24/7",
+    "takeaway": "yes",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877843148,
+  "lat": 18.9892441,
+  "lon": 73.0537267,
+  "tags": {
+    "amenity": "cafe",
+    "food": "prepared_meals",
+    "name": "G I Juice",
+    "opening_hours": "24/7",
+    "outdoor_seating": "yes",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877843149,
+  "lat": 18.9893638,
+  "lon": 73.0534499,
+  "tags": {
+    "amenity": "fast_food",
+    "indoor_seating": "yes",
+    "name": "Mirchi",
+    "outdoor_seating": "yes",
+    "takeaway": "yes",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877853509,
+  "lat": 18.9893299,
+  "lon": 73.0529822,
+  "tags": {
+    "amenity": "cafe",
+    "baby_feeding": "no",
+    "cuisine": "coffee_shop",
+    "food": "snacks",
+    "indoor_seating": "yes",
+    "name": "Mitti Cafe",
+    "opening_hours": "24/7",
+    "operator": "Sitting Cafe",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13877853510,
+  "lat": 18.9893441,
+  "lon": 73.0532889,
+  "tags": {
+    "amenity": "fast_food",
+    "baby_feeding": "no",
+    "brand": "Subway",
+    "changing_table": "no",
+    "cuisine": "sandwich",
+    "food": "snacks",
+    "indoor_seating": "yes",
+    "name": "Subway",
+    "opening_hours": "24/7",
+    "operator": "Subway",
+    "outdoor_seating": "yes",
+    "takeaway": "yes",
+    "toilets:wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13877853511,
+  "lat": 18.9893382,
+  "lon": 73.0531012,
+  "tags": {
+    "amenity": "cafe",
+    "cuisine": "coffee_shop",
+    "food": "snacks",
+    "name": "Tea Tapru",
+    "opening_hours": "24/7",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 13877853512,
+  "lat": 18.9892048,
+  "lon": 73.0531424,
+  "tags": {
+    "amenity": "cafe",
+    "changing_table": "no",
+    "cuisine": "coffee_shop",
+    "food": "prepared_meals",
+    "indoor_seating": "yes",
+    "internet_access": "yes",
+    "internet_access:fee": "no",
+    "level": "Arrival",
+    "name": "Duplicate of South Spice Terminal",
+    "opening_hours": "24/7",
+    "takeaway": "yes",
+    "wheelchair": "designated"
+  }
+},
+{
+  "type": "node",
+  "id": 13906499425,
+  "lat": 18.9883673,
+  "lon": 73.0545206,
+  "tags": {
+    "amenity": "restaurant",
+    "bar": "yes",
+    "cuisine": "breakfast;sandwich",
+    "level": "1",
+    "name": "NMIA KMC Bar & Bristo",
+    "opening_hours": "24/7",
+    "self_service": "yes"
+  }
+},
+{
+  "type": "node",
+  "id": 14026559757,
+  "lat": 18.9903150,
+  "lon": 73.1270228,
+  "tags": {
+    "amenity": "restaurant",
+    "image:menu": "c504a911-a7d9-407a-a5bc-1306204b9fcf",
+    "image:menu:0": "9f5cb319-9c3b-4eee-91ff-37d31407ae61",
+    "name": "L'Auberge Cafe"
+  }
+},
+{
+  "type": "node",
+  "id": 14101280964,
+  "lat": 18.9894426,
+  "lon": 73.0541763,
+  "tags": {
+    "amenity": "cafe",
+    "cuisine": "coffee_shop",
+    "name": "Subko"
+  }
+},
+{
+  "type": "way",
+  "id": 53579530,
+  "center": {
+    "lat": 19.0213837,
+    "lon": 73.1026301
+  },
+  "tags": {
+    "addr:city": "Navi Mumbai",
+    "amenity": "fast_food",
+    "brand": "McDonald's",
+    "brand:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "brand:ur": "مکڈونلڈز",
+    "brand:wikidata": "Q38076",
+    "brand:wikipedia": "en:McDonald's",
+    "brand:wikipedia:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "brand:wikipedia:ur": "مکڈونلڈز",
+    "building": "yes",
+    "cuisine": "burger",
+    "name": "McDonald's",
+    "name:pa": "ਮੈਕਡੋਨਲਡ’ਜ਼",
+    "name:ur": "مکڈونلڈز",
+    "phone": "+91 22 3256 9047",
+    "postal_code": "410218",
+    "source": "GPS",
+    "takeaway": "yes"
+  }
+},
+{
+  "type": "way",
+  "id": 353981620,
+  "center": {
+    "lat": 18.9915629,
+    "lon": 73.1236157
+  },
+  "tags": {
+    "amenity": "restaurant",
+    "building": "yes",
+    "colour": "#FDEDEC",
+    "height": "24",
+    "min_height": "0",
+    "outdoor_seating": "no",
+    "shop": "bakery"
+  }
+},
+{
+  "type": "way",
+  "id": 353981658,
+  "center": {
+    "lat": 18.9884331,
+    "lon": 73.1280026
+  },
+  "tags": {
+    "addr:city": "New Panvel East",
+    "addr:housenumber": "456214",
+    "addr:street": "PANVEL STATION",
+    "amenity": "cafe",
+    "brand": "SHIVBRAND",
+    "building": "yes",
+    "cuisine": "indian;_panjabi;_southindian_.",
+    "height": "15",
+    "internet_access": "yes",
+    "internet_access:fee": "no",
+    "internet_access:ssid": "SHIV CAFE",
+    "name": "SHIV CAFE",
+    "opening_hours": "24/7",
+    "outdoor_seating": "yes",
+    "phone": "6125874855",
+    "smoking": "no",
+    "website": "WWW.SHIVCAFE.COM"
+  }
+},
+{
+  "type": "way",
+  "id": 354051624,
+  "center": {
+    "lat": 18.9826508,
+    "lon": 73.1133458
+  },
+  "tags": {
+    "amenity": "restaurant",
+    "building": "yes",
+    "cuisine": "regional",
+    "name": "Pancharatna Hotel"
+  }
+},
+{
+  "type": "way",
+  "id": 964044768,
+  "center": {
+    "lat": 19.0024906,
+    "lon": 73.1211603
+  },
+  "tags": {
+    "amenity": "restaurant",
+    "building": "yes",
+    "cuisine": "indian",
+    "diet:vegetarian": "yes",
+    "name": "DWARAKA SWEETS"
+  }
+},
+{
+  "type": "way",
+  "id": 990472373,
+  "center": {
+    "lat": 19.0010884,
+    "lon": 73.1289153
+  },
+  "tags": {
+    "addr:city": "new panvel",
+    "addr:housenumber": "house 505 Bhagatwadi sukhapur new panvel",
+    "addr:postcode": "410206",
+    "addr:street": "near adai circle",
+    "air_conditioning": "yes",
+    "amenity": "restaurant",
+    "bar": "yes",
+    "building": "yes",
+    "cuisine": "regional;north_indian;malwani;chinese;barbecue;bar;thai;maharastrian",
+    "delivery": "yes",
+    "fixme": "add proper tags: dhaba; big screen",
+    "name": "JITEKAR'S HOTEL VILLAGE GARDEN RESTAURANT",
+    "name:mr": "JITEKAR'S Hotel Village Garden Restaurant And Bar",
+    "opening_hours": "Mo-Su 10:30-23:55",
+    "smoking": "yes"
+  }
+},
+{
+  "type": "way",
+  "id": 1299962930,
+  "center": {
+    "lat": 18.9673352,
+    "lon": 73.1184071
+  },
+  "tags": {
+    "addr:city": "Karanjade",
+    "addr:district": "Raigad",
+    "addr:housenumber": "NH 348",
+    "addr:postcode": "410206",
+    "addr:street": "JNPT Road",
+    "amenity": "restaurant",
+    "building": "yes",
+    "cuisine": "indian;regional",
+    "name": "Hotel Nisarg Dhaba",
+    "opening_hours": "Mo-Su 10:00-23:00",
+    "phone": "+919082070937"
+  }
+}
+
+  ]
+}

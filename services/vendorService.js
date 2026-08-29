@@ -275,7 +275,7 @@ class VendorService {
             'shop_name', 'google_link', 'instagram_handle', 'facebook_link',
             'features_products', 'features_payments', 'features_appointments', 'features_queue',
             'features_matchmaking', 'features_trade', 'features_offer', 'features_qless',
-            'features_fleet', 'features_realestate', 'features_cyber', 'features_trust_score',
+            'features_fleet', 'features_r_detector', 'features_realestate', 'features_cyber', 'features_trust_score',
             'gateway_razorpay', 'gateway_sabpaisa',
             'visibility_top_rated', 'visibility_list', 'visibility_feed'
         ];

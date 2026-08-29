@@ -579,7 +579,7 @@ class BidirectionalSyncService {
                     }
                     // Ensure specialty dashboards stay on unless explicitly disabled in MySQL
                     for (const key of [
-                        'enable_trade', 'enable_fleet', 'enable_cyber', 'enable_trust_score',
+                        'enable_trade', 'enable_fleet', 'enable_r_detector', 'enable_cyber', 'enable_trust_score',
                         'enable_realestate', 'enable_offer', 'enable_qless', 'enable_news',
                         'enable_queue', 'enable_appointments', 'enable_shopping', 'enable_matchmaking',
                     ]) {

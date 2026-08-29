@@ -22,11 +22,21 @@ function ensureSyncOnLoadMiddleware(req, res, next) {
         .then(async () => {
             const syncStatus = require('../services/syncStatusService');
             const { syncUntilComplete, isSyncRunning } = require('../services/autoSyncService');
+            const { runDriftSync } = require('../services/driftSyncService');
             await syncStatus.init();
-            if (!(await syncStatus.needsSync())) return;
-            if (isSyncRunning()) return;
-            LOG.info('[EnsureSync] API request — sync incomplete, resuming until complete');
-            await syncUntilComplete('api-request');
+
+            if (await syncStatus.needsSync()) {
+                if (isSyncRunning()) return;
+                LOG.info('[EnsureSync] API request — sync incomplete, resuming until complete');
+                await syncUntilComplete('api-request');
+                return;
+            }
+
+            if (process.env.AUTO_DRIFT_SYNC !== 'false') {
+                runDriftSync('api-request').catch((err) => {
+                    LOG.warning(`[EnsureSync] drift sync: ${err.message}`);
+                });
+            }
         })
         .catch((err) => {
             LOG.warning(`[EnsureSync] middleware: ${err.message}`);

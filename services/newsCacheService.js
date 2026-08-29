@@ -27,7 +27,17 @@ class NewsCacheService {
     async getCachedGrouped(limit = 200, settingsOverride = null) {
         const settings = settingsOverride || await settingsService.getSettings();
         const cachedItems = await db.getNewsItems(limit);
-        return newsAggregatorService.groupItems(cachedItems, settings);
+        const localOffers = await newsAggregatorService.fetchLocalVendorOffers(settings, 40);
+        const merged = [...localOffers, ...(cachedItems || [])];
+        const seen = new Set();
+        const deduped = merged.filter((item) => {
+            const key = item.unique_key || item.id || item.link || item.text;
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+        const { sortNewsItems } = require('./newsLocalPriority');
+        return newsAggregatorService.groupItems(sortNewsItems(deduped, settings), settings);
     }
 }
 

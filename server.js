@@ -211,6 +211,11 @@ app.use('/api/fleet', ...fleetDb, lazyRouter(() => {
     fleetRoutes.setIO(io);
     return fleetRoutes.router;
 }));
+app.use('/api/r-detector', ...fleetDb, lazyRouter(() => {
+    const rDetectorRoutes = require('./routes/rDetectorRoutes');
+    rDetectorRoutes.setIO(io);
+    return rDetectorRoutes.router;
+}));
 app.use('/api/suraksha', ...cyberDb, lazyRouter(() => {
     const surakshaRoutes = require('./routes/surakshaRoutes');
     if (typeof surakshaRoutes.setIO === 'function') surakshaRoutes.setIO(io);
@@ -243,7 +248,7 @@ server.listen(PORT, async () => {
 
     const mysqlOnline = !!(process.env.DB_HOST || process.env.DB_NAME);
     if (mysqlOnline) {
-        LOG.info('[Deploy] MySQL configured — in-memory ↔ MySQL sync on startup + app load (GET /api/sync/status).');
+        LOG.info('[Deploy] MySQL configured — automatic in-memory ↔ MySQL drift sync (startup, cron, API traffic).');
     }
 
     if (dbMode === 'mysql') {
@@ -259,7 +264,8 @@ server.listen(PORT, async () => {
         // Start periodic auto-sync (every 30 minutes by default)
         const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30;
         startAutoSync(syncIntervalMinutes);
-        LOG.info(`[AutoSync] Enabled: syncing every ${syncIntervalMinutes} minutes`);
+        const driftMins = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
+        LOG.info(`[AutoSync] Bulk resume every ${syncIntervalMinutes}m; drift sync every ${driftMins}m`);
     } else if (mysqlOnline) {
         LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
         if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
@@ -267,7 +273,8 @@ server.listen(PORT, async () => {
         }
         const mirrorInterval = parseInt(process.env.SYNC_INTERVAL_MINUTES, 10) || 30;
         startAutoSync(mirrorInterval);
-        LOG.info(`[AutoSync] In-memory -> MySQL every ${mirrorInterval} minutes`);
+        const driftMinsMem = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
+        LOG.info(`[AutoSync] In-memory ↔ MySQL — bulk every ${mirrorInterval}m, drift every ${driftMinsMem}m`);
     } else {
         LOG.info('In-memory mode: core seed only at boot. Feature seed/jobs start on first open.');
     }
