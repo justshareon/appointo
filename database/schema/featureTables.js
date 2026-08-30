@@ -547,6 +547,61 @@ async function ensureTrade(pool, mainDb) {
     }
 }
 
+async function ensureRDetector(pool) {
+    const commuteService = require('../../services/rDetectorCommuteService');
+    const rDetectorService = require('../../services/rDetectorService');
+    await commuteService.ensureCommuteTables();
+    await rDetectorService.ensureScanResultsTable(pool);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS r_detector_incident_votes (
+            incident_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            vote VARCHAR(32) NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (incident_id, user_id)
+        )
+    `);
+}
+
+async function ensureSuraksha(pool) {
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS suraksha_validations (
+            id VARCHAR(64) PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            input_value VARCHAR(500) NOT NULL,
+            type VARCHAR(32) NOT NULL,
+            status VARCHAR(32) DEFAULT 'pending',
+            result_data JSON NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_user_created (user_id, created_at)
+        )
+    `);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS suraksha_reports (
+            id VARCHAR(64) PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            complaint_id VARCHAR(64) NULL,
+            input VARCHAR(500) NULL,
+            type VARCHAR(32) NULL,
+            amount DECIMAL(12, 2) DEFAULT 0,
+            beneficiary VARCHAR(255) NULL,
+            description TEXT NULL,
+            transaction_date VARCHAR(32) NULL,
+            evidence JSON NULL,
+            status VARCHAR(32) DEFAULT 'saved',
+            govt_sent TINYINT(1) DEFAULT 0,
+            govt_complaint_id VARCHAR(64) NULL,
+            reminder_count INT DEFAULT 0,
+            last_reminder_at DATETIME NULL,
+            sent_at DATETIME NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_user_created (user_id, created_at)
+        )
+    `);
+}
+
 const HANDLERS = {
     core: ensureCore,
     queue: ensureQueue,
@@ -568,8 +623,10 @@ const HANDLERS = {
     fleet: async (_pool, mainDb) => {
         if (mainDb?.ensureFleetTables) await mainDb.ensureFleetTables();
     },
-    cyber: async (_pool, mainDb) => {
+    r_detector: ensureRDetector,
+    cyber: async (pool, mainDb) => {
         if (mainDb?.ensureCyberThreatTables) await mainDb.ensureCyberThreatTables();
+        await ensureSuraksha(pool);
     },
 };
 

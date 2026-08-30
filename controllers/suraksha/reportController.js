@@ -202,7 +202,7 @@ class ReportController {
         try {
             const db = require('../../database');
             const userId = req.user?.id || req.userId;
-            const limit = parseInt(req.query.limit) || 50;
+            const limit = Math.min(parseInt(req.query.limit, 10) || 24, 40);
 
             const users = typeof db.getUsers === 'function' ? await db.getUsers() : [];
             const nameById = {};

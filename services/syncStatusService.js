@@ -19,8 +19,11 @@ const SYNC_MODULES = [
     { key: 'activities', label: 'Activities', order: 11 },
     { key: 'otps', label: 'OTPs', order: 12 },
     { key: 'cyber_threats', label: 'Cyber threats', order: 13 },
-    { key: 'trading_data', label: 'Trading data', order: 14 },
-    { key: 'fleet_data', label: 'Fleet data', order: 15 },
+    { key: 'suraksha_data', label: 'Suraksha validations & reports', order: 14 },
+    { key: 'news_cache', label: 'News cache (lazy slices)', order: 15 },
+    { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 16 },
+    { key: 'trading_data', label: 'Trading data', order: 17 },
+    { key: 'fleet_data', label: 'Fleet data', order: 18 },
 ];
 
 let tablesReady = false;

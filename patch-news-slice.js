@@ -1,54 +1,12 @@
-const crypto = require('crypto');
-const db = require('../database');
-const newsAggregatorService = require('./newsAggregatorService');
-const settingsService = require('./settingsService');
-const locationNewsService = require('./locationNewsService');
-const { clampLimit, sortTodayRecentFirst, withinRecentDays } = require('../utils/recentSlice');
+const fs = require('fs');
+const path = require('path');
 
-const norm = (v) => String(v || '').trim().toLowerCase();
-const sliceMem = new Map();
-const SLICE_TTL_MS = 5 * 60 * 1000;
-
-const buildUniqueKey = (item) => {
-    const rawKey = item.link || item.id || `${item.source || ''}|${item.date || ''}|${item.text || ''}`;
-    return rawKey.length > 200
-        ? crypto.createHash('sha1').update(rawKey).digest('hex')
-        : rawKey;
-};
-
-class NewsCacheService {
-    async refreshNews(limit = 50, settingsOverride = null) {
-        const settings = settingsOverride || await settingsService.getSettings();
-        const result = await newsAggregatorService.fetchNews(settings, limit);
-        const flattened = (result.categories || []).flatMap(c => (c.items || []).map(item => ({
-            ...item,
-            category: item.category || c.name
-        })));
-        const withKeys = flattened.map(item => ({ ...item, unique_key: buildUniqueKey(item) }));
-        await db.saveNewsItems(withKeys);
-        await db.updateSettings({ news_cache_last_updated: new Date().toISOString() });
-        return result;
-    }
-
-    async getCachedGrouped(limit = 200, settingsOverride = null) {
-        const settings = settingsOverride || await settingsService.getSettings();
-        const cachedItems = await db.getNewsItems(limit);
-        const localOffers = await newsAggregatorService.fetchLocalVendorOffers(settings, 40);
-        const merged = [...localOffers, ...(cachedItems || [])];
-        const seen = new Set();
-        const deduped = merged.filter((item) => {
-            const key = item.unique_key || item.id || item.link || item.text;
-            if (!key || seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-        const { sortNewsItems } = require('./newsLocalPriority');
-        return newsAggregatorService.groupItems(sortNewsItems(deduped, settings), settings);
-    }
+const target = path.join(__dirname, 'services', 'newsCacheService.js');
+const extra = `
     /** Category counts from MySQL / in-memory — no RSS fetch. */
     async getMeta(settingsOverride = null) {
         const settings = settingsOverride || await settingsService.getSettings();
-        const items = await db.getNewsItems(120);
+        const items = await db.getNewsItems(600);
         const counts = {};
         (items || []).forEach((item) => {
             const cat = item.category || 'general';
@@ -67,7 +25,7 @@ class NewsCacheService {
         const intlCats = new Set(['global_news', 'world', 'international']);
         return (items || []).filter((item) => {
             const cat = norm(item.category);
-            const blob = norm(`${item.text || ''} ${item.city || ''} ${item.locality || ''}`);
+            const blob = norm(\`\${item.text || ''} \${item.city || ''} \${item.locality || ''}\`);
             if (scope === 'international') {
                 return intlCats.has(cat) || blob.includes('global') || blob.includes('world');
             }
@@ -95,14 +53,13 @@ class NewsCacheService {
         refresh = false,
     } = {}) {
         const settings = settingsOverride || await settingsService.getSettings();
-        const safeLimit = clampLimit(limit, { def: 15, max: 20 });
-        const memKey = `${scope}|${category}|${safeLimit}|${locationCtx.city || ''}|${locationCtx.locality || ''}`;
+        const memKey = \`\${scope}|\${category}|\${limit}|\${locationCtx.city || ''}|\${locationCtx.locality || ''}\`;
         if (!refresh) {
             const hit = sliceMem.get(memKey);
             if (hit && Date.now() - hit.ts < SLICE_TTL_MS) return hit.data;
         }
 
-        let items = await db.getNewsItems(Math.min(Math.max(safeLimit * 2, 24), 40));
+        let items = await db.getNewsItems(Math.max(limit * 6, 60));
         const hasLocation = !!(locationCtx.city || locationCtx.locality);
         const localScope = ['local', 'town', 'city', 'All'].includes(scope);
 
@@ -111,7 +68,7 @@ class NewsCacheService {
                 const localItems = await locationNewsService.fetchLocationNews(
                     settings,
                     locationCtx,
-                    Math.min(safeLimit, 20)
+                    Math.min(limit, 24)
                 );
                 items = [...(localItems || []), ...(items || [])];
             } catch (_) {}
@@ -132,9 +89,8 @@ class NewsCacheService {
         }
 
         items = this._filterScope(items, scope, locationCtx);
-        items = withinRecentDays(items, 14, ['date', 'published_at']);
         const { sortNewsItems } = require('./newsLocalPriority');
-        items = sortTodayRecentFirst(sortNewsItems(items, settings), safeLimit, ['date', 'published_at']);
+        items = sortNewsItems(items, settings).slice(0, limit);
         const grouped = newsAggregatorService.groupItems(items, settings);
         const payload = {
             categories: grouped.categories?.length
@@ -147,8 +103,16 @@ class NewsCacheService {
         sliceMem.set(memKey, { data: payload, ts: Date.now() });
         return payload;
     }
+`;
 
+let src = fs.readFileSync(target, 'utf8');
+if (src.includes('getSlice(')) {
+  console.log('newsCacheService already has getSlice');
+  process.exit(0);
 }
-
-module.exports = new NewsCacheService();
-
+src = src.replace(
+  '    }\n}\n\nmodule.exports = new NewsCacheService();',
+  `    }${extra}\n}\n\nmodule.exports = new NewsCacheService();`
+);
+fs.writeFileSync(target, src);
+console.log('newsCacheService patched with getSlice/getMeta');

@@ -78,7 +78,7 @@ class CyberThreatController {
                 severity: req.query.severity,
                 category: req.query.category,
                 verified: req.query.verified === undefined ? undefined : req.query.verified === 'true',
-                limit: parseInt(req.query.limit) || 50
+                limit: Math.min(parseInt(req.query.limit, 10) || 24, 40)
             };
 
             const threats = await cyberThreatService.getActiveThreats(filters);

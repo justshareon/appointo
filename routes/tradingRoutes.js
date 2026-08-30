@@ -17,6 +17,7 @@ const boardMeetingsDataService = require('../services/boardMeetingsDataService')
 const featureEngineeringService = require('../services/featureEngineeringService');
 const settingsService = require('../services/settingsService');
 const newsCacheService = require('../services/newsCacheService');
+const locationNewsService = require('../services/locationNewsService');
 const rssNewsService = require('../services/rssNewsService');
 const LOG = require('../utils/logger');
 const featureMemory = require('../database/featureMemoryManager');
@@ -940,30 +941,41 @@ router.get('/most-bought', async (req, res) => {
 
 /**
  * GET /api/trading/news
- * Get trading news (category-wise)
- * Query params: limit (default: 50)
+ * Legacy path — delegates to lazy slice (MySQL + in-memory, max 15 items).
+ * Avoids full RSS refresh on dashboard load.
  */
 router.get('/news', async (req, res) => {
     try {
-        const limit = parseInt(req.query.limit) || 50;
+        const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 15, 1), 15);
         const refresh = String(req.query.refresh || '') === '1';
+        const category = req.query.category || 'All';
+        const scope = req.query.scope || 'All';
+        const locationCtx = {
+            city: req.query.city || '',
+            locality: req.query.locality || req.query.town || '',
+            state: req.query.state || '',
+            district: req.query.district || '',
+            placeLabel: req.query.placeLabel || '',
+        };
         const settings = await settingsService.getSettings();
         if (!settings.enable_news) {
             return res.json({ success: true, data: { categories: [] }, disabled: true });
         }
-        const ttlHours = Number(settings.news_cache_ttl_hours || 24);
-        const lastUpdated = settings.news_cache_last_updated ? new Date(settings.news_cache_last_updated).getTime() : 0;
-        const isExpired = !lastUpdated || (Date.now() - lastUpdated) > ttlHours * 60 * 60 * 1000;
-
-        if (!refresh && !isExpired) {
-            const grouped = await newsCacheService.getCachedGrouped(limit * 5, settings);
-            if (grouped?.categories?.length) {
-                return res.json({ success: true, data: grouped, cached: true });
-            }
-        }
-
-        const result = await newsCacheService.refreshNews(limit, settings);
-        return res.json({ success: true, data: result, cached: false });
+        const slice = await newsCacheService.getSlice({
+            category,
+            scope,
+            limit,
+            locationCtx,
+            settingsOverride: settings,
+            refresh,
+        });
+        return res.json({
+            success: true,
+            data: { categories: slice.categories || [] },
+            cached: true,
+            slice: true,
+            location: locationCtx.city || locationCtx.locality ? locationCtx : null,
+        });
     } catch (error) {
         LOG.error('[Trading Routes] Error fetching news:', error);
         res.status(500).json({ error: error.message || 'Failed to fetch news' });

@@ -79,7 +79,7 @@ class ValidationController {
     async getHistory(req, res) {
         try {
             const userId = req.user?.id || req.userId;
-            const limit = parseInt(req.query.limit) || 50;
+            const limit = Math.min(parseInt(req.query.limit, 10) || 24, 40);
             
             const history = await validationService.getValidationHistory(userId, limit);
             

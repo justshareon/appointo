@@ -223,6 +223,7 @@ app.use('/api/suraksha', ...cyberDb, lazyRouter(() => {
 }));
 app.use('/api/trust-score', ...trustScoreDb, lazyRouter(() => require('./routes/trustScoreRoutes')));
 app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingRoutes')));
+app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/newsSliceRoutes')));
 app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDiagnostics')));
 app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
 app.use('/api/trading-data-trace', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
@@ -230,6 +231,7 @@ app.use('/api/cyber', ...cyberDb, lazyRouter(() => require('./routes/cyberToolsR
 app.use('/api/health-predict', ...healthDb, lazyRouter(() => require('./routes/healthPredictRoutes')));
 app.use('/api/realestate', ...realestateDb, lazyRouter(() => require('./routes/realestateRoutes')));
 app.use('/api', ...offerDb, lazyRouter(() => require('./routes/dealsRoutes')));
+app.use('/api', ...offerDb, lazyRouter(() => require('./routes/marketplaceRoutes')));
 
 // ========== SYNC ROUTES ==========
 const syncRouter = require('express').Router();
@@ -289,6 +291,15 @@ server.listen(PORT, async () => {
         }
     } catch (e) {
         LOG.warning('[Server] persistNewsSettings/persistUiChromeSettings failed: ' + (e.message || e));
+    }
+    if (dbMode === 'mysql') {
+        try {
+            const commuteService = require('./services/rDetectorCommuteService');
+            await commuteService.ensureCommuteTables();
+            LOG.info('[R-Detector] Commute schedule tables ready');
+        } catch (e) {
+            LOG.warning('[R-Detector] Commute tables setup failed: ' + (e.message || e));
+        }
     }
     if (dbMode === 'inmemory') {
         LOG.info(`Seed Users -> Super Admin: 9999999999 | Vendor: 8888888888 | User: 7777777777 | Test Vendor: 3333333333`);

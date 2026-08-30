@@ -258,6 +258,156 @@ async function syncRecentChat(pool) {
   return n;
 }
 
+async function syncRecentNewsCache(pool) {
+  const items = (mem().news_cache || []).filter((item) =>
+    isRecent(item, ['created_at', 'updated_at', 'date', 'published_at'])
+  );
+  if (!items.length) return 0;
+  const db = require('./database');
+  if (typeof db.saveNewsItems === 'function') {
+    const withKeys = items.map((item) => ({
+      ...item,
+      unique_key: item.unique_key || item.link || item.id || `${item.source || ''}|${item.text || ''}`,
+    }));
+    const result = await db.saveNewsItems(withKeys);
+    return result?.saved || withKeys.length;
+  }
+  return 0;
+}
+
+async function syncRecentRDetector(pool) {
+  let n = 0;
+  const commuteService = require('./services/rDetectorCommuteService');
+  const rDetectorService = require('./services/rDetectorService');
+  await commuteService.ensureCommuteTables();
+  await rDetectorService.ensureScanResultsTable(pool);
+
+  const pings = (mem().r_detector_activity_pings || []).filter((p) => isRecent(p, ['recorded_at']));
+  for (const p of pings) {
+    try {
+      if (p.id != null) {
+        const [existing] = await pool.query('SELECT id FROM r_detector_activity_pings WHERE id = ? LIMIT 1', [p.id]);
+        if (existing?.length) continue;
+      }
+      await pool.query(
+        `INSERT INTO r_detector_activity_pings
+         (user_id, latitude, longitude, speed_kmh, day_of_week, recorded_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [p.user_id, p.latitude, p.longitude, p.speed_kmh || 0, p.day_of_week, p.recorded_at || new Date()]
+      );
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] r-detector ping: ${e.message}`);
+    }
+  }
+
+  const scans = (mem().r_detector_scan_results || []).filter((s) =>
+    isRecent(s, ['created_at', 'scan_date'])
+  );
+  for (const s of scans) {
+    try {
+      if (s.id != null) {
+        const [existing] = await pool.query('SELECT id FROM r_detector_scan_results WHERE id = ? LIMIT 1', [s.id]);
+        if (existing?.length) continue;
+      }
+      await pool.query(
+        `INSERT INTO r_detector_scan_results
+         (user_id, latitude, longitude, speed_kmh, confidence, issue_type, hazard_id, scan_date, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          s.user_id,
+          s.latitude,
+          s.longitude,
+          s.speed_kmh ?? null,
+          s.confidence ?? null,
+          s.issue_type || 'bad_road',
+          s.hazard_id ?? null,
+          s.scan_date || new Date().toISOString().slice(0, 10),
+          s.created_at || new Date(),
+        ]
+      );
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] r-detector scan: ${e.message}`);
+    }
+  }
+  return n;
+}
+
+async function syncRecentSuraksha(pool) {
+  let n = 0;
+  try {
+    const { ensureFeatureSchema } = require('./database/schema/featureTables');
+    const db = require('./database');
+    await ensureFeatureSchema('cyber', db);
+  } catch (e) {
+    LOG.warning(`[3h] suraksha schema: ${e.message}`);
+  }
+
+  const validations = (mem().surakshaValidations || []).filter((v) => isRecent(v));
+  for (const v of validations) {
+    try {
+      await pool.query(
+        `INSERT INTO suraksha_validations
+         (id, user_id, input_value, type, status, result_data, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE status=VALUES(status), result_data=VALUES(result_data), updated_at=VALUES(updated_at)`,
+        [
+          v.id,
+          v.user_id,
+          v.input_value || v.input || '',
+          v.type || 'other',
+          v.status || 'pending',
+          v.result_data ? JSON.stringify(v.result_data) : null,
+          v.created_at || new Date(),
+          v.updated_at || new Date(),
+        ]
+      );
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] suraksha validation: ${e.message}`);
+    }
+  }
+
+  const reports = (mem().surakshaReports || []).filter((r) => isRecent(r));
+  for (const r of reports) {
+    try {
+      await pool.query(
+        `INSERT INTO suraksha_reports
+         (id, user_id, complaint_id, input, type, amount, beneficiary, description,
+          transaction_date, evidence, status, govt_sent, govt_complaint_id,
+          reminder_count, last_reminder_at, sent_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE status=VALUES(status), updated_at=VALUES(updated_at)`,
+        [
+          r.id,
+          r.user_id,
+          r.complaint_id || null,
+          r.input || '',
+          r.type || 'other',
+          r.amount || 0,
+          r.beneficiary || r.input || '',
+          r.description || '',
+          r.transaction_date || null,
+          JSON.stringify(r.evidence || {}),
+          r.status || 'saved',
+          r.govt_sent ? 1 : 0,
+          r.govt_complaint_id || null,
+          r.reminder_count || 0,
+          r.last_reminder_at || null,
+          r.sent_at || null,
+          r.created_at || new Date(),
+          r.updated_at || new Date(),
+        ]
+      );
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] suraksha report: ${e.message}`);
+    }
+  }
+  return n;
+}
+
 /** Pull MySQL last-3h rows into memory if missing (so local seed stays aligned). */
 async function hydrateFromMysqlRecent(pool) {
   let added = 0;
@@ -366,6 +516,9 @@ async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
     queues: await syncRecentQueues(pool),
     orders: await syncRecentOrders(pool),
     chat: await syncRecentChat(pool),
+    news_cache: await syncRecentNewsCache(pool),
+    r_detector: await syncRecentRDetector(pool),
+    suraksha: await syncRecentSuraksha(pool),
     hydrated,
   };
 
@@ -377,7 +530,10 @@ async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
     counts.appointments +
     counts.queues +
     counts.orders +
-    counts.chat;
+    counts.chat +
+    counts.news_cache +
+    counts.r_detector +
+    counts.suraksha;
 
   LOG.info('');
   if (written === 0 && hydrated === 0) {

@@ -877,6 +877,318 @@ const syncCyberThreats = async ({ startOffset = 0, onProgress } = {}) => {
 };
 
 // ====================
+// NEWS CACHE SYNC (lazy slice backing store)
+// ====================
+const syncNewsCache = async ({ onProgress } = {}) => {
+    LOG.info('[News Cache Sync] Starting news cache sync...');
+    const items = inMemoryDb.news_cache || [];
+    let itemsSynced = 0;
+    let queriesSynced = 0;
+
+    if (typeof db.ensureNewsCacheTable === 'function') {
+        await db.ensureNewsCacheTable();
+        queriesSynced += 1;
+    }
+
+    if (items.length > 0 && typeof db.saveNewsItems === 'function') {
+        const withKeys = items.map((item) => ({
+            ...item,
+            unique_key: item.unique_key || item.link || item.id || `${item.source || ''}|${item.text || ''}`,
+        }));
+        const result = await db.saveNewsItems(withKeys);
+        itemsSynced = result?.saved || withKeys.length;
+        queriesSynced += Math.ceil(withKeys.length / BATCH_SIZE);
+    }
+
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: Math.max(items.length, 1) });
+    LOG.success(`[News Cache Sync] Completed: ${itemsSynced} news items synced to MySQL`);
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: Math.max(items.length, 1) });
+};
+
+// ====================
+// SURAKSHA SYNC (validations + reports)
+// ====================
+const syncSurakshaData = async ({ onProgress } = {}) => {
+    LOG.info('[Suraksha Sync] Starting suraksha data sync...');
+    const pool = await getPool();
+    let itemsSynced = 0;
+    let queriesSynced = 0;
+
+    try {
+        const { ensureFeatureSchema } = require('./database/schema/featureTables');
+        await ensureFeatureSchema('cyber', db);
+        queriesSynced += 1;
+    } catch (err) {
+        LOG.warning('[Suraksha Sync] Schema check (non-fatal):', err.message);
+    }
+
+    const validations = inMemoryDb.surakshaValidations || [];
+    for (const v of validations) {
+        try {
+            await pool.query(
+                `INSERT INTO suraksha_validations
+                 (id, user_id, input_value, type, status, result_data, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   status=VALUES(status),
+                   result_data=VALUES(result_data),
+                   updated_at=VALUES(updated_at)`,
+                [
+                    v.id,
+                    v.user_id,
+                    v.input_value || v.input || '',
+                    v.type || 'other',
+                    v.status || 'pending',
+                    v.result_data ? JSON.stringify(v.result_data) : null,
+                    v.created_at || new Date(),
+                    v.updated_at || new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning(`[Suraksha Sync] validation ${v.id}:`, err.message);
+        }
+    }
+
+    const reports = inMemoryDb.surakshaReports || [];
+    for (const r of reports) {
+        try {
+            await pool.query(
+                `INSERT INTO suraksha_reports
+                 (id, user_id, complaint_id, input, type, amount, beneficiary, description,
+                  transaction_date, evidence, status, govt_sent, govt_complaint_id,
+                  reminder_count, last_reminder_at, sent_at, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   status=VALUES(status),
+                   govt_sent=VALUES(govt_sent),
+                   govt_complaint_id=VALUES(govt_complaint_id),
+                   reminder_count=VALUES(reminder_count),
+                   last_reminder_at=VALUES(last_reminder_at),
+                   sent_at=VALUES(sent_at),
+                   updated_at=VALUES(updated_at)`,
+                [
+                    r.id,
+                    r.user_id,
+                    r.complaint_id || null,
+                    r.input || '',
+                    r.type || 'other',
+                    r.amount || 0,
+                    r.beneficiary || r.input || '',
+                    r.description || '',
+                    r.transaction_date || null,
+                    JSON.stringify(r.evidence || {}),
+                    r.status || 'saved',
+                    r.govt_sent ? 1 : 0,
+                    r.govt_complaint_id || null,
+                    r.reminder_count || 0,
+                    r.last_reminder_at || null,
+                    r.sent_at || null,
+                    r.created_at || new Date(),
+                    r.updated_at || new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning(`[Suraksha Sync] report ${r.id}:`, err.message);
+        }
+    }
+
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: validations.length + reports.length });
+    LOG.success(`[Suraksha Sync] Completed: ${itemsSynced} suraksha rows synced to MySQL`);
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: validations.length + reports.length });
+};
+
+// ====================
+// R-DETECTOR SYNC (commute + scans)
+// ====================
+const syncRDetectorData = async ({ onProgress } = {}) => {
+    LOG.info('[R-Detector Sync] Starting r-detector data sync...');
+    const pool = await getPool();
+    const commuteService = require('./services/rDetectorCommuteService');
+    const rDetectorService = require('./services/rDetectorService');
+    let itemsSynced = 0;
+    let queriesSynced = 0;
+
+    await commuteService.ensureCommuteTables();
+    await rDetectorService.ensureScanResultsTable(pool);
+    queriesSynced += 2;
+
+    const pings = inMemoryDb.r_detector_activity_pings || [];
+    for (const p of pings) {
+        try {
+            if (p.id != null) {
+                const [existing] = await pool.query(
+                    'SELECT id FROM r_detector_activity_pings WHERE id = ? LIMIT 1',
+                    [p.id]
+                );
+                if (existing?.length) continue;
+            }
+            await pool.query(
+                `INSERT INTO r_detector_activity_pings
+                 (user_id, latitude, longitude, speed_kmh, day_of_week, recorded_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`,
+                [
+                    p.user_id,
+                    p.latitude,
+                    p.longitude,
+                    p.speed_kmh || 0,
+                    p.day_of_week,
+                    p.recorded_at || new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[R-Detector Sync] ping:', err.message);
+        }
+    }
+
+    const trips = inMemoryDb.r_detector_commute_trips || [];
+    for (const t of trips) {
+        try {
+            if (t.id != null) {
+                const [existing] = await pool.query(
+                    'SELECT id FROM r_detector_commute_trips WHERE id = ? LIMIT 1',
+                    [t.id]
+                );
+                if (existing?.length) continue;
+            }
+            await pool.query(
+                `INSERT INTO r_detector_commute_trips
+                 (user_id, day_of_week, departure_minutes, origin_lat, origin_lng,
+                  dest_lat, dest_lng, direction, recorded_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    t.user_id,
+                    t.day_of_week,
+                    t.departure_minutes,
+                    t.origin_lat,
+                    t.origin_lng,
+                    t.dest_lat ?? null,
+                    t.dest_lng ?? null,
+                    t.direction || 'unknown',
+                    t.recorded_at || new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[R-Detector Sync] trip:', err.message);
+        }
+    }
+
+    const routes = inMemoryDb.r_detector_commute_routes || [];
+    for (const r of routes) {
+        try {
+            await pool.query(
+                `INSERT INTO r_detector_commute_routes
+                 (user_id, label, origin_lat, origin_lng, dest_lat, dest_lng, direction,
+                  sample_count, confidence, active, last_seen_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   sample_count=VALUES(sample_count),
+                   confidence=VALUES(confidence),
+                   active=VALUES(active),
+                   last_seen_at=VALUES(last_seen_at)`,
+                [
+                    r.user_id,
+                    r.label || 'Daily route',
+                    r.origin_lat,
+                    r.origin_lng,
+                    r.dest_lat,
+                    r.dest_lng,
+                    r.direction || 'outbound',
+                    r.sample_count || 0,
+                    r.confidence || 0.5,
+                    r.active != null ? r.active : 1,
+                    r.last_seen_at || null,
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[R-Detector Sync] route:', err.message);
+        }
+    }
+
+    const schedules = inMemoryDb.r_detector_commute_schedules || [];
+    for (const s of schedules) {
+        try {
+            await pool.query(
+                `INSERT INTO r_detector_commute_schedules
+                 (user_id, route_id, day_of_week, departure_minutes, alert_lead_minutes,
+                  direction, origin_lat, origin_lng, dest_lat, dest_lng, confidence, source, active)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   route_id=VALUES(route_id),
+                   confidence=VALUES(confidence),
+                   active=VALUES(active),
+                   updated_at=CURRENT_TIMESTAMP`,
+                [
+                    s.user_id,
+                    s.route_id ?? null,
+                    s.day_of_week,
+                    s.departure_minutes,
+                    s.alert_lead_minutes ?? 10,
+                    s.direction || 'outbound',
+                    s.origin_lat,
+                    s.origin_lng,
+                    s.dest_lat,
+                    s.dest_lng,
+                    s.confidence || 0.5,
+                    s.source || 'inferred',
+                    s.active != null ? s.active : 1,
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[R-Detector Sync] schedule:', err.message);
+        }
+    }
+
+    const scans = inMemoryDb.r_detector_scan_results || [];
+    for (const s of scans) {
+        try {
+            if (s.id != null) {
+                const [existing] = await pool.query(
+                    'SELECT id FROM r_detector_scan_results WHERE id = ? LIMIT 1',
+                    [s.id]
+                );
+                if (existing?.length) continue;
+            }
+            await pool.query(
+                `INSERT INTO r_detector_scan_results
+                 (user_id, latitude, longitude, speed_kmh, confidence, issue_type, hazard_id, scan_date, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    s.user_id,
+                    s.latitude,
+                    s.longitude,
+                    s.speed_kmh ?? null,
+                    s.confidence ?? null,
+                    s.issue_type || 'bad_road',
+                    s.hazard_id ?? null,
+                    s.scan_date || new Date().toISOString().slice(0, 10),
+                    s.created_at || new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[R-Detector Sync] scan:', err.message);
+        }
+    }
+
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: itemsSynced || 1 });
+    LOG.success(`[R-Detector Sync] Completed: ${itemsSynced} r-detector rows synced to MySQL`);
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: itemsSynced || 1 });
+};
+
+// ====================
 // TRADING DATA SYNC
 // ====================
 const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
@@ -941,7 +1253,37 @@ const syncFleetData = async ({ onProgress } = {}) => {
     await applyMumbaiPuneFleetSeed(pool);
     queriesSynced += 6;
 
-    const itemsSynced = 1;
+    const hazards = inMemoryDb.fleet_hazards || [];
+    for (const h of hazards) {
+        try {
+            if (h.id != null) {
+                const [existing] = await pool.query('SELECT id FROM fleet_hazards WHERE id = ? LIMIT 1', [h.id]);
+                if (existing?.length) continue;
+            }
+            await pool.query(
+                `INSERT INTO fleet_hazards
+                 (driver_id, hazard_type, latitude, longitude, description, image_url,
+                  points_awarded, status, reported_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    h.driver_id || h.user_id || 'unknown',
+                    h.hazard_type || h.type || 'other',
+                    h.latitude,
+                    h.longitude,
+                    h.description || '',
+                    h.image_url || null,
+                    h.points_awarded ?? 5,
+                    h.status || 'reported',
+                    h.reported_at || h.created_at || new Date(),
+                ]
+            );
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[Fleet Data Sync] hazard:', err.message);
+        }
+    }
+
+    const itemsSynced = 1 + hazards.length;
     LOG.success('[Fleet Data Sync] Mumbai–Pune corridor synced to MySQL');
     if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: 1 });
     return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: 1 });
@@ -997,6 +1339,9 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         totalSynced += await step('activities', syncActivities);
         totalSynced += await step('otps', syncOTPs);
         totalSynced += await step('cyber_threats', syncCyberThreats);
+        totalSynced += await step('suraksha_data', syncSurakshaData);
+        totalSynced += await step('news_cache', syncNewsCache);
+        totalSynced += await step('r_detector_data', syncRDetectorData);
         totalSynced += await step('trading_data', syncTradingData);
         totalSynced += await step('fleet_data', syncFleetData);
         
@@ -1058,6 +1403,9 @@ module.exports = {
     syncActivities,
     syncOTPs,
     syncCyberThreats,
+    syncSurakshaData,
+    syncNewsCache,
+    syncRDetectorData,
     syncTradingData,
     syncFleetData
 };

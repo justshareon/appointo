@@ -134,6 +134,22 @@ const FEATURES = {
         lazy: true,
         memory: mem([], { reclaim: false }),
     },
+    r_detector: {
+        id: 'r_detector',
+        label: 'R-Detector',
+        mysql: true,
+        lazy: true,
+        memory: mem(
+            [
+                'r_detector_activity_pings',
+                'r_detector_commute_trips',
+                'r_detector_commute_routes',
+                'r_detector_commute_schedules',
+                'r_detector_scan_results',
+            ],
+            { reclaim: false }
+        ),
+    },
     realestate: {
         id: 'realestate',
         label: 'Real estate',

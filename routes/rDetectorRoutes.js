@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const rDetectorService = require('../services/rDetectorService');
+const commuteService = require('../services/rDetectorCommuteService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
@@ -112,6 +113,45 @@ router.post('/incidents/report', authenticateToken, async (req, res) => {
 });
 
 /**
+ * POST /api/r-detector/commute/activity — record GPS ping / trip start for route learning
+ */
+router.post('/commute/activity', authenticateToken, async (req, res) => {
+  try {
+    const result = await commuteService.recordActivity(req.user.id, req.body);
+    res.json(result);
+  } catch (err) {
+    LOG.error('[R-Detector] commute activity', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/r-detector/commute/schedules — learned weekday departure patterns
+ */
+router.get('/commute/schedules', authenticateToken, async (req, res) => {
+  try {
+    const schedules = await commuteService.getSchedules(req.user.id);
+    res.json({ schedules });
+  } catch (err) {
+    LOG.error('[R-Detector] commute schedules', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/r-detector/commute/pre-departure — hazards on route 10 min before learned departure
+ */
+router.get('/commute/pre-departure', authenticateToken, async (req, res) => {
+  try {
+    const brief = await commuteService.getPreDepartureBrief(req.user.id);
+    res.json(brief);
+  } catch (err) {
+    LOG.error('[R-Detector] pre-departure', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/r-detector/incidents/:id
  */
 router.get('/incidents/:id', authenticateToken, async (req, res) => {
@@ -171,6 +211,93 @@ router.post('/bad-road/probe', authenticateToken, async (req, res) => {
     res.json(result);
   } catch (err) {
     LOG.error('[R-Detector] bad-road probe', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/r-detector/scan-results — save confirmed scan (user tapped Yes)
+ */
+router.post('/scan-results', authenticateToken, async (req, res) => {
+  try {
+    const lat = parseFloat(req.body.latitude);
+    const lng = parseFloat(req.body.longitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ error: 'latitude and longitude required' });
+    }
+    const result = await rDetectorService.saveScanResult(req.user.id, {
+      latitude: lat,
+      longitude: lng,
+      speed_kmh: req.body.speed_kmh,
+      confidence: req.body.confidence,
+      issue_type: req.body.issue_type || 'bad_road',
+      hazard_id: req.body.hazard_id,
+      scan_date: req.body.scan_date,
+    });
+    res.json(result);
+  } catch (err) {
+    LOG.error('[R-Detector] save scan result', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * GET /api/r-detector/scan-results/today
+ */
+router.get('/scan-results/today', authenticateToken, async (req, res) => {
+  try {
+    const rows = await rDetectorService.getTodayScanResults(req.user.id);
+    res.json(rows);
+  } catch (err) {
+    LOG.error('[R-Detector] today scan results', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/incidents/:id/vote', authenticateToken, async (req, res) => {
+  try {
+    const vote = req.body.vote || 'upvote';
+    const result = await rDetectorService.voteIncident(req.params.id, req.user.id, vote);
+    res.json(result);
+  } catch (err) {
+    LOG.error('[R-Detector] vote', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/incidents/:id/votes', authenticateToken, async (req, res) => {
+  try {
+    const result = await rDetectorService.getIncidentVotes(req.params.id);
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/heat', authenticateToken, async (req, res) => {
+  try {
+    const lat = parseFloat(req.query.lat);
+    const lng = parseFloat(req.query.lng);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ error: 'lat and lng required' });
+    }
+    const rows = await rDetectorService.getHeatIncidents({
+      lat,
+      lng,
+      radiusKm: parseFloat(req.query.radiusKm) || 5,
+    });
+    res.json(rows);
+  } catch (err) {
+    LOG.error('[R-Detector] heat', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/reporter-stats', authenticateToken, async (req, res) => {
+  try {
+    const stats = await rDetectorService.getReporterStats(req.user.id);
+    res.json(stats);
+  } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });

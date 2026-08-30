@@ -15,6 +15,8 @@
     "sync:status": "node checkSyncStatus.js",
     "sync:3h": "node syncLast3Hours.js",
     "sync:onboard": "node onboardSync.js",
+    "sync:rdetector-commute": "node ensureRDetectorCommute.js",
+    "sync:rdetector-scans": "node ensureRDetectorScanResults.js",
     "sync:users": "set DB_TYPE=mysql&& node -e \"const {syncUsers}=require('./syncAllToMysql');require('./database');syncUsers().then(()=>process.exit(0)).catch(()=>process.exit(1))\"",
     "sync:vendors": "set DB_TYPE=mysql&& node -e \"const {syncVendors}=require('./syncAllToMysql');require('./database');syncVendors().then(()=>process.exit(0)).catch(()=>process.exit(1))\"",
     "sync:products": "set DB_TYPE=mysql&& node -e \"const {syncProducts}=require('./syncAllToMysql');require('./database');syncProducts().then(()=>process.exit(0)).catch(()=>process.exit(1))\"",

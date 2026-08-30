@@ -270,14 +270,14 @@ const fleetService = {
     /**
      * List recent hazard reports (all drivers) — optional nearby filter.
      */
-    async getHazards({ latitude, longitude, radiusMiles = 25, limit = 50 } = {}) {
+    async getHazards({ latitude, longitude, radiusMiles = 25, limit = 20 } = {}) {
         try {
             await ensureFleetTablesInitialized();
             if (db.getType() !== 'mysql') {
                 return (db.inMemoryDb?.fleet_hazards || []).slice(0, limit);
             }
             const pool = db.getPool();
-            const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 100);
+            const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 30);
             const hasCoords = Number.isFinite(latitude) && Number.isFinite(longitude);
 
             if (hasCoords) {
@@ -290,7 +290,7 @@ const fleetService = {
                       )) AS distance_miles
                     FROM fleet_hazards h
                     LEFT JOIN users u ON h.driver_id = u.id
-                    WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                    WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                     HAVING distance_miles <= ?
                     ORDER BY h.reported_at DESC
                     LIMIT ?
@@ -302,7 +302,7 @@ const fleetService = {
                 SELECT h.*, u.name AS driver_name
                 FROM fleet_hazards h
                 LEFT JOIN users u ON h.driver_id = u.id
-                WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 14 DAY)
+                WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
                 ORDER BY h.reported_at DESC
                 LIMIT ?
             `, [safeLimit]);

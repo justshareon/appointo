@@ -93,7 +93,7 @@ router.get('/hazards', authenticateToken, async (req, res) => {
         const lat = req.query.lat != null ? parseFloat(req.query.lat) : null;
         const lng = req.query.lng != null ? parseFloat(req.query.lng) : null;
         const radius = parseFloat(req.query.radius) || 25;
-        const limit = parseInt(req.query.limit, 10) || 50;
+        const limit = Math.min(parseInt(req.query.limit, 10) || 20, 30);
         const hazards = await fleetService.getHazards({
             latitude: lat,
             longitude: lng,

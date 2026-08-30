@@ -32,7 +32,14 @@ function resolveCityFromCoords(latitude, longitude) {
 
 function normalizeCityName(city) {
   const c = String(city || '').trim();
-  return c || 'Other';
+  if (!c) return 'Other';
+  const lower = c.toLowerCase();
+  for (const z of CITY_ZONES) {
+    if (lower === z.city.toLowerCase() || lower.includes(z.city.toLowerCase())) {
+      return z.city;
+    }
+  }
+  return c;
 }
 
 module.exports = { resolveCityFromCoords, normalizeCityName, CITY_ZONES };

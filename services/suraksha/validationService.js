@@ -6,6 +6,7 @@ const i4cService = require('./i4cService');
 const certInService = require('./certInService');
 const sancharSaathiService = require('./sancharSaathiService');
 const db = require('../../database');
+const { sortTodayRecentFirst, withinRecentDays } = require('../../utils/recentSlice');
 const LOG = require('../../utils/logger');
 
 class ValidationService {
@@ -222,12 +223,15 @@ class ValidationService {
     /**
      * Get validation history for user
      */
-    async getValidationHistory(userId, limit = 50) {
+    async getValidationHistory(userId, limit = 24) {
+        const capped = Math.min(parseInt(limit, 10) || 24, 40);
         if (db.surakshaValidations) {
-            return db.surakshaValidations
-                .filter(v => v.user_id === userId)
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .slice(0, limit);
+            const rows = withinRecentDays(
+                db.surakshaValidations.filter((v) => v.user_id === userId),
+                30,
+                ['created_at', 'updated_at']
+            );
+            return sortTodayRecentFirst(rows, capped, ['created_at', 'updated_at']);
         }
         return [];
     }

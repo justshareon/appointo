@@ -4,6 +4,7 @@
  * Syncs data: Local Database → MySQL
  */
 const db = require('../../database');
+const { sortTodayRecentFirst, withinRecentDays } = require('../../utils/recentSlice');
 const LOG = require('../../utils/logger');
 
 class CyberThreatService {
@@ -226,7 +227,9 @@ class CyberThreatService {
                 return (b.report_count || 0) - (a.report_count || 0);
             });
 
-            return threats.slice(0, filters.limit || 50);
+            const capped = Math.min(parseInt(filters.limit, 10) || 24, 40);
+            const recent = withinRecentDays(threats, 14, ['created_at', 'updated_at', 'last_reported']);
+            return sortTodayRecentFirst(recent, capped, ['created_at', 'updated_at', 'last_reported']);
         } catch (error) {
             LOG.error(`[Cyber Threat] Get active threats error:`, error);
             return [];
