@@ -362,3 +362,7 @@
 [2026-08-25T11:56:30.347Z] ERROR: MySQL getQueueByVendor failed for v_new1, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
 [2026-08-25T11:56:31.044Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
 [2026-08-25T11:56:32.412Z] ERROR: MySQL getQueueByVendor failed for v_siddhi, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
+[2026-08-31T08:45:41.626Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: Pool is closed.
+[2026-08-31T08:45:42.099Z] ERROR: MySQL getQueueByVendor failed for v_new1, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
+[2026-08-31T08:45:42.141Z] ERROR: MySQL getQueueByVendor failed for v_siddhi, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
+[2026-08-31T14:33:15.177Z] ERROR: MySQL autoExpireAppointments failed, falling back to local | DETAIL: getaddrinfo ENOTFOUND gateway01.ap-southeast-1.prod.aws.tidbcloud.com
