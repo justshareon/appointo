@@ -855,10 +855,11 @@ router.post('/refresh', async (req, res) => {
             const totalDuration = Date.now() - refreshStartTime;
             LOG.info(`[Trading Routes] Full refresh completed in ${totalDuration}ms`);
             LOG.info('[Trading Routes] ========================================');
-            
-            res.json({ 
-                success: true, 
-                message: 'Full refresh completed',
+
+            const excelOk = results.excelSync?.success !== false;
+            res.json({
+                success: excelOk,
+                message: excelOk ? 'Full refresh completed' : (results.excelSync?.message || 'Excel sync failed'),
                 results: results,
                 duration: totalDuration
             });

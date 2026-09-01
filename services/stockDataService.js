@@ -252,10 +252,10 @@ class StockDataService {
      * Truncate live_stock_data table
      */
     async truncateLiveData() {
+        const inMemoryDb = this.getInMemoryDb();
+        inMemoryDb.live_stock_data = [];
+
         if (!this.isMySQLAvailable()) {
-            // Use in-memory storage
-            const inMemoryDb = this.getInMemoryDb();
-            inMemoryDb.live_stock_data = [];
             LOG.info('[Stock Data] Live stock data truncated in memory');
             return;
         }
@@ -263,11 +263,34 @@ class StockDataService {
         const pool = db.getPool();
         try {
             await pool.query('TRUNCATE TABLE live_stock_data');
-            LOG.info('[Stock Data] Live stock data table truncated');
+            LOG.info('[Stock Data] Live stock data table truncated (memory cleared too)');
         } catch (error) {
             LOG.error('[Stock Data] Error truncating live data:', error.message);
             throw error;
         }
+    }
+
+    /** Row count in MySQL live_stock_data (0 when pool missing or empty). */
+    async getMysqlLiveCount() {
+        if (!this.isMySQLAvailable()) return 0;
+        try {
+            const [rows] = await db.getPool().query('SELECT COUNT(*) AS c FROM live_stock_data');
+            return rows[0]?.c || 0;
+        } catch (e) {
+            LOG.warning('[Stock Data] getMysqlLiveCount failed:', e.message);
+            return 0;
+        }
+    }
+
+    /** Mirror rows to in-memory for fast bootstrap reads. */
+    mirrorLiveDataToMemory(stockData) {
+        const inMemoryDb = this.getInMemoryDb();
+        inMemoryDb.live_stock_data = (stockData || []).map((stock) => ({
+            ...stock,
+            id: stock.id || Date.now() + Math.random(),
+            last_updated: stock.last_updated || new Date(),
+        }));
+        return inMemoryDb.live_stock_data.length;
     }
 
     /**
@@ -281,15 +304,10 @@ class StockDataService {
             return 0;
         }
 
+        // Always mirror to in-memory first (instant UI bootstrap).
+        this.mirrorLiveDataToMemory(stockData);
+
         if (!this.isMySQLAvailable()) {
-            // Use in-memory storage
-            const inMemoryDb = this.getInMemoryDb();
-            // Clear existing and insert new
-            inMemoryDb.live_stock_data = stockData.map(stock => ({
-                ...stock,
-                id: Date.now() + Math.random(), // Simple ID generation
-                last_updated: new Date()
-            }));
             LOG.success(`[Stock Data] Inserted ${stockData.length} records in memory`);
             return stockData.length;
         }
@@ -413,13 +431,22 @@ class StockDataService {
      * @returns {Promise<Array>} Array of all stock data
      */
     async getAllStocks() {
-        if (!this.isMySQLAvailable()) {
-            LOG.info(`[Stock Data] getAllStocks in memory`);
+        const memoryStocks = async () => {
+            LOG.info('[Stock Data] getAllStocks from memory');
             const inMemoryDb = this.getInMemoryDb();
-            const stocks = inMemoryDb.live_stock_data
+            const stocks = (inMemoryDb.live_stock_data || [])
                 .sort((a, b) => (a.symbol || '').localeCompare(b.symbol || ''));
             const volumeMap = await this.getLastWeekVolumesBatch(stocks.map((s) => s.symbol));
             return this.formatStocksWithVolumes(stocks, volumeMap);
+        };
+
+        if (!this.isMySQLAvailable()) {
+            return memoryStocks();
+        }
+
+        const mysqlCount = await this.getMysqlLiveCount();
+        if (mysqlCount === 0) {
+            return memoryStocks();
         }
 
         const pool = db.getPool();
@@ -502,7 +529,8 @@ class StockDataService {
         else if (sort === 'losers' || sort === 'decliners') orderBy = 'per_change ASC';
         else if (sort === 'volume') orderBy = 'volume DESC';
 
-        if (!this.isMySQLAvailable()) {
+        const mysqlCount = this.isMySQLAvailable() ? await this.getMysqlLiveCount() : 0;
+        if (!this.isMySQLAvailable() || mysqlCount === 0) {
             const all = this.getInMemoryDb().live_stock_data || [];
             let filtered = dataType ? all.filter((s) => s.data_type === dataType) : all;
             // Fallback: typed sheet empty → derive from all rows

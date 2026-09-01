@@ -52,6 +52,14 @@ const tradingConfigService = require('../services/tradingConfigService');
 const stockDataService = require('../services/stockDataService');
 const LOG = require('../utils/logger');
 
+const requireSuperAdmin = (req, res, next) => {
+    const role = String(req.user?.role || '').toLowerCase();
+    if (role !== 'super_admin' && req.user?.email !== 'admin@qrqueue.com') {
+        return res.status(403).json({ error: 'Super admin access required' });
+    }
+    return next();
+};
+
 /**
  * GET /api/admin/trading-config
  * Get current trading data source configuration
@@ -149,6 +157,66 @@ router.delete('/trading-data/clear', async (req, res) => {
     } catch (error) {
         LOG.error('[Admin] Error clearing stock data:', error);
         res.status(500).json({ error: error.message || 'Failed to clear data' });
+    }
+});
+
+/**
+ * GET /api/admin/trading-data/status
+ * MySQL + in-memory counts and Excel sync job health
+ */
+router.get('/trading-data/status', requireSuperAdmin, async (req, res) => {
+    try {
+        const syncJob = global.excelFileSyncJob;
+        const mysqlCount = await stockDataService.getMysqlLiveCount();
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        res.json({
+            success: true,
+            mysqlCount,
+            memoryCount,
+            pendingPreview: syncJob?.getPendingPreview?.()?.length || 0,
+            sync: syncJob?.getStatus?.() || null,
+        });
+    } catch (error) {
+        LOG.error('[Admin] trading-data/status:', error);
+        res.status(500).json({ error: error.message || 'Failed to get trading data status' });
+    }
+});
+
+/**
+ * POST /api/admin/trading-data/load-excel
+ * Close/reopen Excel (optional), read workbook, preview in memory — no DB write until save.
+ * Body: { restartExcel?: boolean, openExcel?: boolean }
+ */
+router.post('/trading-data/load-excel', requireSuperAdmin, async (req, res) => {
+    try {
+        const syncJob = global.excelFileSyncJob;
+        if (!syncJob) {
+            return res.status(503).json({ error: 'Excel sync job not initialized' });
+        }
+        const { restartExcel = false, openExcel = true } = req.body || {};
+        const preview = await syncJob.loadPreviewForAdmin({ restartExcel, openExcel });
+        res.json({ success: true, preview });
+    } catch (error) {
+        LOG.error('[Admin] load-excel:', error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to load Excel' });
+    }
+});
+
+/**
+ * POST /api/admin/trading-data/save-excel
+ * Persist preview (or body.data) to in-memory + MySQL.
+ */
+router.post('/trading-data/save-excel', requireSuperAdmin, async (req, res) => {
+    try {
+        const syncJob = global.excelFileSyncJob;
+        if (!syncJob) {
+            return res.status(503).json({ error: 'Excel sync job not initialized' });
+        }
+        const result = await syncJob.persistCleanedData(req.body?.data);
+        res.json({ success: true, message: `Saved ${result.inserted} stock rows`, ...result });
+    } catch (error) {
+        LOG.error('[Admin] save-excel:', error);
+        res.status(500).json({ success: false, error: error.message || 'Failed to save Excel data' });
     }
 });
 

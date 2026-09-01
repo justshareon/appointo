@@ -34,6 +34,7 @@ class ExcelFileSyncJob {
         this.cronJob = null;
         this.initialized = false;
         this.app = null;
+        this.pendingPreview = null;
         this.refreshEnvConfig();
 
         LOG.info('[Excel File Sync] Constructor called');
@@ -510,6 +511,137 @@ class ExcelFileSyncJob {
         }
     }
 
+    flattenSheetsData(sheetsData) {
+        if (!sheetsData) return [];
+        return [
+            ...(sheetsData.gainers || []),
+            ...(sheetsData.decliners || []),
+            ...(sheetsData.actives || []),
+            ...(sheetsData.data || []),
+        ];
+    }
+
+    cleanStockRows(allStockData) {
+        return (allStockData || []).map((stock, idx) => {
+            const cleaned = {
+                symbol: (stock.symbol || stock.Symbol || '').toString().substring(0, 20),
+                company_name: (stock.company_name || stock.Company_Name || '').toString().substring(0, 255),
+                last_price: parseFloat(stock.last_price || stock.Last_Price || 0),
+                pchange: parseFloat(stock.pchange || stock.Change || 0),
+                per_change: parseFloat(stock.per_change || stock.Percent_Change || 0),
+                volume: parseFloat(stock.volume || stock.Volume || 0),
+                market_cap: parseFloat(stock.market_cap || stock.Market_Cap || null),
+                pe_ratio: parseFloat(stock.pe_ratio || stock.PE_Ratio || null),
+                week_52_low: parseFloat(stock.week_52_low || stock.Week_52_Low || null),
+                week_52_high: parseFloat(stock.week_52_high || stock.Week_52_High || null),
+                data_type: (stock.data_type || stock.Data_Type || 'data').toString().substring(0, 50),
+                additional_data: null,
+            };
+            if (idx === 0) {
+                LOG.info('[Excel File Sync] Sample cleaned record:', JSON.stringify(cleaned));
+            }
+            return cleaned;
+        });
+    }
+
+    summarizeCleanedData(cleanedData) {
+        const counts = { gainers: 0, decliners: 0, actives: 0, data: 0 };
+        (cleanedData || []).forEach((row) => {
+            const key = row.data_type || 'data';
+            if (counts[key] != null) counts[key] += 1;
+            else counts.data += 1;
+        });
+        return {
+            total: cleanedData?.length || 0,
+            counts,
+            sample: (cleanedData || []).slice(0, 5),
+        };
+    }
+
+    /**
+     * Admin: load Excel → preview in memory (no DB write until save).
+     */
+    async loadPreviewForAdmin({ restartExcel = false, openExcel = true } = {}) {
+        if (this.isRunning) {
+            throw new Error('Sync already in progress');
+        }
+        this.isRunning = true;
+        try {
+            const waitMs = restartExcel
+                ? excelLauncherService.getRefreshWaitMs()
+                : excelLauncherService.getWaitMs();
+            const sheetsData = await this.readStockData({
+                openExcel: restartExcel ? true : openExcel,
+                restartExcel,
+                waitMs,
+            });
+            const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
+            if (!cleaned.length) {
+                throw new Error('No rows found in Excel / Google Sheets');
+            }
+            stockDataService.mirrorLiveDataToMemory(cleaned);
+            this.pendingPreview = cleaned;
+            return this.summarizeCleanedData(cleaned);
+        } finally {
+            this.isRunning = false;
+        }
+    }
+
+    getPendingPreview() {
+        return this.pendingPreview;
+    }
+
+    /**
+     * Persist cleaned rows to in-memory + MySQL (archive → truncate → insert).
+     */
+    async persistCleanedData(cleanedData, { fromSync = false } = {}) {
+        if (this.isRunning && !fromSync) {
+            throw new Error('Sync already in progress');
+        }
+        const rows = cleanedData || this.pendingPreview;
+        if (!rows?.length) {
+            throw new Error('No stock data to save. Load Excel first.');
+        }
+
+        const pool = require('../database').getPool();
+        if (!pool) {
+            await stockDataService.archiveCurrentData();
+            await stockDataService.truncateLiveData();
+            const inserted = await stockDataService.insertLiveData(rows);
+            this.lastSyncTime = new Date();
+            this.lastSyncStatus = 'success';
+            this.pendingPreview = null;
+            return { inserted, storage: 'memory' };
+        }
+
+        const connection = await pool.getConnection();
+        await connection.beginTransaction();
+        try {
+            const archivedCount = await this.archiveWithConnection(connection);
+            await connection.query('TRUNCATE TABLE live_stock_data');
+            const insertedCount = await this.insertWithConnection(connection, rows);
+            await connection.commit();
+            stockDataService.mirrorLiveDataToMemory(rows);
+            this.lastSyncTime = new Date();
+            this.lastSyncStatus = 'success';
+            this.lastSyncError = null;
+            this.pendingPreview = null;
+            try {
+                await featureEngineeringService.generateFeaturesForML();
+            } catch (featureError) {
+                LOG.warning('[Excel File Sync] Feature generation failed (non-critical):', featureError.message);
+            }
+            return { inserted: insertedCount, archived: archivedCount, storage: 'mysql' };
+        } catch (error) {
+            await connection.rollback();
+            this.lastSyncStatus = 'error';
+            this.lastSyncError = error.message;
+            throw error;
+        } finally {
+            connection.release();
+        }
+    }
+
     async sync(forceSync = false, options = {}) {
         if (this.isRunning) {
             LOG.warning('[Excel File Sync] Already running, skipping...');
@@ -560,15 +692,10 @@ class ExcelFileSyncJob {
                 restartExcel,
                 waitMs,
             });
-            
-            const allStockData = [
-                ...sheetsData.gainers,
-                ...sheetsData.decliners,
-                ...sheetsData.actives,
-                ...sheetsData.data
-            ];
-            
-            if (allStockData.length === 0) {
+
+            const cleanedData = this.cleanStockRows(this.flattenSheetsData(sheetsData));
+
+            if (cleanedData.length === 0) {
                 LOG.warning('[Excel File Sync] No data found in any source');
                 this.lastSyncStatus = 'error';
                 this.lastSyncError = 'No data found';
@@ -576,86 +703,10 @@ class ExcelFileSyncJob {
                 return;
             }
 
-            LOG.info(`[Excel File Sync] Processing ${allStockData.length} total records`);
-
-            // Clean data
-            const cleanedData = allStockData.map((stock, idx) => {
-                const cleaned = {
-                    symbol: (stock.symbol || stock.Symbol || '').toString().substring(0, 20),
-                    company_name: (stock.company_name || stock.Company_Name || '').toString().substring(0, 255),
-                    last_price: parseFloat(stock.last_price || stock.Last_Price || 0),
-                    pchange: parseFloat(stock.pchange || stock.Change || 0),
-                    per_change: parseFloat(stock.per_change || stock.Percent_Change || 0),
-                    volume: parseFloat(stock.volume || stock.Volume || 0),
-                    market_cap: parseFloat(stock.market_cap || stock.Market_Cap || null),
-                    pe_ratio: parseFloat(stock.pe_ratio || stock.PE_Ratio || null),
-                    week_52_low: parseFloat(stock.week_52_low || stock.Week_52_Low || null),
-                    week_52_high: parseFloat(stock.week_52_high || stock.Week_52_High || null),
-                    data_type: (stock.data_type || stock.Data_Type || 'data').toString().substring(0, 50),
-                    additional_data: null
-                };
-                
-                if (idx === 0) {
-                    LOG.info('[Excel File Sync] Sample cleaned record:', JSON.stringify(cleaned));
-                }
-                
-                return cleaned;
-            });
-
-            const pool = require('../database').getPool();
-            
-            if (!pool) {
-                LOG.warning('[Excel File Sync] No database pool, using in-memory');
-                await stockDataService.archiveCurrentData();
-                await stockDataService.truncateLiveData();
-                const inserted = await stockDataService.insertLiveData(cleanedData);
-                this.lastSyncTime = new Date();
-                this.lastSyncStatus = 'success';
-                LOG.success(`[Excel File Sync] In-memory: ${inserted} records in ${Date.now() - syncStartTime}ms`);
-                this.isRunning = false;
-                return;
-            }
-
-            LOG.info('[Excel File Sync] Connecting to database...');
-            const connection = await pool.getConnection();
-            await connection.beginTransaction();
-
-            try {
-                LOG.info('[Excel File Sync] Archiving existing data...');
-                const archivedCount = await this.archiveWithConnection(connection);
-                LOG.info(`[Excel File Sync] Archived ${archivedCount} records`);
-                
-                LOG.info('[Excel File Sync] Truncating live_stock_data...');
-                await connection.query('TRUNCATE TABLE live_stock_data');
-                
-                LOG.info(`[Excel File Sync] Inserting ${cleanedData.length} records...`);
-                const insertedCount = await this.insertWithConnection(connection, cleanedData);
-                
-                await connection.commit();
-                LOG.success(`[Excel File Sync] ✅ Transaction committed`);
-
-                const syncDuration = Date.now() - syncStartTime;
-                this.lastSyncTime = new Date();
-                this.lastSyncStatus = 'success';
-
-                LOG.success(`[Excel File Sync] ✅✅✅ DONE: ${insertedCount} records | ${syncDuration}ms | Archived: ${archivedCount}`);
-
-                // Generate features (non-critical)
-                try {
-                    LOG.info('[Excel File Sync] Generating features...');
-                    await featureEngineeringService.generateFeaturesForML();
-                    LOG.success('[Excel File Sync] Features generated');
-                } catch (featureError) {
-                    LOG.warning('[Excel File Sync] Feature generation failed (non-critical):', featureError.message);
-                }
-
-            } catch (error) {
-                await connection.rollback();
-                LOG.error('[Excel File Sync] Transaction failed, rolling back:', error.message);
-                throw error;
-            } finally {
-                connection.release();
-            }
+            LOG.info(`[Excel File Sync] Processing ${cleanedData.length} total records`);
+            const persistResult = await this.persistCleanedData(cleanedData, { fromSync: true });
+            const syncDuration = Date.now() - syncStartTime;
+            LOG.success(`[Excel File Sync] ✅✅✅ DONE: ${persistResult.inserted} records | ${syncDuration}ms`);
 
         } catch (error) {
             const syncDuration = Date.now() - syncStartTime;
