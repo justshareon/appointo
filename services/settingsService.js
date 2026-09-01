@@ -1,5 +1,6 @@
 const db = require('../database');
 const LOG = require('../utils/logger');
+const { ensureFeatureSettings } = require('../utils/defaultFeatureSettings');
 
 /**
  * Settings Service
@@ -10,7 +11,8 @@ class SettingsService {
      * Get system settings
      */
     async getSettings() {
-        return await db.getSettings() || {};
+        const raw = await db.getSettings() || {};
+        return ensureFeatureSettings(raw);
     }
 
     /**

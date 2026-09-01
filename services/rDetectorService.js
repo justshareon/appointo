@@ -101,6 +101,25 @@ function groupIncidents(incidents) {
   });
 }
 
+/** In-memory bootstrap — used when MySQL pool is absent or not yet synced. */
+function readMemoryIncidents({ cityFilter = null, typeFilter = null, limit = 100 } = {}) {
+  let rows = (db.inMemoryDb?.fleet_hazards || []).map(mapIncident).filter(Boolean);
+  if (cityFilter) rows = rows.filter((r) => r.city === cityFilter);
+  if (typeFilter) rows = rows.filter((r) => r.report_category === typeFilter);
+  return rows.slice(0, limit);
+}
+
+function cityCountsFromIncidents(incidents) {
+  const counts = {};
+  (incidents || []).forEach((r) => {
+    if (!r?.city) return;
+    counts[r.city] = (counts[r.city] || 0) + 1;
+  });
+  return Object.entries(counts)
+    .map(([city, count]) => ({ city, count }))
+    .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city));
+}
+
 const rDetectorService = {
   async backfillCityForRow(pool, row) {
     if (!row?.id || row.city) return row;
@@ -122,14 +141,7 @@ const rDetectorService = {
     try {
       const pool = await getPool();
       if (!pool) {
-        const rows = (db.inMemoryDb?.fleet_hazards || []).map(mapIncident);
-        const counts = {};
-        rows.forEach((r) => {
-          counts[r.city] = (counts[r.city] || 0) + 1;
-        });
-        return Object.entries(counts)
-          .map(([city, count]) => ({ city, count }))
-          .sort((a, b) => b.count - a.count);
+        return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
       }
 
       const [rows] = await pool.query(`
@@ -137,6 +149,10 @@ const rDetectorService = {
         FROM fleet_hazards
         WHERE reported_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
       `);
+
+      if (!rows?.length) {
+        return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
+      }
 
       const counts = {};
       for (const row of rows) {
@@ -150,7 +166,7 @@ const rDetectorService = {
         .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city));
     } catch (e) {
       LOG.error('[R-Detector] getCities failed', e.message);
-      return [];
+      return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
     }
   },
 
@@ -165,10 +181,7 @@ const rDetectorService = {
       const typeFilter = type && type !== 'All' ? normalizeIncidentKey(type) : null;
 
       if (!pool) {
-        let rows = (db.inMemoryDb?.fleet_hazards || []).map(mapIncident);
-        if (cityFilter) rows = rows.filter((r) => r.city === cityFilter);
-        if (typeFilter) rows = rows.filter((r) => r.report_category === typeFilter);
-        return rows.slice(0, safeLimit);
+        return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
       }
 
       const [rows] = await pool.query(`
@@ -189,10 +202,16 @@ const rDetectorService = {
         mapped.push(incident);
         if (mapped.length >= safeLimit) break;
       }
-      return mapped;
+
+      // MySQL authoritative when synced; in-memory bootstrap until rows exist.
+      if (mapped.length > 0) return mapped;
+      return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
     } catch (e) {
       LOG.error('[R-Detector] getIncidents failed', e.message);
-      return [];
+      const cityFilter = city && city !== 'All' ? normalizeCityName(city) : null;
+      const typeFilter = type && type !== 'All' ? normalizeIncidentKey(type) : null;
+      const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+      return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
     }
   },
 
@@ -294,7 +313,10 @@ const rDetectorService = {
         LIMIT 1
       `, [incidentId]);
 
-      if (!hazards.length) return null;
+      if (!hazards.length) {
+        const mem = (db.inMemoryDb?.fleet_hazards || []).find((h) => String(h.id) === String(incidentId));
+        return mem ? { incident: mapIncident(mem), reporters: [], probes: [] } : null;
+      }
 
       const filled = hazards[0].city
         ? hazards[0]

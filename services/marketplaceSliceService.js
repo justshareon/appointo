@@ -87,6 +87,7 @@ function filterRows(rows, { category, type, scope, ctx }) {
 
 async function fetchDeals(limit) {
   try {
+    // Layered: MySQL deals when synced, in-memory vendor products until then.
     const rows = await dealsService.getDealsFromDB({ limit: Math.min(Math.max(limit, 20), 40) });
     return Array.isArray(rows) ? rows : [];
   } catch (_) {

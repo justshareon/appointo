@@ -606,6 +606,47 @@ let inMemoryDb = {
         { id: 1, type: 'appointment', vendor_id: 'v_new1', userId: 'usr_u1', userName: 'User One', message: 'booked an appointment at Vendor One Shop', timestamp: new Date(Date.now() - 60 * 60 * 1000), reactions: {} },
         { id: 2, type: 'review', vendor_id: 'v_5', userId: 'usr_rahul', userName: 'Rahul Sharma', message: 'rated Super Market 5 stars', timestamp: new Date(Date.now() - 30 * 60 * 1000), reactions: { '👍': 2, '❤️': 1 } }
     ],
+    fleet_hazards: [
+        {
+            id: 'rd_1',
+            hazard_type: 'pothole',
+            report_category: 'pothole',
+            latitude: 19.076,
+            longitude: 72.8777,
+            description: 'Large pothole near WEH exit — drive with care',
+            city: 'Mumbai',
+            region: 'Maharashtra',
+            status: 'reported',
+            reported_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+            driver_name: 'Demo Reporter',
+        },
+        {
+            id: 'rd_2',
+            hazard_type: 'accident',
+            report_category: 'accident',
+            latitude: 18.5204,
+            longitude: 73.8567,
+            description: 'Minor fender-bender slowing traffic',
+            city: 'Pune',
+            region: 'Maharashtra',
+            status: 'reported',
+            reported_at: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
+            driver_name: 'Ravi Deshmukh',
+        },
+        {
+            id: 'rd_3',
+            hazard_type: 'construction',
+            report_category: 'construction',
+            latitude: 19.2183,
+            longitude: 72.9781,
+            description: 'Road work — single lane open',
+            city: 'Thane',
+            region: 'Maharashtra',
+            status: 'reported',
+            reported_at: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+            driver_name: 'Fleet Driver',
+        },
+    ],
     user_vendor_mappings: [
         { id: 1, user_id: 'usr_user', vendor_id: 'v_1' },
         { id: 2, user_id: 'usr_user', vendor_id: 'v_new1' },
@@ -3114,6 +3155,8 @@ const db = {
     },
     saveNewsItems: async (items) => {
         if (!Array.isArray(items) || items.length === 0) return { saved: 0 };
+
+        let mysqlSaved = 0;
         if (getPool()) {
             try {
                 await db.ensureNewsCacheTable();
@@ -3146,12 +3189,13 @@ const db = {
                         ]
                     );
                 }
-                return { saved: items.length };
+                mysqlSaved = items.length;
             } catch (err) {
                 LOG.error('MySQL saveNewsItems failed', err.message);
             }
         }
 
+        // Always mirror to in-memory (fast bootstrap; MySQL is authoritative once populated).
         if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
         const existing = new Map(inMemoryDb.news_cache.map(i => [i.unique_key, i]));
         items.forEach(item => {
@@ -3162,9 +3206,20 @@ const db = {
             }
         });
         inMemoryDb.news_cache = Array.from(existing.values());
-        return { saved: items.length };
+        return { saved: mysqlSaved || items.length };
+    },
+    _readNewsItemsFromMemory: (limit = 100) => {
+        if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
+        const sorted = [...inMemoryDb.news_cache].sort((a, b) => {
+            const ta = new Date(a.date || 0).getTime();
+            const tb = new Date(b.date || 0).getTime();
+            return tb - ta;
+        });
+        return sorted.slice(0, limit);
     },
     getNewsItems: async (limit = 100) => {
+        const readMemory = () => db._readNewsItemsFromMemory(limit);
+
         if (getPool()) {
             try {
                 await db.ensureNewsCacheTable();
@@ -3175,7 +3230,7 @@ const db = {
                      LIMIT ?`,
                     [limit]
                 );
-                return rows.map(r => ({
+                const mapped = rows.map(r => ({
                     unique_key: r.unique_key,
                     text: r.text,
                     link: r.link,
@@ -3187,18 +3242,16 @@ const db = {
                     image: r.image,
                     date: r.published_at ? new Date(r.published_at).toISOString() : new Date().toISOString()
                 }));
+                // MySQL is source of truth when it has rows; otherwise bootstrap from in-memory.
+                if (mapped.length > 0) return mapped;
+                return readMemory();
             } catch (err) {
                 LOG.error('MySQL getNewsItems failed', err.message);
+                return readMemory();
             }
         }
 
-        if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
-        const sorted = [...inMemoryDb.news_cache].sort((a, b) => {
-            const ta = new Date(a.date || 0).getTime();
-            const tb = new Date(b.date || 0).getTime();
-            return tb - ta;
-        });
-        return sorted.slice(0, limit);
+        return readMemory();
     }
     ,
     clearNewsCache: async () => {

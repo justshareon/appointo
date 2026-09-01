@@ -341,13 +341,48 @@ async function syncCompanyDeals(companyId) {
 }
 
 // Get deals from database (for offer service)
-async function getDealsFromDB(filters = {}) {
-    const pool = getPool();
-    if (!pool) {
-        // Silently return empty array if pool not available (expected when using in-memory database)
+// Layered: MySQL when populated → in-memory product offers as bootstrap.
+function getInMemoryOfferDeals(filters = {}) {
+    try {
+        const db = require('./database');
+        const inMemoryDb = db.inMemoryDb || {};
+        const vendors = inMemoryDb.vendors || [];
+        const vendorMap = new Map(vendors.map((v) => [String(v.id), v]));
+        const products = (inMemoryDb.products || []).filter(
+            (p) => p.offer && !/^no offer$/i.test(String(p.offer || ''))
+        );
+        const limit = filters.limit || 40;
+        return products.slice(0, limit).map((p) => {
+            const v = vendorMap.get(String(p.vendor_id));
+            return {
+                id: `mem_${p.id}`,
+                title: p.name,
+                company_name: v?.shop_name || 'Local shop',
+                company_slug: String(v?.shop_name || 'shop').toLowerCase().replace(/\s+/g, '-'),
+                discount_text_raw: p.offer,
+                discount_percentage_max: p.offer_amount || 0,
+                discount_type: 'FLAT',
+                starting_price: p.price,
+                url: null,
+                is_active: 1,
+                categories: [{ name: v?.category || 'Offers', slug: 'offers' }],
+                updated_at: p.validity_to || new Date().toISOString(),
+                created_at: p.validity_from || new Date().toISOString(),
+            };
+        });
+    } catch (_) {
         return [];
     }
-    
+}
+
+async function getDealsFromDB(filters = {}) {
+    const pool = getPool();
+    const memoryDeals = () => getInMemoryOfferDeals(filters);
+
+    if (!pool) {
+        return memoryDeals();
+    }
+
     try {
         let query = `
             SELECT d.*, c.name as company_name, c.slug as company_slug
@@ -356,41 +391,33 @@ async function getDealsFromDB(filters = {}) {
             WHERE d.is_active = 1
         `;
         const params = [];
-        
-        // Filter by company
+
         if (filters.company_id) {
             query += ' AND d.company_id = ?';
             params.push(filters.company_id);
         }
-        
-        // Filter by category
+
         if (filters.category_id) {
             query += ' AND EXISTS (SELECT 1 FROM deal_categories dc WHERE dc.deal_id = d.id AND dc.category_id = ?)';
             params.push(filters.category_id);
         }
-        
-        // Filter by discount percentage
+
         if (filters.min_discount_percentage) {
             query += ' AND d.discount_percentage_max >= ?';
             params.push(filters.min_discount_percentage);
         }
-        
-        // Filter active deals (within date range)
+
         query += ' AND (d.start_date IS NULL OR d.start_date <= NOW())';
         query += ' AND (d.end_date IS NULL OR d.end_date >= NOW())';
-        
-        // Order by
         query += ' ORDER BY d.discount_percentage_max DESC, d.created_at DESC';
-        
-        // Limit
+
         if (filters.limit) {
             query += ' LIMIT ?';
             params.push(filters.limit);
         }
-        
+
         const [deals] = await pool.query(query, params);
-        
-        // Get categories for each deal
+
         for (const deal of deals) {
             const [categories] = await pool.query(
                 `SELECT c.id, c.name, c.slug 
@@ -401,11 +428,15 @@ async function getDealsFromDB(filters = {}) {
             );
             deal.categories = categories;
         }
-        
-        return deals;
+
+        // MySQL is authoritative when synced; in-memory bootstrap until then.
+        if (Array.isArray(deals) && deals.length > 0) {
+            return deals;
+        }
+        return memoryDeals();
     } catch (error) {
         LOG.error('Failed to get deals from database', error.message);
-        throw error;
+        return memoryDeals();
     }
 }
 

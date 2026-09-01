@@ -3,6 +3,7 @@ const db = require('../database');
 const newsAggregatorService = require('./newsAggregatorService');
 const settingsService = require('./settingsService');
 const locationNewsService = require('./locationNewsService');
+const LOG = require('../utils/logger');
 const { clampLimit, sortTodayRecentFirst, withinRecentDays } = require('../utils/recentSlice');
 
 const norm = (v) => String(v || '').trim().toLowerCase();
@@ -17,6 +18,9 @@ const buildUniqueKey = (item) => {
 };
 
 class NewsCacheService {
+    /**
+     * Fetch from external APIs (RSS/Telegram/etc.) → save to in-memory + MySQL.
+     */
     async refreshNews(limit = 50, settingsOverride = null) {
         const settings = settingsOverride || await settingsService.getSettings();
         const result = await newsAggregatorService.fetchNews(settings, limit);
@@ -45,7 +49,8 @@ class NewsCacheService {
         const { sortNewsItems } = require('./newsLocalPriority');
         return newsAggregatorService.groupItems(sortNewsItems(deduped, settings), settings);
     }
-    /** Category counts from MySQL / in-memory — no RSS fetch. */
+
+    /** Category counts — read layered store (MySQL when populated, else in-memory). */
     async getMeta(settingsOverride = null) {
         const settings = settingsOverride || await settingsService.getSettings();
         const items = await db.getNewsItems(120);
@@ -86,7 +91,13 @@ class NewsCacheService {
         });
     }
 
-  async getSlice({
+    /**
+     * Layered news slice:
+     * 1. Read in-memory / MySQL (MySQL wins when it has rows)
+     * 2. If empty or refresh: fetch APIs → saveNewsItems (memory + MySQL)
+     * 3. Re-read from layered store (MySQL when synced)
+     */
+    async getSlice({
         category = 'All',
         scope = 'All',
         limit = 15,
@@ -102,7 +113,18 @@ class NewsCacheService {
             if (hit && Date.now() - hit.ts < SLICE_TTL_MS) return hit.data;
         }
 
-        let items = await db.getNewsItems(Math.min(Math.max(safeLimit * 2, 24), 40));
+        const fetchLimit = Math.min(Math.max(safeLimit * 2, 24), 40);
+        let items = await db.getNewsItems(fetchLimit);
+
+        if (refresh || !(items || []).length) {
+            try {
+                await this.refreshNews(Math.min(Math.max(safeLimit * 2, 30), 50), settings);
+                items = await db.getNewsItems(fetchLimit);
+            } catch (e) {
+                LOG.warning('[NewsCache] API refresh failed, using in-memory:', e?.message || e);
+            }
+        }
+
         const hasLocation = !!(locationCtx.city || locationCtx.locality);
         const localScope = ['local', 'town', 'city', 'All'].includes(scope);
 
@@ -147,8 +169,6 @@ class NewsCacheService {
         sliceMem.set(memKey, { data: payload, ts: Date.now() });
         return payload;
     }
-
 }
 
 module.exports = new NewsCacheService();
-

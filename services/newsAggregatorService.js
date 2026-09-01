@@ -203,13 +203,20 @@ class NewsAggregatorService {
                 }
             }
         } else {
-            const source = (settings.trade_news_source || 'telegram').toLowerCase();
+            const source = (settings.trade_news_source || 'rss').toLowerCase();
+            const hasTelegram = !!(settings.telegram_bot_token && settings.telegram_channel);
             if (source === 'gdelt') {
                 const res = await gdeltNewsService.fetchNews(settings, limit);
                 items = (res.categories || []).flatMap(c => (c.items || []).map(i => ({ ...i, category: c.name })));
-            } else {
+            } else if (source === 'telegram' && hasTelegram) {
                 const res = await telegramNewsService.fetchNews(settings, limit);
                 items = (res.categories || []).flatMap(c => (c.items || []).map(i => ({ ...i, category: c.name })));
+            } else {
+                const rssSources = parseSources(settings.trade_news_sources).filter((s) => (s.type || '').toLowerCase() === 'rss');
+                for (const rss of rssSources) {
+                    const res = await rssNewsService.fetchNews(rss, settings, limit);
+                    items = items.concat(res.items || []);
+                }
             }
         }
 
