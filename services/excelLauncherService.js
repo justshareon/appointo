@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const config = require('../config/tradingConfig');
 const LOG = require('../utils/logger');
+const tradingExcelLog = require('../utils/tradingExcelLog');
 
 const execFileAsync = promisify(execFile);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -151,6 +152,7 @@ try {
             return result;
         } catch (error) {
             this.lastError = error.message;
+            tradingExcelLog.push('error', 'excel_com_failed', error.message, { filePath, waitMs: ms });
             throw error;
         } finally {
             this.isRunning = false;
@@ -173,7 +175,7 @@ try {
             return { ...result, restarted: true };
         } catch (error) {
             this.lastError = error.message;
-            LOG.error(`[Excel Launcher] Refresh cycle failed: ${error.message}`);
+            tradingExcelLog.push('error', 'excel_restart_failed', error.message, { filePath, waitMs: ms });
             throw error;
         } finally {
             this.isRunning = false;

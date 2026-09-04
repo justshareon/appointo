@@ -230,6 +230,48 @@ router.get('/options', async (req, res) => {
 });
 
 /**
+ * GET /api/trading/bootstrap
+ * Fast in-memory snapshot for trade login (show data immediately, then refresh from MySQL routes).
+ */
+router.get('/bootstrap', async (req, res) => {
+    try {
+        const limit = Math.min(parseInt(req.query.limit, 10) || 30, 200);
+        const memCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        if (memCount === 0 && stockDataService.isMySQLAvailable()) {
+            await stockDataService.hydrateMemoryFromMysql();
+        }
+        const pageOpts = { limit, offset: 0, includeVolume: false, memoryOnly: true };
+        const [gainersPage, losersPage, activesPage, dataPage] = await Promise.all([
+            stockDataService.getLiveStocksPage({ ...pageOpts, dataType: 'gainers' }),
+            stockDataService.getLiveStocksPage({ ...pageOpts, dataType: 'decliners' }),
+            stockDataService.getLiveStocksPage({ ...pageOpts, dataType: 'actives' }),
+            stockDataService.getLiveStocksPage({ ...pageOpts, dataType: 'data' }),
+        ]);
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        res.json({
+            success: true,
+            source: memoryCount > 0 ? 'memory' : 'empty',
+            memoryCount,
+            gainers: gainersPage.data || [],
+            losers: losersPage.data || [],
+            actives: activesPage.data || [],
+            data: dataPage.data || [],
+        });
+    } catch (error) {
+        LOG.error('[Trading Routes] bootstrap failed:', error.message);
+        res.json({
+            success: true,
+            source: 'empty',
+            memoryCount: 0,
+            gainers: [],
+            losers: [],
+            actives: [],
+            data: [],
+        });
+    }
+});
+
+/**
  * GET /api/trading/top-gainers
  * Get top gainers from local DB
  * Query params: limit (default: 10)

@@ -800,6 +800,17 @@ async function seedTrustScoreData() {
                 status: 'Pending',
                 documents: JSON.stringify([]),
                 createdAt: new Date()
+            },
+            {
+                id: 'comp_sunshine_1',
+                userId: 'usr_trust1',
+                projectId: 'proj_sunshine',
+                projectName: 'Sunshine Towers',
+                issueType: 'Possession Delay',
+                description: 'Possession promised for Q2 2024 but still not handed over. No clear timeline from builder.',
+                status: 'Pending',
+                documents: JSON.stringify([]),
+                createdAt: new Date('2024-03-10')
             }
         ];
 

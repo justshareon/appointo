@@ -293,6 +293,23 @@ class StockDataService {
         return inMemoryDb.live_stock_data.length;
     }
 
+    /** Pull MySQL live_stock_data into in-memory on startup (fast trade bootstrap). */
+    async hydrateMemoryFromMysql() {
+        if (!this.isMySQLAvailable()) return 0;
+        try {
+            const count = await this.getMysqlLiveCount();
+            if (count === 0) return 0;
+            const pool = db.getPool();
+            const [rows] = await pool.query('SELECT * FROM live_stock_data ORDER BY symbol');
+            const mirrored = this.mirrorLiveDataToMemory(rows);
+            LOG.info(`[Stock Data] Hydrated ${mirrored} rows from MySQL into memory`);
+            return mirrored;
+        } catch (error) {
+            LOG.warning('[Stock Data] hydrateMemoryFromMysql failed:', error.message);
+            return 0;
+        }
+    }
+
     /**
      * Insert stock data into live_stock_data table
      * @param {Array} stockData - Array of stock data objects
@@ -515,6 +532,7 @@ class StockDataService {
         offset = 0,
         includeVolume = false,
         sort = 'auto',
+        memoryOnly = false,
     } = {}) {
         const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 30, 1), 200);
         const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
@@ -529,8 +547,10 @@ class StockDataService {
         else if (sort === 'losers' || sort === 'decliners') orderBy = 'per_change ASC';
         else if (sort === 'volume') orderBy = 'volume DESC';
 
-        const mysqlCount = this.isMySQLAvailable() ? await this.getMysqlLiveCount() : 0;
-        if (!this.isMySQLAvailable() || mysqlCount === 0) {
+        const mysqlCount = memoryOnly
+            ? 0
+            : (this.isMySQLAvailable() ? await this.getMysqlLiveCount() : 0);
+        if (memoryOnly || !this.isMySQLAvailable() || mysqlCount === 0) {
             const all = this.getInMemoryDb().live_stock_data || [];
             let filtered = dataType ? all.filter((s) => s.data_type === dataType) : all;
             // Fallback: typed sheet empty → derive from all rows

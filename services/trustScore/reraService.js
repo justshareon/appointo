@@ -257,8 +257,9 @@ class RERAService {
      * Mock data for development
      */
     getMockProjectDetails(reraNumber) {
-        return {
-            reraNumber: reraNumber,
+        const reg = String(reraNumber || '').toUpperCase();
+        const base = {
+            reraNumber: reg,
             projectName: 'Sunshine Towers',
             builderName: 'Lodha Group',
             address: 'Andheri East, Mumbai',
@@ -266,8 +267,19 @@ class RERAService {
             registrationDate: '2020-01-15',
             validityDate: '2025-01-15',
             totalUnits: 320,
-            totalArea: '2,50,000 sq. ft.'
+            totalArea: '2,50,000 sq. ft.',
+            totalAmountCollected: '₹1,200 Crores',
+            loanAmountSanctioned: '₹500 Crores',
+            estimatedProjectCost: '₹1,500 Crores',
+            escrowReserveDeposited: '₹840 Crores',
+            escrowReservePercentRequired: 70,
+            bankName: 'HDFC Bank',
+            documentsFiled: 12,
+            reraComplaintsCount: 2,
+            completion: 68,
         };
+        if (reg === 'P52100012345') return base;
+        return { ...base, reraNumber: reg, projectName: `Project ${reg}` };
     }
 
     getMockBuilderInfo(builderName) {

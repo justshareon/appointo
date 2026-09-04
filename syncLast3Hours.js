@@ -408,6 +408,53 @@ async function syncRecentSuraksha(pool) {
   return n;
 }
 
+async function syncRecentTrustScore(pool) {
+  let n = 0;
+  try {
+    const { ensureFeatureSchema } = require('./database/schema/featureTables');
+    const db = require('./database');
+    await ensureFeatureSchema('trust_score', db);
+  } catch (e) {
+    LOG.warning(`[3h] trust_score schema: ${e.message}`);
+  }
+
+  let upsertProject;
+  let mapProjectRow;
+  try {
+    ({ upsertProject, mapProjectRow } = require('./services/trustScore/trustScoreHydrateService'));
+  } catch (e) {
+    LOG.warning(`[3h] trust_score hydrate service: ${e.message}`);
+    return 0;
+  }
+
+  const projects = (mem().trustScoreProjects || []).filter((p) =>
+    isRecent(p, ['created_at', 'updated_at', 'createdAt', 'updatedAt'])
+  );
+  for (const p of projects) {
+    try {
+      await upsertProject(pool, p);
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] trust_score project ${p.id}: ${e.message}`);
+    }
+  }
+
+  const alerts = (mem().trustScoreFraudAlerts || []).filter((a) =>
+    isRecent(a, ['created_at', 'createdAt'])
+  );
+  for (const a of alerts) {
+    try {
+      const { upsertFraudAlert } = require('./services/trustScore/trustScoreHydrateService');
+      await upsertFraudAlert(pool, a);
+      n += 1;
+    } catch (e) {
+      LOG.warning(`[3h] trust_score fraud alert ${a.id}: ${e.message}`);
+    }
+  }
+
+  return n;
+}
+
 /** Pull MySQL last-3h rows into memory if missing (so local seed stays aligned). */
 async function hydrateFromMysqlRecent(pool) {
   let added = 0;
@@ -489,6 +536,27 @@ async function hydrateFromMysqlRecent(pool) {
     LOG.warning(`[3h] hydrate mappings: ${e.message}`);
   }
 
+  try {
+    const { mapProjectRow } = require('./services/trustScore/trustScoreHydrateService');
+    const [projects] = await pool.query(
+      'SELECT * FROM trust_score_projects WHERE updated_at >= ? OR created_at >= ?',
+      [cutoffDate, cutoffDate]
+    );
+    const ids = new Set((mem().trustScoreProjects || []).map((p) => String(p.id)));
+    (projects || []).forEach((row) => {
+      const mapped = mapProjectRow(row);
+      if (!mapped) return;
+      if (!ids.has(String(mapped.id))) {
+        if (!mem().trustScoreProjects) mem().trustScoreProjects = [];
+        mem().trustScoreProjects.push(mapped);
+        ids.add(String(mapped.id));
+        added += 1;
+      }
+    });
+  } catch (e) {
+    LOG.warning(`[3h] hydrate trust_score projects: ${e.message}`);
+  }
+
   return added;
 }
 
@@ -519,6 +587,7 @@ async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
     news_cache: await syncRecentNewsCache(pool),
     r_detector: await syncRecentRDetector(pool),
     suraksha: await syncRecentSuraksha(pool),
+    trust_score: await syncRecentTrustScore(pool),
     hydrated,
   };
 
@@ -533,7 +602,8 @@ async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
     counts.chat +
     counts.news_cache +
     counts.r_detector +
-    counts.suraksha;
+    counts.suraksha +
+    counts.trust_score;
 
   LOG.info('');
   if (written === 0 && hydrated === 0) {

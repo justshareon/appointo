@@ -425,6 +425,36 @@ async function loadHeavy(feature) {
     await promise;
 }
 
+async function ensurePoolForSchema(feature) {
+    try {
+        const fcm = require('./featureConnectionManager');
+        if (!fcm.isMysqlEnabled || !fcm.isMysqlEnabled()) return;
+        await fcm.acquireForSync(feature === 'core' ? 'core' : feature);
+    } catch (err) {
+        LOG.warn(`Pool for schema "${feature}" skipped: ${err.message}`);
+    }
+}
+
+async function loadTrustScoreSync() {
+    if (loadPromises.has('trust_score-sync')) {
+        await loadPromises.get('trust_score-sync');
+        return;
+    }
+    const promise = (async () => {
+        try {
+            const { ensureTrustScoreSync } = require('../services/trustScore/trustScoreHydrateService');
+            const result = await ensureTrustScoreSync();
+            LOG.info(
+                `Trust score MySQL↔memory sync (${result.mode || 'done'}) — hydrated ${result.hydrated || 0}, pushed ${result.pushed || 0} | heap ${heapMb()}MB`
+            );
+        } catch (err) {
+            LOG.warn(`Trust score sync skipped: ${err.message}`);
+        }
+    })().finally(() => loadPromises.delete('trust_score-sync'));
+    loadPromises.set('trust_score-sync', promise);
+    await promise;
+}
+
 async function ensureFeature(feature, options = {}) {
     const mode = options.mode || 'basic';
     if (!feature) return;
@@ -438,7 +468,11 @@ async function ensureFeature(feature, options = {}) {
     try {
         if (!basicReady.has(feature)) {
             loadSeed(feature);
+            await ensurePoolForSchema(feature);
             await runSchema(feature);
+            if (feature === 'trust_score') {
+                await loadTrustScoreSync();
+            }
             startJobs(feature);
             basicReady.add(feature);
             LOG.info(`Initialized "${feature}" (${mode}, ${process.env.DB_TYPE || 'inmemory'}) | heap ${heapMb()}MB`);

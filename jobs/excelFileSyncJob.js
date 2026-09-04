@@ -14,6 +14,7 @@ const excelFileService = require('../services/excelFileService');
 const excelLauncherService = require('../services/excelLauncherService');
 const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
+const tradingExcelLog = require('../utils/tradingExcelLog');
 const LOG = require('../utils/logger');
 require('../loadEnv');
 
@@ -388,22 +389,42 @@ class ExcelFileSyncJob {
      */
     async readFromLocalExcel({ openExcel = true, restartExcel = false, waitMs } = {}) {
         const filePath = this.getLocalExcelPath();
+        tradingExcelLog.push('info', 'read_local', 'Checking local Excel file', {
+            filePath,
+            exists: fs.existsSync(filePath),
+            openExcel,
+            restartExcel,
+            waitMs,
+        });
         if (!fs.existsSync(filePath)) {
-            throw new Error(`Local Excel file not found: ${filePath}`);
+            throw tradingExcelLog.attachError(
+                new Error(`Local Excel file not found: ${filePath}`),
+                'file_missing',
+                { filePath, exists: false, hint: 'Set EXCEL_FILE_PATH in .env or place India_Stock_Market_Tracker_v1.0.xlsx in backend/' }
+            );
         }
 
         if (openExcel) {
             if (restartExcel) {
+                tradingExcelLog.push('info', 'excel_restart', 'Closing and reopening Excel (Windows COM)', { filePath, waitMs });
                 LOG.info('[Excel File Sync] Refresh: close Excel → reopen → wait → then read file…');
                 await excelLauncherService.restartOpenWaitAndSave(filePath, waitMs);
             } else {
+                tradingExcelLog.push('info', 'excel_open', 'Opening Excel and waiting for formulas', { filePath, waitMs });
                 LOG.info('[Excel File Sync] Opening Excel and waiting for data to load...');
                 await excelLauncherService.openWaitAndSave(filePath, waitMs);
             }
+        } else {
+            tradingExcelLog.push('info', 'excel_skip', 'Skipping Excel COM open — reading file directly');
         }
 
+        tradingExcelLog.push('info', 'read_sheets', 'Parsing workbook sheets');
         LOG.info('[Excel File Sync] Reading local Excel file after load wait');
         const data = await excelFileService.readAllSheetsByType();
+        const flatCount = this.flattenSheetsData(data).length;
+        tradingExcelLog.push('info', 'read_sheets_done', `Parsed ${flatCount} raw rows from workbook`, {
+            sheets: Object.keys(data || {}).map((k) => `${k}:${(data[k] || []).length}`).join(', '),
+        });
         LOG.success('[Excel File Sync] Local Excel read successful');
         return data;
     }
@@ -412,20 +433,34 @@ class ExcelFileSyncJob {
      * Read stock data — local Excel (with open+wait) first when file exists
      */
     async readStockData({ openExcel = true, restartExcel = false, waitMs } = {}) {
-        if (this.shouldPreferLocalExcel()) {
+        const preferLocal = this.shouldPreferLocalExcel();
+        tradingExcelLog.push('info', 'read_stock', 'Choosing data source', {
+            preferLocal,
+            localPath: this.getLocalExcelPath(),
+            localExists: fs.existsSync(this.getLocalExcelPath()),
+            googleSheets: !!this.SPREADSHEET_ID,
+        });
+        if (preferLocal) {
             try {
                 return await this.readFromLocalExcel({ openExcel, restartExcel, waitMs });
             } catch (localError) {
+                tradingExcelLog.push('warn', 'read_local_failed', localError.message, {
+                    step: localError.tradingExcelStep,
+                });
                 LOG.warning(`[Excel File Sync] Local Excel failed: ${localError.message}`);
                 if (!this.SPREADSHEET_ID) throw localError;
+                tradingExcelLog.push('info', 'read_fallback', 'Trying Google Sheets after local failure');
                 LOG.info('[Excel File Sync] Falling back to Google Sheets...');
             }
         }
 
         try {
+            tradingExcelLog.push('info', 'read_google', 'Reading Google Sheets');
             return await this.readFromGoogleSheets();
         } catch (googleError) {
+            tradingExcelLog.push('warn', 'read_google_failed', googleError.message);
             LOG.warning(`[Excel File Sync] Google Sheets failed: ${googleError.message}`);
+            tradingExcelLog.push('info', 'read_fallback_local', 'Retrying local Excel file');
             return this.readFromLocalExcel({ openExcel, restartExcel, waitMs });
         }
     }
@@ -563,25 +598,49 @@ class ExcelFileSyncJob {
      */
     async loadPreviewForAdmin({ restartExcel = false, openExcel = true } = {}) {
         if (this.isRunning) {
-            throw new Error('Sync already in progress');
+            throw tradingExcelLog.attachError(
+                new Error('Sync already in progress — wait for the current load to finish'),
+                'busy',
+                {}
+            );
         }
         this.isRunning = true;
+        const t0 = Date.now();
         try {
             const waitMs = restartExcel
                 ? excelLauncherService.getRefreshWaitMs()
                 : excelLauncherService.getWaitMs();
+            tradingExcelLog.push('info', 'preview_start', 'loadPreviewForAdmin', { restartExcel, openExcel, waitMs });
             const sheetsData = await this.readStockData({
                 openExcel: restartExcel ? true : openExcel,
                 restartExcel,
                 waitMs,
             });
+            tradingExcelLog.push('info', 'preview_clean', 'Cleaning and mapping rows');
             const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
             if (!cleaned.length) {
-                throw new Error('No rows found in Excel / Google Sheets');
+                throw tradingExcelLog.attachError(
+                    new Error('No rows found in Excel / Google Sheets — check sheet names (Gainers, Decliners, Actives, Data)'),
+                    'empty_workbook',
+                    {
+                        rawSheets: Object.keys(sheetsData || {}),
+                        filePath: this.getLocalExcelPath(),
+                    }
+                );
             }
             stockDataService.mirrorLiveDataToMemory(cleaned);
             this.pendingPreview = cleaned;
-            return this.summarizeCleanedData(cleaned);
+            const summary = this.summarizeCleanedData(cleaned);
+            tradingExcelLog.push('info', 'preview_ready', `${summary.total} rows mirrored to memory`, {
+                durationMs: Date.now() - t0,
+                counts: summary.counts,
+            });
+            return summary;
+        } catch (error) {
+            if (!error.tradingExcelStep) {
+                tradingExcelLog.attachError(error, 'preview_failed', { durationMs: Date.now() - t0 });
+            }
+            throw error;
         } finally {
             this.isRunning = false;
         }
@@ -596,14 +655,22 @@ class ExcelFileSyncJob {
      */
     async persistCleanedData(cleanedData, { fromSync = false } = {}) {
         if (this.isRunning && !fromSync) {
-            throw new Error('Sync already in progress');
+            throw tradingExcelLog.attachError(new Error('Sync already in progress'), 'busy', {});
         }
         const rows = cleanedData || this.pendingPreview;
         if (!rows?.length) {
-            throw new Error('No stock data to save. Load Excel first.');
+            throw tradingExcelLog.attachError(
+                new Error('No stock data to save. Load Excel first.'),
+                'nothing_to_save',
+                { pendingPreview: this.pendingPreview?.length || 0 }
+            );
         }
 
         const pool = require('../database').getPool();
+        tradingExcelLog.push('info', 'persist_start', `Saving ${rows.length} rows`, {
+            storage: pool ? 'mysql' : 'memory_only',
+            fromSync,
+        });
         if (!pool) {
             await stockDataService.archiveCurrentData();
             await stockDataService.truncateLiveData();
@@ -611,6 +678,7 @@ class ExcelFileSyncJob {
             this.lastSyncTime = new Date();
             this.lastSyncStatus = 'success';
             this.pendingPreview = null;
+            tradingExcelLog.push('info', 'persist_memory', `Saved ${inserted} rows to in-memory only`);
             return { inserted, storage: 'memory' };
         }
 
@@ -631,11 +699,13 @@ class ExcelFileSyncJob {
             } catch (featureError) {
                 LOG.warning('[Excel File Sync] Feature generation failed (non-critical):', featureError.message);
             }
+            tradingExcelLog.push('info', 'persist_mysql', `MySQL save OK: ${insertedCount} inserted, ${archivedCount} archived`);
             return { inserted: insertedCount, archived: archivedCount, storage: 'mysql' };
         } catch (error) {
             await connection.rollback();
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
+            tradingExcelLog.attachError(error, 'persist_mysql_failed', { rowCount: rows.length });
             throw error;
         } finally {
             connection.release();

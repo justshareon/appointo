@@ -9,6 +9,7 @@ const fs = require('fs');
 const os = require('os');
 const config = require('../config/tradingConfig');
 const LOG = require('../utils/logger');
+const tradingExcelLog = require('../utils/tradingExcelLog');
 
 class ExcelFileService {
     constructor() {
@@ -355,6 +356,7 @@ class ExcelFileService {
         const filePath = this.getExcelFilePath();
         
         if (!fs.existsSync(filePath)) {
+            tradingExcelLog.push('error', 'file_missing', `Workbook not found at ${filePath}`, { filePath });
             LOG.warning(`[Excel File] File not found: ${filePath}`);
             return {
                 gainers: [],
@@ -380,6 +382,7 @@ class ExcelFileService {
                 tempPath = await this.copyToTemp(filePath);
                 workbook = XLSX.readFile(tempPath, { cellDates: false });
             } catch (tempError) {
+                tradingExcelLog.push('error', 'read_failed', `All read strategies failed: ${tempError.message}`, { filePath });
                 LOG.error(`[Excel File] All read strategies failed: ${tempError.message}`);
                 return {
                     gainers: [],

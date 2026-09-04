@@ -11,6 +11,15 @@ const LOG = {
 
 function poolOf(mainDb) {
     if (!mainDb) return null;
+    try {
+        const fcm = require('../featureConnectionManager');
+        const cached = fcm.getCachedPool('trust_score')
+            || fcm.getCachedPool('core')
+            || (typeof mainDb.getPool === 'function' ? mainDb.getPool() : null);
+        if (cached) return cached;
+    } catch (_) {
+        /* ignore */
+    }
     if (typeof mainDb.getPool === 'function') return mainDb.getPool();
     return mainDb.pool || null;
 }
@@ -418,6 +427,16 @@ async function ensureTrustScore(pool) {
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
         )
     `);
+    await addColumns(pool, 'trust_score_projects', {
+        estimated_project_cost: 'VARCHAR(64) NULL',
+        escrow_reserve_deposited: 'VARCHAR(64) NULL',
+        escrow_reserve_percent_required: 'INT DEFAULT 70',
+        escrow_compliant: 'TINYINT(1) DEFAULT 1',
+        documents_filed: 'INT DEFAULT 0',
+        registered_agents: 'INT DEFAULT 0',
+        data_source: 'VARCHAR(128) NULL',
+        filing_as_of: 'DATE NULL',
+    });
     await ensureTable(pool, `
         CREATE TABLE IF NOT EXISTS trust_score_builders (
             id VARCHAR(64) PRIMARY KEY,
@@ -633,12 +652,12 @@ const HANDLERS = {
 async function ensureFeatureSchema(featureId, mainDb) {
     const handler = HANDLERS[featureId];
     if (!handler) return;
-    await runOnce(`schema:${featureId}:v3`, async () => {
-        const pool = poolOf(mainDb);
-        if (!pool) {
-            LOG.info(`Skipped MySQL schema for "${featureId}" (in-memory mode)`);
-            return;
-        }
+    const pool = poolOf(mainDb);
+    if (!pool) {
+        LOG.info(`Deferred MySQL schema for "${featureId}" (no pool yet)`);
+        return;
+    }
+    await runOnce(`schema:${featureId}:v4`, async () => {
         try {
             await handler(pool, mainDb);
             LOG.info(`Upgraded schema for "${featureId}"`);

@@ -82,10 +82,18 @@ async function hydrateOnStartup() {
             LOG.warning(`[Hydrate] Recent activity pull skipped: ${err.message}`);
         }
 
+        let stockRows = 0;
+        try {
+            const stockDataService = require('./stockDataService');
+            stockRows = await stockDataService.hydrateMemoryFromMysql();
+        } catch (err) {
+            LOG.warning(`[Hydrate] Stock data pull skipped: ${err.message}`);
+        }
+
         LOG.info(
-            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}`
+            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}, stocks +${stockRows}`
         );
-        return { ok: true, usersAdded, vendorsAdded, recentHydrated };
+        return { ok: true, usersAdded, vendorsAdded, recentHydrated, stockRows };
     })().catch((err) => {
         hydratePromise = null;
         LOG.error('[Hydrate] Startup failed:', err.message);

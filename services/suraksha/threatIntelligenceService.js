@@ -277,8 +277,12 @@ class ThreatIntelligenceService {
                 db.threatIntelligence.push(threat);
                 saved++;
 
-                // Mark for alert if critical or high severity
-                if (['critical', 'high'].includes(threat.severity)) {
+                // Alert once per threat — skip if already notified
+                if (
+                    ['critical', 'high'].includes(threat.severity) &&
+                    !threat.alertSent
+                ) {
+                    threat.alertSent = true;
                     alertsToSend.push(threat);
                 }
             }

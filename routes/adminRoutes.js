@@ -51,6 +51,10 @@ router.post('/cyber-features/toggle/:featureName', attachSocket(ioInstance), (re
 const tradingConfigService = require('../services/tradingConfigService');
 const stockDataService = require('../services/stockDataService');
 const LOG = require('../utils/logger');
+const tradingExcelLog = require('../utils/tradingExcelLog');
+const path = require('path');
+const fs = require('fs');
+const config = require('../config/tradingConfig');
 
 const requireSuperAdmin = (req, res, next) => {
     const role = String(req.user?.role || '').toLowerCase();
@@ -59,6 +63,71 @@ const requireSuperAdmin = (req, res, next) => {
     }
     return next();
 };
+
+/** Excel sync job is created lazily — admin routes use coreDb, not tradeDb. */
+async function ensureTradingExcelReady(req) {
+    tradingExcelLog.push('info', 'init_start', 'Ensuring trade Excel job is ready');
+    try {
+        const { ensureFeature } = require('../database/featureMemoryManager');
+        await ensureFeature('trade', { mode: 'basic' });
+        tradingExcelLog.push('info', 'init_trade', 'Trade feature module initialized');
+    } catch (err) {
+        tradingExcelLog.push('warn', 'init_trade', `Trade feature init failed: ${err.message}`);
+        LOG.warning('[Admin] Trade feature init (non-fatal):', err.message);
+    }
+    if (!global.excelFileSyncJob) {
+        const ExcelFileSyncJob = require('../jobs/excelFileSyncJob');
+        global.excelFileSyncJob = new ExcelFileSyncJob();
+        tradingExcelLog.push('info', 'init_job', 'Created ExcelFileSyncJob instance');
+        if (req?.app && !global.excelFileSyncJob.endpointsRegistered) {
+            global.excelFileSyncJob.registerEndpoints(req.app);
+            global.excelFileSyncJob.endpointsRegistered = true;
+            tradingExcelLog.push('info', 'init_endpoints', 'Registered /g/refresh sync endpoints');
+        }
+    } else {
+        tradingExcelLog.push('info', 'init_job', 'Reusing existing ExcelFileSyncJob');
+    }
+    try {
+        await stockDataService.initializeTables();
+        tradingExcelLog.push('info', 'init_tables', 'Stock tables ensured');
+    } catch (err) {
+        tradingExcelLog.push('warn', 'init_tables', `Stock tables init: ${err.message}`);
+        LOG.warning('[Admin] Stock tables init (non-fatal):', err.message);
+    }
+    return global.excelFileSyncJob;
+}
+
+function getTradingExcelDiagnostics(syncJob) {
+    const configured = config.excelFile?.filePath;
+    const candidate = configured
+        ? path.resolve(__dirname, '..', configured.replace(/^\.\//, ''))
+        : path.resolve(__dirname, '../India_Stock_Market_Tracker_v1.0.xlsx');
+    const filePath = syncJob?.getLocalExcelPath?.() || candidate;
+    const db = require('../database');
+    return {
+        platform: process.platform,
+        dbType: typeof db.getType === 'function' ? db.getType() : process.env.DB_TYPE || 'unknown',
+        mysqlPool: !!db.getPool?.(),
+        excelFilePath: filePath,
+        excelFileExists: fs.existsSync(filePath),
+        preferLocal: config.excelFile?.preferLocal !== false,
+        openBeforeSync: config.excelFile?.openBeforeSync !== false,
+        excelOpenEnabled: process.platform === 'win32' && process.env.EXCEL_OPEN_BEFORE_SYNC !== 'false',
+        googleSheetsId: process.env.GOOGLE_SHEETS_ID ? 'set' : 'missing',
+        syncJobRunning: !!syncJob?.isRunning,
+        ...(syncJob?.getStatus?.() || {}),
+    };
+}
+
+function tradingExcelErrorPayload(error, syncJob) {
+    return {
+        success: false,
+        error: error?.message || 'Trading Excel operation failed',
+        step: error?.tradingExcelStep || error?.step || 'unknown',
+        diagnostics: error?.diagnostics || getTradingExcelDiagnostics(syncJob),
+        logs: tradingExcelLog.getRecent(25),
+    };
+}
 
 /**
  * GET /api/admin/trading-config
@@ -166,19 +235,24 @@ router.delete('/trading-data/clear', async (req, res) => {
  */
 router.get('/trading-data/status', requireSuperAdmin, async (req, res) => {
     try {
-        const syncJob = global.excelFileSyncJob;
+        const syncJob = await ensureTradingExcelReady(req);
         const mysqlCount = await stockDataService.getMysqlLiveCount();
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const diagnostics = getTradingExcelDiagnostics(syncJob);
+        tradingExcelLog.push('info', 'status', `mysql=${mysqlCount} memory=${memoryCount} fileExists=${diagnostics.excelFileExists}`);
         res.json({
             success: true,
             mysqlCount,
             memoryCount,
             pendingPreview: syncJob?.getPendingPreview?.()?.length || 0,
             sync: syncJob?.getStatus?.() || null,
+            diagnostics,
+            logs: tradingExcelLog.getRecent(25),
         });
     } catch (error) {
         LOG.error('[Admin] trading-data/status:', error);
-        res.status(500).json({ error: error.message || 'Failed to get trading data status' });
+        tradingExcelLog.push('error', 'status', error.message);
+        res.status(500).json(tradingExcelErrorPayload(error, global.excelFileSyncJob));
     }
 });
 
@@ -188,17 +262,39 @@ router.get('/trading-data/status', requireSuperAdmin, async (req, res) => {
  * Body: { restartExcel?: boolean, openExcel?: boolean }
  */
 router.post('/trading-data/load-excel', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    let syncJob;
     try {
-        const syncJob = global.excelFileSyncJob;
-        if (!syncJob) {
-            return res.status(503).json({ error: 'Excel sync job not initialized' });
-        }
+        syncJob = await ensureTradingExcelReady(req);
         const { restartExcel = false, openExcel = true } = req.body || {};
+        tradingExcelLog.push('info', 'load_start', 'Admin load-excel requested', {
+            restartExcel,
+            openExcel,
+            user: req.user?.email || req.user?.id,
+        });
         const preview = await syncJob.loadPreviewForAdmin({ restartExcel, openExcel });
-        res.json({ success: true, preview });
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const ms = Date.now() - started;
+        tradingExcelLog.push('info', 'load_done', `Preview ready: ${preview?.total || 0} rows in ${ms}ms`, {
+            memoryCount,
+            counts: preview?.counts,
+        });
+        res.json({
+            success: true,
+            preview,
+            memoryCount,
+            durationMs: ms,
+            diagnostics: getTradingExcelDiagnostics(syncJob),
+            logs: tradingExcelLog.getRecent(25),
+        });
     } catch (error) {
+        const ms = Date.now() - started;
         LOG.error('[Admin] load-excel:', error);
-        res.status(500).json({ success: false, error: error.message || 'Failed to load Excel' });
+        tradingExcelLog.attachError(error, error.tradingExcelStep || 'load_failed', {
+            durationMs: ms,
+            ...getTradingExcelDiagnostics(syncJob || global.excelFileSyncJob),
+        });
+        res.status(500).json(tradingExcelErrorPayload(error, syncJob || global.excelFileSyncJob));
     }
 });
 
@@ -207,16 +303,142 @@ router.post('/trading-data/load-excel', requireSuperAdmin, async (req, res) => {
  * Persist preview (or body.data) to in-memory + MySQL.
  */
 router.post('/trading-data/save-excel', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    let syncJob;
     try {
-        const syncJob = global.excelFileSyncJob;
-        if (!syncJob) {
-            return res.status(503).json({ error: 'Excel sync job not initialized' });
-        }
+        syncJob = await ensureTradingExcelReady(req);
+        tradingExcelLog.push('info', 'save_start', 'Admin save-excel requested', {
+            user: req.user?.email || req.user?.id,
+            pendingPreview: syncJob?.getPendingPreview?.()?.length || 0,
+        });
         const result = await syncJob.persistCleanedData(req.body?.data);
-        res.json({ success: true, message: `Saved ${result.inserted} stock rows`, ...result });
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const ms = Date.now() - started;
+        tradingExcelLog.push('info', 'save_done', `Saved ${result.inserted} rows (${result.storage}) in ${ms}ms`, {
+            memoryCount,
+            archived: result.archived,
+        });
+        res.json({
+            success: true,
+            message: `Saved ${result.inserted} stock rows`,
+            memoryCount,
+            durationMs: ms,
+            diagnostics: getTradingExcelDiagnostics(syncJob),
+            logs: tradingExcelLog.getRecent(25),
+            ...result,
+        });
     } catch (error) {
+        const ms = Date.now() - started;
         LOG.error('[Admin] save-excel:', error);
-        res.status(500).json({ success: false, error: error.message || 'Failed to save Excel data' });
+        tradingExcelLog.attachError(error, error.tradingExcelStep || 'save_failed', {
+            durationMs: ms,
+            ...getTradingExcelDiagnostics(syncJob || global.excelFileSyncJob),
+        });
+        res.status(500).json(tradingExcelErrorPayload(error, syncJob || global.excelFileSyncJob));
+    }
+});
+
+// RERA public filings (Trust Score) — preview then save
+const reraFilingsService = require('../services/trustScore/reraFilingsService');
+const reraFilingsLog = require('../utils/reraFilingsLog');
+
+async function ensureTrustReraReady() {
+    reraFilingsLog.push('info', 'init_start', 'Ensuring trust score feature is ready');
+    try {
+        const fcm = require('../database/featureConnectionManager');
+        if (fcm.isMysqlEnabled && fcm.isMysqlEnabled()) {
+            await fcm.acquireForSync('trust_score');
+        }
+        const { ensureFeature } = require('../database/featureMemoryManager');
+        await ensureFeature('trust_score', { mode: 'basic' });
+        reraFilingsLog.push('info', 'init_trust', 'Trust score feature module initialized');
+    } catch (err) {
+        reraFilingsLog.push('warn', 'init_trust', `Trust feature init: ${err.message}`);
+        LOG.warning('[Admin] Trust feature init (non-fatal):', err.message);
+    }
+}
+
+function reraFilingsErrorPayload(error) {
+    return {
+        success: false,
+        error: error.message,
+        step: error.reraFilingsStep || 'unknown',
+        diagnostics: error.diagnostics || reraFilingsService.getDiagnostics(),
+        logs: reraFilingsLog.getRecent(25),
+    };
+}
+
+router.get('/rera-filings/status', requireSuperAdmin, async (req, res) => {
+    try {
+        await ensureTrustReraReady();
+        const status = await reraFilingsService.getStatus();
+        reraFilingsLog.push('info', 'status', `mysql=${status.mysqlCount} memory=${status.memoryCount} pending=${status.pendingPreview}`);
+        res.json({
+            success: true,
+            ...status,
+            dataSourceLabel: reraFilingsService.DATA_SOURCE_LABEL,
+            filingAsOf: reraFilingsService.FILING_AS_OF,
+            logs: reraFilingsLog.getRecent(25),
+        });
+    } catch (error) {
+        LOG.error('[Admin] rera-filings/status:', error);
+        reraFilingsLog.attachError(error, 'status_failed');
+        res.status(500).json(reraFilingsErrorPayload(error));
+    }
+});
+
+router.post('/rera-filings/load', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    try {
+        await ensureTrustReraReady();
+        const { useReraApi = false } = req.body || {};
+        reraFilingsLog.push('info', 'load_start', 'Admin load RERA filings', {
+            user: req.user?.email || req.user?.id,
+            useReraApi,
+        });
+        const preview = await reraFilingsService.loadPreview({ useReraApi });
+        const status = await reraFilingsService.getStatus();
+        const ms = Date.now() - started;
+        res.json({
+            success: true,
+            preview,
+            memoryCount: status.memoryCount,
+            durationMs: ms,
+            diagnostics: status.diagnostics,
+            logs: reraFilingsLog.getRecent(25),
+        });
+    } catch (error) {
+        LOG.error('[Admin] rera-filings/load:', error);
+        reraFilingsLog.attachError(error, error.reraFilingsStep || 'load_failed');
+        res.status(500).json(reraFilingsErrorPayload(error));
+    }
+});
+
+router.post('/rera-filings/save', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    try {
+        await ensureTrustReraReady();
+        reraFilingsLog.push('info', 'save_start', 'Admin save RERA filings', {
+            user: req.user?.email || req.user?.id,
+            pendingPreview: reraFilingsService.getPendingPreview()?.length || 0,
+        });
+        const result = await reraFilingsService.saveToDatabase(req.body?.data);
+        const status = await reraFilingsService.getStatus();
+        const ms = Date.now() - started;
+        reraFilingsLog.push('info', 'save_done', `Saved ${result.total} projects (${result.storage}) in ${ms}ms`);
+        res.json({
+            success: true,
+            message: `Saved ${result.total} RERA filing records`,
+            memoryCount: status.memoryCount,
+            durationMs: ms,
+            diagnostics: status.diagnostics,
+            logs: reraFilingsLog.getRecent(25),
+            ...result,
+        });
+    } catch (error) {
+        LOG.error('[Admin] rera-filings/save:', error);
+        reraFilingsLog.attachError(error, error.reraFilingsStep || 'save_failed');
+        res.status(500).json(reraFilingsErrorPayload(error));
     }
 });
 

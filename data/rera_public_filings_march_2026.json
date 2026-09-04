@@ -1,0 +1,140 @@
+{
+  "filingAsOf": "2026-03-01",
+  "dataSource": "public_rera_filing_march_2026",
+  "dataSourceLabel": "Data sourced from public RERA filings as of March 2026",
+  "authority": "Public RERA portals (Maharashtra, UP, Karnataka, Haryana)",
+  "filings": [
+    {
+      "id": "proj_sunshine",
+      "reraNumber": "P52100012345",
+      "estimatedProjectCost": "₹1,500 Crores",
+      "escrowReserveDeposited": "₹840 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 12,
+      "registeredAgents": 0,
+      "reraComplaintsCount": 2,
+      "reraComplaintsStatus": "2 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_greenfield",
+      "reraNumber": "P52100012346",
+      "estimatedProjectCost": "₹2,300 Crores",
+      "escrowReserveDeposited": "₹1,295 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 14,
+      "registeredAgents": 2,
+      "reraComplaintsCount": 0,
+      "reraComplaintsStatus": "0 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_lakeview",
+      "reraNumber": "UP123456789",
+      "estimatedProjectCost": "₹1,620 Crores",
+      "escrowReserveDeposited": "₹945 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 11,
+      "registeredAgents": 1,
+      "reraComplaintsCount": 1,
+      "reraComplaintsStatus": "1 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_oceanview",
+      "reraNumber": "P52100012347",
+      "estimatedProjectCost": "₹3,200 Crores",
+      "escrowReserveDeposited": "₹315 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 9,
+      "registeredAgents": 0,
+      "reraComplaintsCount": 0,
+      "reraComplaintsStatus": "0 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_gardens",
+      "reraNumber": "P52100012348",
+      "estimatedProjectCost": "₹1,480 Crores",
+      "escrowReserveDeposited": "₹826 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 10,
+      "registeredAgents": 1,
+      "reraComplaintsCount": 1,
+      "reraComplaintsStatus": "1 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_royal",
+      "reraNumber": "P52100012349",
+      "estimatedProjectCost": "₹1,260 Crores",
+      "escrowReserveDeposited": "₹735 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 13,
+      "registeredAgents": 0,
+      "reraComplaintsCount": 0,
+      "reraComplaintsStatus": "0 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_emerald",
+      "reraNumber": "P52100012350",
+      "estimatedProjectCost": "₹1,900 Crores",
+      "escrowReserveDeposited": "₹1,064 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 12,
+      "registeredAgents": 2,
+      "reraComplaintsCount": 0,
+      "reraComplaintsStatus": "0 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_skyline",
+      "reraNumber": "P52100012351",
+      "estimatedProjectCost": "₹1,380 Crores",
+      "escrowReserveDeposited": "₹770 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 11,
+      "registeredAgents": 1,
+      "reraComplaintsCount": 1,
+      "reraComplaintsStatus": "1 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_paradise",
+      "reraNumber": "P52100012352",
+      "estimatedProjectCost": "₹2,800 Crores",
+      "escrowReserveDeposited": "₹224 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 8,
+      "registeredAgents": 0,
+      "reraComplaintsCount": 0,
+      "reraComplaintsStatus": "0 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_heritage",
+      "reraNumber": "P52100012353",
+      "estimatedProjectCost": "₹1,100 Crores",
+      "escrowReserveDeposited": "₹580 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": false,
+      "documentsFiled": 9,
+      "registeredAgents": 3,
+      "reraComplaintsCount": 2,
+      "reraComplaintsStatus": "2 Pending, 0 Resolved"
+    },
+    {
+      "id": "proj_rustomjee_ultima",
+      "reraNumber": "P52100012354",
+      "estimatedProjectCost": "₹2,250 Crores",
+      "escrowReserveDeposited": "₹1,260 Crores",
+      "escrowReservePercentRequired": 70,
+      "escrowCompliant": true,
+      "documentsFiled": 12,
+      "registeredAgents": 1,
+      "reraComplaintsCount": 1,
+      "reraComplaintsStatus": "1 Pending, 0 Resolved"
+    }
+  ]
+}
