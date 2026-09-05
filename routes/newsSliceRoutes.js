@@ -35,6 +35,7 @@ router.get('/news/slice', async (req, res) => {
     const refresh = String(req.query.refresh || '') === '1';
     const locationCtx = {
       city: req.query.city || '',
+      town: req.query.town || req.query.locality || '',
       locality: req.query.locality || req.query.town || '',
       state: req.query.state || '',
       district: req.query.district || '',

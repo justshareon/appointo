@@ -13,13 +13,16 @@ function hydrateFromDisk() {
   try {
     if (!fs.existsSync(LOG_FILE)) return;
     const lines = fs.readFileSync(LOG_FILE, 'utf8').split(/\r?\n/).filter(Boolean);
+    const entries = [];
     for (const line of lines.slice(-MAX_ENTRIES)) {
       try {
-        memory.push(JSON.parse(line));
+        entries.push(JSON.parse(line));
       } catch (_) {
         /* skip bad line */
       }
     }
+    entries.sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0));
+    memory.push(...entries);
   } catch (_) {
     /* ignore */
   }
@@ -63,7 +66,9 @@ function recordClientError(payload = {}) {
 
 function getClientErrors(limit = 50) {
   hydrateFromDisk();
-  return memory.slice(0, Math.min(limit, MAX_ENTRIES));
+  return [...memory]
+    .sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0))
+    .slice(0, Math.min(limit, MAX_ENTRIES));
 }
 
 function levelToSeverity(level) {
@@ -73,7 +78,10 @@ function levelToSeverity(level) {
 }
 
 function clientErrorsToIssues(errors = []) {
-  return errors.slice(0, 40).map((err) => {
+  return [...errors]
+    .sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0))
+    .slice(0, 40)
+    .map((err) => {
     const level = normalizeLevel(err.level);
     return {
       severity: levelToSeverity(level),

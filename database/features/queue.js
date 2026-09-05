@@ -118,6 +118,31 @@ module.exports = function createQueueFeature(ctx) {
                 }
             } catch (err) {
                 LOG.error("MySQL autoCompleteQueues failed, falling back to local", err.message);
+                try {
+                    const { isMysqlConfigured } = require('../../utils/resolveDbType');
+                    if (isMysqlConfigured()) {
+                        const { scheduleJobRetry } = require('../../services/failedRetryService');
+                        scheduleJobRetry('mysql:autoCompleteQueues', 'MySQL auto-complete queues', async () => {
+                            const pool = getPool();
+                            if (!pool) throw new Error('MySQL pool unavailable');
+                            const now = new Date();
+                            const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+                            const todayStr = toMysqlDateTime(today).split(' ')[0];
+                            const [rows] = await pool.query(
+                                `SELECT id, vendor_id, joined_at FROM queues WHERE status = 'waiting' AND joined_at < ?`,
+                                [`${todayStr} 00:00:00`]
+                            );
+                            if (!rows.length) return;
+                            const ids = rows.map((r) => r.id);
+                            await pool.query(
+                                `UPDATE queues SET status = 'done' WHERE id IN (${ids.map(() => '?').join(',')})`,
+                                ids
+                            );
+                        });
+                    }
+                } catch {
+                    /* ignore retry queue errors */
+                }
             }
 
             inMemoryDb.queues.forEach(queue => {

@@ -881,7 +881,7 @@ const syncCyberThreats = async ({ startOffset = 0, onProgress } = {}) => {
 // ====================
 const syncNewsCache = async ({ onProgress } = {}) => {
     LOG.info('[News Cache Sync] Starting news cache sync...');
-    const items = inMemoryDb.news_cache || [];
+    const pool = await getPool();
     let itemsSynced = 0;
     let queriesSynced = 0;
 
@@ -890,14 +890,59 @@ const syncNewsCache = async ({ onProgress } = {}) => {
         queriesSynced += 1;
     }
 
+    // Pull MySQL → memory when in-memory cache is empty (reuse news_cache table)
+    const memItems = inMemoryDb.news_cache || [];
+    if (memItems.length === 0 && pool) {
+        try {
+            const [rows] = await pool.query(
+                `SELECT unique_key, text, link, source, category, country, city, locality, image, published_at, created_at, updated_at
+                 FROM news_cache ORDER BY updated_at DESC LIMIT 1000`
+            );
+            if (rows?.length) {
+                inMemoryDb.news_cache = rows.map((r) => ({
+                    unique_key: r.unique_key,
+                    text: r.text,
+                    link: r.link,
+                    source: r.source,
+                    category: r.category,
+                    country: r.country,
+                    city: r.city,
+                    locality: r.locality,
+                    image: r.image,
+                    published_at: r.published_at,
+                    created_at: r.created_at,
+                    updated_at: r.updated_at,
+                }));
+                itemsSynced += rows.length;
+                queriesSynced += 1;
+                LOG.info(`[News Cache Sync] Hydrated ${rows.length} items from MySQL news_cache`);
+            }
+        } catch (err) {
+            LOG.warning('[News Cache Sync] MySQL pull skipped:', err.message);
+        }
+    }
+
+    const items = inMemoryDb.news_cache || [];
     if (items.length > 0 && typeof db.saveNewsItems === 'function') {
         const withKeys = items.map((item) => ({
             ...item,
             unique_key: item.unique_key || item.link || item.id || `${item.source || ''}|${item.text || ''}`,
         }));
         const result = await db.saveNewsItems(withKeys);
-        itemsSynced = result?.saved || withKeys.length;
+        itemsSynced = Math.max(itemsSynced, result?.saved || withKeys.length);
         queriesSynced += Math.ceil(withKeys.length / BATCH_SIZE);
+    } else if (items.length === 0) {
+        try {
+            const newsCacheService = require('./services/newsCacheService');
+            await newsCacheService.refreshNews(40);
+            queriesSynced += 1;
+            if ((inMemoryDb.news_cache || []).length > 0 && typeof db.saveNewsItems === 'function') {
+                const result = await db.saveNewsItems(inMemoryDb.news_cache);
+                itemsSynced = result?.saved || inMemoryDb.news_cache.length;
+            }
+        } catch (err) {
+            LOG.warning('[News Cache Sync] RSS refresh skipped:', err.message);
+        }
     }
 
     if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: Math.max(items.length, 1) });
@@ -920,6 +965,40 @@ const syncSurakshaData = async ({ onProgress } = {}) => {
         queriesSynced += 1;
     } catch (err) {
         LOG.warning('[Suraksha Sync] Schema check (non-fatal):', err.message);
+    }
+
+    // Pull MySQL → memory when reports/validations empty (reuse suraksha_* tables)
+    if ((inMemoryDb.surakshaReports || []).length === 0) {
+        try {
+            const [rows] = await pool.query('SELECT * FROM suraksha_reports ORDER BY updated_at DESC LIMIT 500');
+            inMemoryDb.surakshaReports = (rows || []).map((r) => {
+                let evidence = r.evidence;
+                if (typeof evidence === 'string') {
+                    try { evidence = JSON.parse(evidence || '{}'); } catch { evidence = {}; }
+                }
+                return { ...r, evidence: evidence || {} };
+            });
+            itemsSynced += inMemoryDb.surakshaReports.length;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[Suraksha Sync] reports pull skipped:', err.message);
+        }
+    }
+    if ((inMemoryDb.surakshaValidations || []).length === 0) {
+        try {
+            const [rows] = await pool.query('SELECT * FROM suraksha_validations ORDER BY updated_at DESC LIMIT 500');
+            inMemoryDb.surakshaValidations = (rows || []).map((r) => {
+                let result_data = r.result_data;
+                if (typeof result_data === 'string') {
+                    try { result_data = JSON.parse(result_data || 'null'); } catch { result_data = null; }
+                }
+                return { ...r, result_data };
+            });
+            itemsSynced += inMemoryDb.surakshaValidations.length;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning('[Suraksha Sync] validations pull skipped:', err.message);
+        }
     }
 
     const validations = inMemoryDb.surakshaValidations || [];
@@ -1283,12 +1362,11 @@ const syncFleetData = async ({ onProgress } = {}) => {
     let queriesSynced = 0;
 
     try {
-        if (typeof db.ensureFleetTables === 'function') {
-            await db.ensureFleetTables();
-            queriesSynced += 1;
-        }
+        const { ensureFeatureSchema } = require('./database/schema/featureTables');
+        await ensureFeatureSchema('fleet', db);
+        queriesSynced += 1;
     } catch (err) {
-        LOG.warning('[Fleet Data Sync] Table setup (non-fatal):', err.message);
+        LOG.warning('[Fleet Data Sync] Schema check (non-fatal):', err.message);
     }
 
     const { applyMumbaiPuneFleetSeed } = require('./database/features/fleetRouteSeed');
@@ -1327,6 +1405,33 @@ const syncFleetData = async ({ onProgress } = {}) => {
 
     const itemsSynced = 1 + hazards.length;
     LOG.success('[Fleet Data Sync] Mumbai–Pune corridor synced to MySQL');
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: 1 });
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: 1 });
+};
+
+const syncTrustScoreData = async ({ onProgress } = {}) => {
+    LOG.info('[Trust Score Sync] Starting trust score sync...');
+    let queriesSynced = 0;
+    let itemsSynced = 0;
+
+    try {
+        const { ensureFeatureSchema } = require('./database/schema/featureTables');
+        await ensureFeatureSchema('trust_score', db);
+        queriesSynced += 1;
+    } catch (err) {
+        LOG.warning('[Trust Score Sync] Schema check (non-fatal):', err.message);
+    }
+
+    try {
+        const { ensureTrustScoreSync } = require('./services/trustScore/trustScoreHydrateService');
+        const result = await ensureTrustScoreSync();
+        itemsSynced = (result?.hydrated || 0) + (result?.pushed || 0);
+        queriesSynced += 2;
+        LOG.success(`[Trust Score Sync] mode=${result?.mode || 'ok'} hydrated=${result?.hydrated || 0} pushed=${result?.pushed || 0}`);
+    } catch (err) {
+        LOG.warning('[Trust Score Sync] hydrate/push failed:', err.message);
+    }
+
     if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: 1 });
     return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: 1 });
 };
@@ -1392,10 +1497,12 @@ const syncSystemSettings = async ({ onProgress } = {}) => {
 // ====================
 // MAIN SYNC ORCHESTRATOR
 // ====================
-const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFull = false } = {}) => {
+const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFull = false, failedOnly = false } = {}) => {
     LOG.info('');
     LOG.info('═══════════════════════════════════════════════════════════════');
-    LOG.info('    STARTING COMPREHENSIVE IN-MEMORY TO MYSQL SYNC');
+    LOG.info(failedOnly
+        ? '    RETRY FAILED SYNC MODULES ONLY'
+        : '    STARTING COMPREHENSIVE IN-MEMORY TO MYSQL SYNC');
     LOG.info('═══════════════════════════════════════════════════════════════');
     LOG.info('');
     
@@ -1403,14 +1510,36 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
     let totalSynced = 0;
     let runId = null;
     let resume = false;
+    /** @type {Set<string> | null} */
+    let retryKeys = null;
     const stepOpts = () => ({ forceFull, resume });
-    const step = (key, fn) => syncStatus.runStep(key, fn, runId, stepOpts());
+    const step = async (key, fn) => {
+        if (retryKeys && !retryKeys.has(key)) return 0;
+        try {
+            return await syncStatus.runStep(key, fn, runId, stepOpts());
+        } catch (err) {
+            LOG.error(`[Sync] Module "${key}" failed: ${err.message}`);
+            return 0;
+        }
+    };
     
     try {
-        ({ runId, resume } = await syncStatus.startRun(triggerSource, { forceFull }));
-        LOG.info(resume
-            ? `[Sync] Resuming from checkpoint (build ${syncStatus.getBuildVersion()})`
-            : `[Sync] Full sync — empty table or forceFull (build ${syncStatus.getBuildVersion()})`);
+        if (failedOnly) {
+            const keys = await syncStatus.getFailedModuleKeys();
+            if (!keys.length) {
+                LOG.info('[Sync] No failed modules — nothing to retry');
+                if (exit) process.exit(0);
+                return { success: true, skipped: true, totalSynced: 0, duration: 0, runId: null, resume: false };
+            }
+            ({ runId, resume, moduleKeys: keys } = await syncStatus.startRunFailedOnly(triggerSource));
+            retryKeys = new Set(keys);
+            LOG.info(`[Sync] Failed-only retry (${keys.length} module(s)): ${keys.join(', ')}`);
+        } else {
+            ({ runId, resume } = await syncStatus.startRun(triggerSource, { forceFull }));
+            LOG.info(resume
+                ? `[Sync] Resuming from checkpoint (build ${syncStatus.getBuildVersion()})`
+                : `[Sync] Full sync — empty table or forceFull (build ${syncStatus.getBuildVersion()})`);
+        }
 
         await step('core_schema', () => ensureCoreSchema().then(() => doneSync({ itemsSynced: 1, version: 1, queriesSynced: 1, totalItems: 1 })));
 
@@ -1442,6 +1571,7 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         totalSynced += await step('otps', syncOTPs);
         totalSynced += await step('cyber_threats', syncCyberThreats);
         totalSynced += await step('suraksha_data', syncSurakshaData);
+        totalSynced += await step('trust_score_data', syncTrustScoreData);
         totalSynced += await step('news_cache', syncNewsCache);
         totalSynced += await step('r_detector_data', syncRDetectorData);
         totalSynced += await step('trading_data', syncTradingData);
@@ -1449,23 +1579,29 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         
         const duration = ((Date.now() - startTime) / 1000).toFixed(2);
         const state = await syncStatus.getModuleState();
+        const allOk = (state.summary.failed === 0 && state.summary.inProgress === 0);
         await syncStatus.completeRun(runId, {
-            success: true,
+            success: allOk,
             totalSynced,
             queriesSynced: state.summary.totalQueriesSynced,
+            error: allOk ? null : `${state.summary.failed} module(s) still failed`,
         });
         syncStatus.printSummary(state.modules, state.summary);
         
         LOG.info('');
         LOG.info('═══════════════════════════════════════════════════════════════');
-        LOG.success(`✓ SYNC COMPLETED SUCCESSFULLY`);
+        if (allOk) {
+            LOG.success(`✓ SYNC COMPLETED SUCCESSFULLY`);
+        } else {
+            LOG.warning(`⚠ SYNC FINISHED WITH ${state.summary.failed} FAILED MODULE(S) — auto-retry in 5 min`);
+        }
         LOG.success(`✓ Total items synced: ${totalSynced}`);
         LOG.success(`✓ Time taken: ${duration}s`);
         LOG.info('═══════════════════════════════════════════════════════════════');
         LOG.info('');
         
-        if (exit) process.exit(0);
-        return { success: true, totalSynced, duration, runId, resume, modules: state.modules, summary: state.summary };
+        if (exit) process.exit(allOk ? 0 : 1);
+        return { success: allOk, totalSynced, duration, runId, resume, failedOnly, modules: state.modules, summary: state.summary };
     } catch (err) {
         const state = await syncStatus.getModuleState().catch(() => ({ summary: { totalQueriesSynced: 0 } }));
         await syncStatus.completeRun(runId, {

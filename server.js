@@ -266,7 +266,7 @@ server.listen(PORT, async () => {
         const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30;
         startAutoSync(syncIntervalMinutes);
         const driftMins = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
-        LOG.info(`[AutoSync] Bulk resume every ${syncIntervalMinutes}m; drift sync every ${driftMins}m`);
+        LOG.info(`[AutoSync] Bulk resume every ${syncIntervalMinutes}m; drift sync every ${driftMins}m; failed retry every 5m`);
     } else if (mysqlOnline) {
         LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
         if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
@@ -275,7 +275,7 @@ server.listen(PORT, async () => {
         const mirrorInterval = parseInt(process.env.SYNC_INTERVAL_MINUTES, 10) || 30;
         startAutoSync(mirrorInterval);
         const driftMinsMem = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
-        LOG.info(`[AutoSync] In-memory ↔ MySQL — bulk every ${mirrorInterval}m, drift every ${driftMinsMem}m`);
+        LOG.info(`[AutoSync] In-memory ↔ MySQL — bulk every ${mirrorInterval}m, drift every ${driftMinsMem}m, failed retry every 5m`);
     } else {
         LOG.info('In-memory mode: core seed only at boot. Feature seed/jobs start on first open.');
     }

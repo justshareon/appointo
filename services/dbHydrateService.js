@@ -90,10 +90,34 @@ async function hydrateOnStartup() {
             LOG.warning(`[Hydrate] Stock data pull skipped: ${err.message}`);
         }
 
+        let newsRows = 0;
+        try {
+            if ((mem.news_cache || []).length === 0 && pool) {
+                const [rows] = await pool.query(
+                    'SELECT * FROM news_cache ORDER BY updated_at DESC LIMIT 500'
+                );
+                if (rows?.length) {
+                    mem.news_cache = rows;
+                    newsRows = rows.length;
+                }
+            }
+        } catch (err) {
+            LOG.warning(`[Hydrate] News cache pull skipped: ${err.message}`);
+        }
+
+        let trustRows = 0;
+        try {
+            const { hydrateMemoryFromMysql } = require('./trustScore/trustScoreHydrateService');
+            const trust = await hydrateMemoryFromMysql();
+            trustRows = trust?.hydrated || 0;
+        } catch (err) {
+            LOG.warning(`[Hydrate] Trust score pull skipped: ${err.message}`);
+        }
+
         LOG.info(
-            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}, stocks +${stockRows}`
+            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}, stocks +${stockRows}, news +${newsRows}, trust +${trustRows}`
         );
-        return { ok: true, usersAdded, vendorsAdded, recentHydrated, stockRows };
+        return { ok: true, usersAdded, vendorsAdded, recentHydrated, stockRows, newsRows, trustRows };
     })().catch((err) => {
         hydratePromise = null;
         LOG.error('[Hydrate] Startup failed:', err.message);

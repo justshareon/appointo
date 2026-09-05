@@ -11,11 +11,11 @@ const MODULE_CHECKS = [
   { key: 'trust_score', label: 'Trust Score', tables: ['trust_score_projects', 'trust_score_builders'] },
   { key: 'suraksha', label: 'Suraksha', tables: ['suraksha_reports', 'suraksha_validations'] },
   { key: 'cyber', label: 'Cyber Threats', tables: ['cyber_threats'] },
-  { key: 'r_detector', label: 'R-Detector', tables: ['r_detector_incidents', 'fleet_bad_road_probes'] },
-  { key: 'fleet', label: 'Fleet', tables: ['fleet_drivers', 'fleet_vehicles'] },
+  { key: 'r_detector', label: 'R-Detector', tables: ['r_detector_scan_results', 'fleet_bad_road_probes'] },
+  { key: 'fleet', label: 'Fleet', tables: ['fleet_driver_stats', 'fleet_trips'] },
   { key: 'trading', label: 'Trading', tables: ['live_stock_data'] },
   { key: 'shopping', label: 'Shopping', tables: ['products', 'orders'] },
-  { key: 'news', label: 'News cache', tables: ['news_cache_entries'] },
+  { key: 'news', label: 'News cache', tables: ['news_cache'] },
 ];
 
 async function safeCount(pool, table) {
@@ -146,12 +146,16 @@ function withIssueLevels(issues = []) {
 function readErrorLogTail(maxLines = 40) {
   const logPath = path.join(__dirname, '..', 'error.log');
   try {
-    if (!fs.existsSync(logPath)) return { path: logPath, lines: [], exists: false };
+    if (!fs.existsSync(logPath)) return { path: logPath, lines: [], exists: false, recentFirst: true };
     const raw = fs.readFileSync(logPath, 'utf8');
-    const lines = raw.split(/\r?\n/).filter(Boolean).slice(-maxLines);
-    return { path: logPath, lines, exists: true };
+    const lines = raw
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .slice(-maxLines)
+      .reverse();
+    return { path: logPath, lines, exists: true, recentFirst: true };
   } catch (err) {
-    return { path: logPath, lines: [], exists: false, error: err.message };
+    return { path: logPath, lines: [], exists: false, error: err.message, recentFirst: true };
   }
 }
 
@@ -281,7 +285,7 @@ async function getSystemHealth() {
   const levelSummary = summarizeIssueLevels(normalizedIssues);
   const clientLevelSummary = clientErrorService?.getLevelSummary(clientErrors) || { L1: 0, L2: 0, L3: 0 };
 
-  for (const line of errorLog.lines.slice(-10)) {
+  for (const line of errorLog.lines.slice(0, 10)) {
     if (/error|fail|exception|crash/i.test(line)) {
       issues.push({
         severity: 'warning',

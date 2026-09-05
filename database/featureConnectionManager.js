@@ -12,6 +12,9 @@ const { getFeatureIdleMs } = require('./featureIdle');
 const featureMemory = require('./featureMemoryManager');
 const poolConfig = require('../utils/poolConfig');
 const { MYSQL_FEATURES, FEATURES: FEATURE_CATALOG } = require('./featureRegistry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const LOG = {
     info: (msg) => console.log(`[FeatureDB] ${msg}`),
@@ -67,6 +70,7 @@ async function recreatePool(feature) {
 function isStaleConnectionError(err) {
     if (!err) return false;
     if (STALE_CODES.has(err.code) || STALE_CODES.has(String(err.errno))) return true;
+    if (isTransientConnectionError(err)) return true;
     return /socket has been ended|closed state|Cannot enqueue|Connection lost|server closed the connection/i.test(
         String(err.message || err)
     );
@@ -118,20 +122,29 @@ function instrumentPool(pool, feature) {
     const originalExecute = pool.execute.bind(pool);
 
     const withRetry = (fn) => async function retryMysql(...args) {
-        try {
-            return await fn(...args);
-        } catch (err) {
-            if (!isStaleConnectionError(err)) throw err;
-            LOG.warn(`Stale MySQL socket on "${feature}", retrying once: ${err.message}`);
+        let lastErr;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
             try {
                 return await fn(...args);
-            } catch (err2) {
-                if (!isStaleConnectionError(err2)) throw err2;
-                const fresh = await recreatePool(feature);
-                if (!fresh) throw err2;
-                return fresh.query(...args);
+            } catch (err) {
+                lastErr = err;
+                if (!isStaleConnectionError(err) || attempt >= 2) throw err;
+                const delayMs = (attempt + 1) * 2000;
+                LOG.warn(
+                    `MySQL "${feature}" transient error (attempt ${attempt + 1}/3), `
+                    + `retry in ${delayMs}ms: ${err.message}`
+                );
+                await sleep(delayMs);
+                if (attempt >= 1) {
+                    try {
+                        await recreatePool(feature);
+                    } catch (poolErr) {
+                        LOG.warn(`Pool recreate skipped for "${feature}": ${poolErr.message}`);
+                    }
+                }
             }
         }
+        throw lastErr;
     };
 
     const timed = (fn) => async function timedMysql(...args) {

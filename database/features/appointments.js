@@ -141,6 +141,37 @@ module.exports = function createAppointmentsFeature(ctx) {
                 }
             } catch (err) {
                 LOG.error("MySQL autoExpireAppointments failed, falling back to local", err.message);
+                try {
+                    const { isMysqlConfigured } = require('../../utils/resolveDbType');
+                    if (isMysqlConfigured()) {
+                        const { scheduleJobRetry } = require('../../services/failedRetryService');
+                        scheduleJobRetry('mysql:autoExpireAppointments', 'MySQL auto-expire appointments', async () => {
+                            const pool = await resolvePool();
+                            if (!pool) throw new Error('MySQL pool unavailable');
+                            const dateStr = toMysqlDateTime(new Date()).split(' ')[0];
+                            const [rows] = await pool.query(
+                                `SELECT id, vendor_id, user_id FROM appointments
+                                 WHERE status IN ('pending', 'confirmed') AND date < ? LIMIT 1000`,
+                                [dateStr]
+                            );
+                            if (!rows.length) return;
+                            const ids = rows.map((r) => r.id);
+                            await pool.query(
+                                `UPDATE appointments SET status = 'completed' WHERE id IN (${ids.map(() => '?').join(',')})`,
+                                ids
+                            );
+                            await pool.query(
+                                `UPDATE queues q
+                                 INNER JOIN appointments a ON q.user_id = a.user_id AND q.vendor_id = a.vendor_id
+                                 SET q.status = 'done'
+                                 WHERE q.status = 'waiting' AND a.id IN (${ids.map(() => '?').join(',')})`,
+                                ids
+                            );
+                        });
+                    }
+                } catch {
+                    /* ignore retry queue errors */
+                }
             }
 
             expireInMemory(currentDate, affectedVendorIds);

@@ -10,13 +10,14 @@ const syncStatus = require('./syncStatusService');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
 const { hydrateOnStartup } = require('./dbHydrateService');
 const { runDriftSync } = require('./driftSyncService');
+const { startFailedRetryCron, RETRY_INTERVAL_MS: FAILED_RETRY_MS } = require('./failedRetryService');
 
 let syncSchedule = null;
 let driftSchedule = null;
 let isSyncRunning = false;
 let completionLoopRunning = false;
 
-const RETRY_DELAY_MS = parseInt(process.env.SYNC_RETRY_DELAY_MS, 10) || 60000;
+const RETRY_DELAY_MS = parseInt(process.env.SYNC_RETRY_DELAY_MS, 10) || FAILED_RETRY_MS || 300000;
 const MAX_SYNC_ATTEMPTS = parseInt(process.env.SYNC_MAX_ATTEMPTS, 10) || 0;
 const AUTO_DRIFT_SYNC = process.env.AUTO_DRIFT_SYNC !== 'false';
 const DRIFT_INTERVAL_MINUTES = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10)
@@ -103,7 +104,7 @@ async function syncUntilComplete(triggerSource = 'startup') {
             LOG.warning(
                 `[AutoSync] Progress: ${state.summary.done}/${state.summary.total} done, `
                 + `${state.summary.pending} pending, ${state.summary.failed} failed — `
-                + `retry in ${Math.round(RETRY_DELAY_MS / 1000)}s`
+                + `retry in ${Math.round(RETRY_DELAY_MS / 60000)} min`
             );
             await sleep(RETRY_DELAY_MS);
         }
@@ -139,6 +140,8 @@ const startAutoSync = (intervalMinutes = 30) => {
     if (AUTO_DRIFT_SYNC) {
         startDriftSync(DRIFT_INTERVAL_MINUTES);
     }
+
+    startFailedRetryCron();
 };
 
 const startDriftSync = (intervalMinutes = DRIFT_INTERVAL_MINUTES) => {
@@ -171,6 +174,12 @@ const stopAutoSync = () => {
         driftSchedule.stop();
         driftSchedule = null;
         LOG.info('[AutoSync] Drift sync schedule stopped');
+    }
+    try {
+        const { stopFailedRetryCron } = require('./failedRetryService');
+        stopFailedRetryCron();
+    } catch {
+        /* ignore */
     }
 };
 

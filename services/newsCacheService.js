@@ -3,13 +3,16 @@ const db = require('../database');
 const newsAggregatorService = require('./newsAggregatorService');
 const settingsService = require('./settingsService');
 const locationNewsService = require('./locationNewsService');
-const { curatedFallback } = locationNewsService;
+const { curatedFallback, orderItemsByGeoScope } = locationNewsService;
 const LOG = require('../utils/logger');
 const { clampLimit, sortTodayRecentFirst, withinRecentDays } = require('../utils/recentSlice');
 
 const norm = (v) => String(v || '').trim().toLowerCase();
 const sliceMem = new Map();
 const SLICE_TTL_MS = 5 * 60 * 1000;
+const MAX_SLICE_ATTEMPTS = parseInt(process.env.NEWS_SLICE_ATTEMPTS, 10) || 3;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const buildUniqueKey = (item) => {
     const rawKey = item.link || item.id || `${item.source || ''}|${item.date || ''}|${item.text || ''}`;
@@ -69,26 +72,38 @@ class NewsCacheService {
     _filterScope(items, scope, locationCtx = {}) {
         if (!scope || scope === 'All') return items;
         const city = norm(locationCtx.city);
+        const town = norm(locationCtx.town || locationCtx.locality);
         const locality = norm(locationCtx.locality || locationCtx.town);
+        const state = norm(locationCtx.state);
         const intlCats = new Set(['global_news', 'world', 'international']);
         return (items || []).filter((item) => {
             const cat = norm(item.category);
-            const blob = norm(`${item.text || ''} ${item.city || ''} ${item.locality || ''}`);
+            const blob = norm(`${item.text || ''} ${item.city || ''} ${item.locality || ''} ${item.state || ''}`);
+            const itemScope = norm(item.scope);
             if (scope === 'international') {
-                return intlCats.has(cat) || blob.includes('global') || blob.includes('world');
+                return intlCats.has(cat) || blob.includes('global') || blob.includes('world') || itemScope === 'international';
             }
             if (scope === 'national') {
-                return norm(item.country || 'in') === 'in' || !item.country;
+                return norm(item.country || 'in') === 'in' || !item.country || itemScope === 'national';
             }
-            if (scope === 'local' || scope === 'town') {
+            if (scope === 'state') {
+                return itemScope === 'state' || (state && blob.includes(state));
+            }
+            if (scope === 'city') {
+                return itemScope === 'city' || (city && blob.includes(city));
+            }
+            if (scope === 'town') {
+                if (itemScope === 'town' || itemScope === 'local') return true;
+                if (town && blob.includes(town)) return true;
+                return false;
+            }
+            if (scope === 'local') {
                 if (item.is_local || item.source_type === 'local_vendor' || item.source_type === 'r_detector') return true;
+                if (itemScope === 'local') return true;
                 if (locality && blob.includes(locality)) return true;
-                if (city && blob.includes(city)) return true;
-                if (item.is_local === true) return true;
-                return scope === 'town';
+                if (town && blob.includes(town)) return true;
+                return false;
             }
-            if (scope === 'city' && city) return blob.includes(city);
-            if (scope === 'state' && locationCtx.state) return blob.includes(norm(locationCtx.state));
             return true;
         });
     }
@@ -96,8 +111,8 @@ class NewsCacheService {
     /**
      * Layered news slice:
      * 1. Read in-memory / MySQL (MySQL wins when it has rows)
-     * 2. If empty or refresh: fetch APIs → saveNewsItems (memory + MySQL)
-     * 3. Re-read from layered store (MySQL when synced)
+     * 2. Tiered local → town → city → state fetch (town/city hit twice)
+     * 3. Up to 3 attempts before empty / curated fallback
      */
     async getSlice({
         category = 'All',
@@ -116,72 +131,67 @@ class NewsCacheService {
         }
 
         const fetchLimit = Math.min(Math.max(safeLimit * 2, 24), 40);
-        let items = await db.getNewsItems(fetchLimit);
+        let items = [];
+        let attempt = 0;
 
-        if (refresh || !(items || []).length) {
-            try {
-                await this.refreshNews(Math.min(Math.max(safeLimit * 2, 30), 50), settings);
-                items = await db.getNewsItems(fetchLimit);
-            } catch (e) {
-                LOG.warning('[NewsCache] API refresh failed, using in-memory:', e?.message || e);
+        while (attempt < MAX_SLICE_ATTEMPTS) {
+            attempt += 1;
+            const forceRefresh = refresh || attempt > 1;
+
+            items = await db.getNewsItems(fetchLimit).catch(() => []);
+
+            if (forceRefresh || !(items || []).length) {
+                try {
+                    await this.refreshNews(Math.min(Math.max(safeLimit * 2, 30), 50), settings);
+                    items = await db.getNewsItems(fetchLimit);
+                } catch (e) {
+                    LOG.warning(`[NewsCache] API refresh attempt ${attempt} failed:`, e?.message || e);
+                }
+            }
+
+            const hasLocation = !!(locationCtx.city || locationCtx.locality || locationCtx.town || locationCtx.placeLabel);
+            const localScope = ['local', 'town', 'city', 'state', 'All'].includes(scope);
+
+            if (localScope && (hasLocation || !(items || []).length)) {
+                try {
+                    const localItems = await locationNewsService.fetchLocationNews(
+                        settings,
+                        locationCtx,
+                        Math.min(Math.max(safeLimit, 20), 36)
+                    );
+                    items = orderItemsByGeoScope(
+                        this._dedupeItems([...(localItems || []), ...(items || [])]),
+                        locationCtx
+                    );
+                } catch (e) {
+                    LOG.warning(`[NewsCache] Location fetch attempt ${attempt} failed:`, e?.message || e);
+                }
+            } else {
+                items = this._dedupeItems(items || []);
+            }
+
+            items = await this._applyFilters(items, category, scope, locationCtx, fetchLimit);
+
+            if (items.length > 0) break;
+
+            if (attempt < MAX_SLICE_ATTEMPTS) {
+                LOG.info(`[NewsCache] Slice empty (attempt ${attempt}/${MAX_SLICE_ATTEMPTS}) — retry tiered fetch`);
+                sliceMem.delete(memKey);
+                await sleep(700 * attempt);
             }
         }
 
-        const hasLocation = !!(locationCtx.city || locationCtx.locality || locationCtx.placeLabel);
-        const localScope = ['local', 'town', 'city', 'All'].includes(scope);
-
-        if (localScope && (hasLocation || !(items || []).length)) {
-            try {
-                const localItems = await locationNewsService.fetchLocationNews(
-                    settings,
-                    locationCtx,
-                    Math.min(safeLimit, 20)
-                );
-                items = [...(localItems || []), ...(items || [])];
-            } catch (_) {}
-        }
-
-        const seen = new Set();
-        items = (items || []).filter((item) => {
-            const key = item.unique_key || item.id || item.link || item.text;
-            if (!key || seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        });
-
-        if (category && category !== 'All') {
-            items = items.filter(
-                (item) => norm(item.category) === norm(category) || norm(item._cat) === norm(category)
-            );
-        }
-
-        items = this._filterScope(items, scope, locationCtx);
-        if (!items.length && scope !== 'All') {
-            items = this._filterScope(
-                await db.getNewsItems(fetchLimit).catch(() => []),
-                'All',
-                locationCtx
-            );
-        }
-
         if (!items.length) {
-            try {
-                const localItems = await locationNewsService.fetchLocationNews(
-                    settings,
-                    locationCtx,
-                    Math.min(safeLimit, 20)
-                );
-                items = localItems || [];
-            } catch (_) {}
-        }
-
-        if (!items.length) {
-            items = curatedFallback(locationCtx);
+            items = orderItemsByGeoScope(curatedFallback(locationCtx), locationCtx);
+            items = await this._applyFilters(items, category, scope, locationCtx, fetchLimit);
         }
 
         items = withinRecentDays(items, 14, ['date', 'published_at']);
         const { sortNewsItems } = require('./newsLocalPriority');
-        items = sortTodayRecentFirst(sortNewsItems(items, settings), safeLimit, ['date', 'published_at']);
+        items = orderItemsByGeoScope(
+            sortTodayRecentFirst(sortNewsItems(items, settings), safeLimit, ['date', 'published_at']),
+            locationCtx
+        );
         const grouped = newsAggregatorService.groupItems(items, settings);
         const payload = {
             categories: grouped.categories?.length
@@ -190,9 +200,56 @@ class NewsCacheService {
             slice: true,
             scope,
             category,
+            fetchAttempts: attempt,
         };
         sliceMem.set(memKey, { data: payload, ts: Date.now() });
         return payload;
+    }
+
+    _dedupeItems(items) {
+        const seen = new Set();
+        return (items || []).filter((item) => {
+            const key = item.unique_key || item.id || item.link || item.text;
+            if (!key || seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
+    }
+
+    async _applyFilters(items, category, scope, locationCtx, fetchLimit) {
+        let filtered = this._dedupeItems(items);
+
+        if (category && category !== 'All') {
+            filtered = filtered.filter(
+                (item) => norm(item.category) === norm(category) || norm(item._cat) === norm(category)
+            );
+        }
+
+        filtered = this._filterScope(filtered, scope, locationCtx);
+
+        if (!filtered.length && scope !== 'All') {
+            filtered = this._filterScope(
+                this._dedupeItems(items),
+                'All',
+                locationCtx
+            );
+        }
+
+        if (!filtered.length) {
+            try {
+                const settings = await settingsService.getSettings();
+                const localItems = await locationNewsService.fetchLocationNews(
+                    settings,
+                    locationCtx,
+                    Math.min(20, fetchLimit)
+                );
+                filtered = orderItemsByGeoScope(localItems || [], locationCtx);
+            } catch (_) {
+                /* ignore */
+            }
+        }
+
+        return filtered;
     }
 }
 

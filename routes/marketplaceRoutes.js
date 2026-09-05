@@ -17,7 +17,11 @@ router.get('/marketplace/slice', async (req, res) => {
       sources: req.query.sources || 'deals',
       limit: Math.min(parseInt(req.query.limit, 10) || 20, 30),
       city: req.query.city || '',
+      town: req.query.town || req.query.locality || '',
       locality: req.query.locality || req.query.town || '',
+      state: req.query.state || '',
+      language: req.query.language || 'hi',
+      refresh: String(req.query.refresh || '') === '1',
     });
     res.json({ success: true, data });
   } catch (err) {

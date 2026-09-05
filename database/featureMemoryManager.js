@@ -297,6 +297,15 @@ function startAppointmentJobs() {
             }
         } catch (e) {
             LOG.warn(`Auto-expire appointments failed: ${e.message}`);
+            try {
+                const { scheduleJobRetry } = require('../services/failedRetryService');
+                scheduleJobRetry('autoExpireAppointments', 'Auto-expire appointments', async () => {
+                    const db = require('../database');
+                    return db.autoExpireAppointments();
+                });
+            } catch {
+                /* ignore */
+            }
         }
     }, 60000));
     LOG.info('Appointments jobs: auto-expire every 1 min');
@@ -315,6 +324,15 @@ function startQueueJobs() {
             }
         } catch (e) {
             LOG.warn(`Auto-complete queues failed: ${e.message}`);
+            try {
+                const { scheduleJobRetry } = require('../services/failedRetryService');
+                scheduleJobRetry('autoCompleteQueues', 'Auto-complete queues', async () => {
+                    const db = require('../database');
+                    return db.autoCompleteQueues();
+                });
+            } catch {
+                /* ignore */
+            }
         }
     }, 3600000));
     LOG.info('Queue jobs: auto-complete every 60 min');

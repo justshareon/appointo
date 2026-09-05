@@ -35,6 +35,58 @@ function titleCase(s) {
     .join(' ');
 }
 
+function buildTierQueries(ctx = {}, pass = 0) {
+  const locality = norm(ctx.locality || '');
+  const town = norm(ctx.town || ctx.locality || '');
+  const city = titleCase(ctx.city || '');
+  const state = titleCase(ctx.state || 'Maharashtra');
+  const queries = [];
+
+  if (locality && locality.length > 2) {
+    queries.push({
+      q: pass === 0 ? `${titleCase(locality)} ${state} news` : `${titleCase(locality)} neighbourhood update`,
+      scope: 'local',
+      locality: titleCase(locality),
+      city,
+      state,
+      category: 'local_news',
+    });
+  }
+
+  if (town && town.length > 2) {
+    queries.push({
+      q: pass === 0 ? `${titleCase(town)} news today` : `${titleCase(town)} ${city || state} local news`,
+      scope: 'town',
+      locality: titleCase(town),
+      town: titleCase(town),
+      city,
+      state,
+      category: 'local_news',
+    });
+  }
+
+  if (city) {
+    queries.push({
+      q: pass === 0 ? `${city} news today` : `${city} ${state} headlines`,
+      scope: 'city',
+      city,
+      state,
+      category: 'city_news',
+    });
+  }
+
+  if (state) {
+    queries.push({
+      q: pass === 0 ? `${state} news` : `${state} politics business`,
+      scope: 'state',
+      state,
+      category: 'politics',
+    });
+  }
+
+  return queries;
+}
+
 function buildQueries(ctx = {}) {
   const locality = norm(ctx.locality || ctx.town || '');
   const city = titleCase(ctx.city || 'Mumbai');
@@ -125,45 +177,105 @@ function curatedFallback(ctx = {}) {
   ];
 }
 
-async function fetchLocationNews(settings = {}, ctx = {}, limit = 36) {
-  const queries = buildQueries(ctx);
-  const perQuery = Math.max(3, Math.ceil(limit / Math.min(queries.length, 8)));
-  const items = [];
-  const hl = resolveGoogleHl(ctx);
+async function fetchQueryBatch(spec, settings, perQuery, hl) {
+  const url = googleNewsSearchUrl(spec.q, hl);
+  const result = await rssNewsService.fetchNews(
+    {
+      url,
+      name: spec.q,
+      city: spec.city || '',
+      locality: spec.locality || spec.town || '',
+      state: spec.state || '',
+      category: spec.category || 'general',
+      country: spec.scope === 'international' ? 'US' : 'IN',
+    },
+    settings,
+    perQuery
+  );
+  return (result.items || []).map((item) => ({
+    ...item,
+    scope: spec.scope,
+    city: spec.city || item.city,
+    locality: spec.locality || spec.town || item.locality,
+    state: spec.state || item.state,
+    category: spec.category || item.category,
+    is_local: spec.scope === 'local' || spec.scope === 'town',
+  }));
+}
 
-  for (const spec of queries.slice(0, 8)) {
-    try {
-      const url = googleNewsSearchUrl(spec.q, hl);
-      const result = await rssNewsService.fetchNews(
-        {
-          url,
-          name: spec.q,
-          city: spec.city || '',
-          locality: spec.locality || '',
-          category: spec.category || 'general',
-          country: spec.scope === 'international' ? 'US' : 'IN',
-        },
-        settings,
-        perQuery
-      );
-      (result.items || []).forEach((item) => {
-        items.push({
-          ...item,
-          scope: spec.scope,
-          city: spec.city || item.city,
-          locality: spec.locality || item.locality,
-          category: spec.category || item.category,
-          is_local: spec.scope === 'local',
-        });
-      });
-    } catch (_) {
-      // skip failed query
+const GEO_SCOPE_RANK = { local: 0, town: 1, city: 2, district: 3, state: 4, national: 5, international: 6 };
+
+function orderItemsByGeoScope(items, ctx = {}) {
+  const locality = norm(ctx.locality);
+  const town = norm(ctx.town || ctx.locality);
+  const city = norm(ctx.city);
+  const state = norm(ctx.state);
+
+  const rank = (item) => {
+    const scope = norm(item.scope);
+    if (GEO_SCOPE_RANK[scope] != null) return GEO_SCOPE_RANK[scope];
+    const blob = norm(`${item.text || ''} ${item.locality || ''} ${item.city || ''}`);
+    if (locality && blob.includes(locality)) return 0;
+    if (town && blob.includes(town)) return 1;
+    if (city && blob.includes(city)) return 2;
+    if (state && blob.includes(state)) return 4;
+    return 5;
+  };
+
+  return [...(items || [])].sort((a, b) => {
+    const diff = rank(a) - rank(b);
+    if (diff !== 0) return diff;
+    return new Date(b.date || b.published_at || 0) - new Date(a.date || a.published_at || 0);
+  });
+}
+
+async function fetchTieredPasses(settings, ctx, limit, language) {
+  const langCtx = { ...ctx, language: language || ctx.language || 'hi' };
+  const hl = resolveGoogleHl(langCtx);
+  const perQuery = Math.max(3, Math.ceil(limit / 6));
+  const items = [];
+
+  for (let pass = 0; pass < 2; pass += 1) {
+    const tierQueries = buildTierQueries(langCtx, pass);
+    for (const spec of tierQueries) {
+      try {
+        const batch = await fetchQueryBatch(spec, settings, perQuery, hl);
+        items.push(...batch.map((item) => ({ ...item, language: langCtx.language })));
+      } catch (_) {
+        /* skip failed query */
+      }
     }
   }
 
-  const merged = dedupeItems(items);
+  return items;
+}
+
+async function fetchLocationNews(settings = {}, ctx = {}, limit = 36) {
+  const primaryLang = norm(ctx.language) || 'hi';
+  let items = await fetchTieredPasses(settings, ctx, limit, primaryLang);
+
+  // Hindi selected but thin results → also fetch English RSS for same town/city/state
+  if ((primaryLang === 'hi' || primaryLang === 'all') && dedupeItems(items).length < 6) {
+    const enItems = await fetchTieredPasses(settings, ctx, limit, 'en');
+    items = [...items, ...enItems];
+  }
+
+  // Broader national/international fill (once)
+  const hl = resolveGoogleHl(ctx);
+  const perQuery = Math.max(3, Math.ceil(limit / 6));
+  const broad = buildQueries(ctx).filter((q) => ['national', 'international'].includes(q.scope));
+  for (const spec of broad.slice(0, 4)) {
+    try {
+      const batch = await fetchQueryBatch(spec, settings, perQuery, hl);
+      items.push(...batch);
+    } catch (_) {
+      /* skip */
+    }
+  }
+
+  const merged = orderItemsByGeoScope(dedupeItems(items), ctx);
   if (merged.length < 6) {
-    return dedupeItems([...merged, ...curatedFallback(ctx)]);
+    return orderItemsByGeoScope(dedupeItems([...merged, ...curatedFallback(ctx)]), ctx);
   }
   return merged.slice(0, limit);
 }
@@ -182,6 +294,8 @@ module.exports = {
   fetchLocationNews,
   groupLocationNewsItems,
   buildQueries,
+  buildTierQueries,
+  orderItemsByGeoScope,
   googleNewsSearchUrl,
   curatedFallback,
 };

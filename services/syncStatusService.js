@@ -21,10 +21,11 @@ const SYNC_MODULES = [
     { key: 'otps', label: 'OTPs', order: 13 },
     { key: 'cyber_threats', label: 'Cyber threats', order: 14 },
     { key: 'suraksha_data', label: 'Suraksha validations & reports', order: 15 },
-    { key: 'news_cache', label: 'News cache (lazy slices)', order: 16 },
-    { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 17 },
-    { key: 'trading_data', label: 'Trading data', order: 18 },
-    { key: 'fleet_data', label: 'Fleet data', order: 19 },
+    { key: 'trust_score_data', label: 'Trust Score projects & builders', order: 16 },
+    { key: 'news_cache', label: 'News cache (lazy slices)', order: 17 },
+    { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 18 },
+    { key: 'trading_data', label: 'Trading data', order: 19 },
+    { key: 'fleet_data', label: 'Fleet data', order: 20 },
 ];
 
 let tablesReady = false;
@@ -210,6 +211,46 @@ async function startRun(triggerSource = 'manual', { forceFull = false } = {}) {
     }
 
     return { runId, resume: canResume, buildVersion };
+}
+
+/** Module keys with FAILED or stuck IN_PROGRESS status. */
+async function getFailedModuleKeys() {
+    const pool = await getPool();
+    if (!pool) return [];
+    await init();
+    const [rows] = await pool.query(
+        `SELECT module_key FROM sync_module_state WHERE status IN ('FAILED', 'IN_PROGRESS') ORDER BY sort_order ASC`
+    );
+    return rows.map((r) => r.module_key);
+}
+
+/** Start a run that retries only previously failed modules (SUCCESS rows untouched). */
+async function startRunFailedOnly(triggerSource = 'auto-failed-retry') {
+    const pool = await getPool();
+    if (!pool) return { runId: null, moduleKeys: [], resume: false, buildVersion: getBuildVersion() };
+    await init();
+
+    const moduleKeys = await getFailedModuleKeys();
+    if (!moduleKeys.length) {
+        return { runId: null, moduleKeys: [], resume: false, buildVersion: getBuildVersion() };
+    }
+
+    const buildVersion = getBuildVersion();
+    const [result] = await pool.query(
+        `INSERT INTO sync_runs (trigger_source, build_version, status, total_modules, resume_mode)
+         VALUES (?, ?, 'IN_PROGRESS', ?, 1)`,
+        [triggerSource, buildVersion, moduleKeys.length]
+    );
+    const runId = result.insertId;
+
+    await pool.query(
+        `UPDATE sync_module_state
+         SET status = 'PENDING', last_run_id = ?, last_error = NULL
+         WHERE status IN ('FAILED', 'IN_PROGRESS')`,
+        [runId]
+    );
+
+    return { runId, moduleKeys, resume: true, buildVersion };
 }
 
 async function getModuleCheckpoint(moduleKey) {
@@ -459,6 +500,8 @@ module.exports = {
     ensureTables,
     init,
     startRun,
+    startRunFailedOnly,
+    getFailedModuleKeys,
     runStep,
     getModuleCheckpoint,
     updateProgress,
