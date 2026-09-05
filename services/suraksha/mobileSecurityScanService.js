@@ -6,6 +6,186 @@ const db = require('../../database');
 const LOG = require('../../utils/logger');
 const axios = require('axios');
 
+function parseJson(value, fallback = null) {
+    if (value == null || value === '') return fallback;
+    if (typeof value === 'object') return value;
+    try {
+        return JSON.parse(value);
+    } catch (_) {
+        return fallback;
+    }
+}
+
+function getMemoryScans() {
+    if (!db.mobileSecurityScans) {
+        const mem = db.inMemoryDb || db;
+        if (!Array.isArray(mem.mobileSecurityScans)) mem.mobileSecurityScans = [];
+        db.mobileSecurityScans = mem.mobileSecurityScans;
+    }
+    return db.mobileSecurityScans;
+}
+
+function hydrateSeedScans() {
+    const scans = getMemoryScans();
+    if (scans.length) return scans;
+    try {
+        const data = require('../../database/data');
+        if (Array.isArray(data.mobileSecurityScans) && data.mobileSecurityScans.length) {
+            data.mobileSecurityScans.forEach((s) => scans.push({ ...s }));
+        }
+    } catch (err) {
+        LOG.warning('[Mobile Security Scan] Seed hydrate skipped:', err.message);
+    }
+    return scans;
+}
+
+function mapRowToScan(row) {
+    if (!row) return null;
+    return {
+        scanId: row.scan_id,
+        userId: row.user_id,
+        scanType: row.scan_type || 'full',
+        status: row.status || 'completed',
+        startTime: row.start_time,
+        endTime: row.end_time,
+        duration: row.duration_ms,
+        summary: parseJson(row.summary_json, {}),
+        results: parseJson(row.results_json, { threats: [], safe: [] }),
+        created_at: row.created_at,
+        updated_at: row.updated_at,
+    };
+}
+
+async function getPool() {
+    try {
+        if (db.getType?.() === 'mysql' && db.getPool) {
+            const pool = db.getPool();
+            if (pool) return pool;
+        }
+    } catch (_) {
+        /* ignore */
+    }
+    try {
+        const fcm = require('../../database/featureConnectionManager');
+        return fcm.getCachedPool('cyber') || fcm.getCachedPool('core') || null;
+    } catch (_) {
+        return null;
+    }
+}
+
+async function ensureScanSchema(pool) {
+    if (!pool) return;
+    const { ensureFeatureSchema } = require('../../database/schema/featureTables');
+    await ensureFeatureSchema('cyber', db);
+}
+
+async function upsertScanMysql(pool, scan) {
+    if (!pool || !scan?.scanId) return;
+    await pool.query(
+        `INSERT INTO mobile_security_scans
+         (scan_id, user_id, scan_type, status, start_time, end_time, duration_ms, summary_json, results_json, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           status=VALUES(status),
+           end_time=VALUES(end_time),
+           duration_ms=VALUES(duration_ms),
+           summary_json=VALUES(summary_json),
+           results_json=VALUES(results_json),
+           updated_at=VALUES(updated_at)`,
+        [
+            scan.scanId,
+            scan.userId,
+            scan.scanType || 'full',
+            scan.status || 'completed',
+            scan.startTime ? new Date(scan.startTime) : new Date(),
+            scan.endTime ? new Date(scan.endTime) : null,
+            scan.duration || 0,
+            JSON.stringify(scan.summary || {}),
+            JSON.stringify(scan.results || {}),
+            scan.created_at ? new Date(scan.created_at) : new Date(),
+            new Date(),
+        ]
+    );
+}
+
+async function fetchScansMysql(userId, filters = {}) {
+    const pool = await getPool();
+    if (!pool) return null;
+    await ensureScanSchema(pool);
+    let query = 'SELECT * FROM mobile_security_scans WHERE user_id = ?';
+    const params = [userId];
+    if (filters.status) {
+        query += ' AND status = ?';
+        params.push(filters.status);
+    }
+    query += ' ORDER BY start_time DESC';
+    if (filters.limit) {
+        query += ' LIMIT ?';
+        params.push(parseInt(filters.limit, 10));
+    }
+    const [rows] = await pool.query(query, params);
+    return (rows || []).map(mapRowToScan);
+}
+
+function getDemoTemplates() {
+    hydrateSeedScans();
+    const templates = (getMemoryScans().filter((s) => s.userId === 'usr_cyber1') || []).slice(0, 4);
+    if (templates.length) return templates;
+    return [
+        {
+            scanId: 'demo_scan_1',
+            scanType: 'full',
+            status: 'completed',
+            summary: {
+                totalScanned: 42,
+                safe: 38,
+                threatsFound: 4,
+                byType: { virus: 1, malware: 2, adware: 1, spyware: 0, phishing: 0, other: 0 },
+            },
+            results: {
+                threats: [
+                    { threatType: 'malware', name: 'Trojan.FakeInstaller', packageName: 'com.fake.installer', severity: 'critical', path: '/Download/fake.apk', description: 'Known trojan signature' },
+                    { threatType: 'adware', name: 'Adware.Popup', packageName: 'com.popup.ads', severity: 'medium', path: '/data/app/popup', description: 'Aggressive ad overlay' },
+                ],
+                safe: [{ type: 'app', name: 'WhatsApp', packageName: 'com.whatsapp', status: 'safe' }],
+            },
+        },
+    ];
+}
+
+async function ensureDemoScansForUser(userId) {
+    if (!userId) return [];
+    const pool = await getPool();
+    const templates = getDemoTemplates();
+    const now = Date.now();
+    const seeded = templates.map((tpl, idx) => {
+        const start = new Date(now - (idx + 1) * 24 * 60 * 60 * 1000);
+        return {
+            ...tpl,
+            scanId: `${userId}_demo_${idx + 1}`,
+            userId,
+            startTime: start.toISOString(),
+            endTime: new Date(start.getTime() + 45000).toISOString(),
+            created_at: start.toISOString(),
+        };
+    });
+
+    const mem = getMemoryScans();
+    for (const scan of seeded) {
+        if (!mem.find((s) => s.scanId === scan.scanId)) {
+            mem.push(scan);
+        }
+        if (pool) {
+            try {
+                await upsertScanMysql(pool, scan);
+            } catch (err) {
+                LOG.warning('[Mobile Security Scan] Demo seed MySQL:', err.message);
+            }
+        }
+    }
+    return seeded;
+}
+
 class MobileSecurityScanService {
     constructor() {
         // Known malware signatures and patterns
@@ -196,23 +376,26 @@ class MobileSecurityScanService {
      * @private
      */
     async _saveScanResult(scanResult) {
-        if (!db.mobileSecurityScans) {
-            const mem = db.inMemoryDb || db;
-            if (!Array.isArray(mem.mobileSecurityScans)) mem.mobileSecurityScans = [];
-            db.mobileSecurityScans = mem.mobileSecurityScans;
-        }
+        const mem = getMemoryScans();
+        mem.push(scanResult);
 
-        db.mobileSecurityScans.push(scanResult);
-
-        // Keep only last 100 scans per user
         if (scanResult.userId) {
-            const userScans = db.mobileSecurityScans.filter(s => s.userId === scanResult.userId);
+            const userScans = mem.filter((s) => s.userId === scanResult.userId);
             if (userScans.length > 100) {
                 const toRemove = userScans.slice(0, userScans.length - 100);
-                toRemove.forEach(scan => {
-                    const index = db.mobileSecurityScans.findIndex(s => s.id === scan.scanId);
-                    if (index > -1) db.mobileSecurityScans.splice(index, 1);
+                toRemove.forEach((scan) => {
+                    const index = mem.findIndex((s) => s.scanId === scan.scanId);
+                    if (index > -1) mem.splice(index, 1);
                 });
+            }
+        }
+
+        const pool = await getPool();
+        if (pool) {
+            try {
+                await upsertScanMysql(pool, scanResult);
+            } catch (err) {
+                LOG.warning('[Mobile Security Scan] MySQL save failed:', err.message);
             }
         }
     }
@@ -225,32 +408,28 @@ class MobileSecurityScanService {
      */
     async getScanResults(userId, filters = {}) {
         try {
-            let scans = db.mobileSecurityScans || [];
-            
-            // Filter by user
-            scans = scans.filter(s => s.userId === userId);
-            
-            // Filter by status
-            if (filters.status) {
-                scans = scans.filter(s => s.status === filters.status);
+            hydrateSeedScans();
+            let scans = await fetchScansMysql(userId, filters);
+
+            if (!scans) {
+                let memScans = getMemoryScans().filter((s) => s.userId === userId);
+                if (filters.status) {
+                    memScans = memScans.filter((s) => s.status === filters.status);
+                }
+                memScans.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
+                if (filters.limit) {
+                    memScans = memScans.slice(0, parseInt(filters.limit, 10));
+                }
+                scans = memScans;
             }
-            
-            // Filter by date range
-            if (filters.startDate) {
-                scans = scans.filter(s => new Date(s.startTime) >= new Date(filters.startDate));
+
+            if (!scans.length) {
+                scans = await ensureDemoScansForUser(userId);
+                if (filters.limit) {
+                    scans = scans.slice(0, parseInt(filters.limit, 10));
+                }
             }
-            if (filters.endDate) {
-                scans = scans.filter(s => new Date(s.startTime) <= new Date(filters.endDate));
-            }
-            
-            // Sort by date (newest first)
-            scans.sort((a, b) => new Date(b.startTime) - new Date(a.startTime));
-            
-            // Limit results
-            if (filters.limit) {
-                scans = scans.slice(0, parseInt(filters.limit));
-            }
-            
+
             return scans;
         } catch (error) {
             LOG.error('[Mobile Security Scan] Error getting scan results:', error);
@@ -265,34 +444,31 @@ class MobileSecurityScanService {
      */
     async getScanStatistics(userId) {
         try {
-            const scans = db.mobileSecurityScans || [];
-            const userScans = scans.filter(s => s.userId === userId);
-            
+            const scans = await this.getScanResults(userId, { limit: 200 });
             const stats = {
-                totalScans: userScans.length,
-                completedScans: userScans.filter(s => s.status === 'completed').length,
-                totalThreatsFound: userScans.reduce((sum, s) => sum + (s.summary?.threatsFound || 0), 0),
-                totalItemsScanned: userScans.reduce((sum, s) => sum + (s.summary?.totalScanned || 0), 0),
-                lastScanDate: userScans.length > 0 ? userScans[0].startTime : null,
+                totalScans: scans.length,
+                completedScans: scans.filter((s) => s.status === 'completed').length,
+                totalThreatsFound: scans.reduce((sum, s) => sum + (s.summary?.threatsFound || 0), 0),
+                totalItemsScanned: scans.reduce((sum, s) => sum + (s.summary?.totalScanned || 0), 0),
+                lastScanDate: scans.length > 0 ? scans[0].startTime : null,
                 threatsByType: {
                     virus: 0,
                     malware: 0,
                     adware: 0,
                     spyware: 0,
                     phishing: 0,
-                    other: 0
-                }
+                    other: 0,
+                },
             };
-            
-            // Aggregate threats by type
-            userScans.forEach(scan => {
+
+            scans.forEach((scan) => {
                 if (scan.summary?.byType) {
-                    Object.keys(stats.threatsByType).forEach(type => {
+                    Object.keys(stats.threatsByType).forEach((type) => {
                         stats.threatsByType[type] += scan.summary.byType[type] || 0;
                     });
                 }
             });
-            
+
             return stats;
         } catch (error) {
             LOG.error('[Mobile Security Scan] Error getting statistics:', error);
@@ -311,18 +487,34 @@ class MobileSecurityScanService {
             if (!Array.isArray(scanIds) || scanIds.length === 0) {
                 return { success: false, error: 'No scan IDs provided' };
             }
-            
+
             let deleted = 0;
-            scanIds.forEach(scanId => {
-                const index = db.mobileSecurityScans.findIndex(s => s.scanId === scanId && s.userId === userId);
+            const mem = getMemoryScans();
+            scanIds.forEach((scanId) => {
+                const index = mem.findIndex((s) => s.scanId === scanId && s.userId === userId);
                 if (index > -1) {
-                    db.mobileSecurityScans.splice(index, 1);
-                    deleted++;
+                    mem.splice(index, 1);
+                    deleted += 1;
                 }
             });
-            
+
+            const pool = await getPool();
+            if (pool) {
+                for (const scanId of scanIds) {
+                    try {
+                        const [result] = await pool.query(
+                            'DELETE FROM mobile_security_scans WHERE scan_id = ? AND user_id = ?',
+                            [scanId, userId]
+                        );
+                        if (result?.affectedRows) deleted = Math.max(deleted, deleted);
+                    } catch (err) {
+                        LOG.warning('[Mobile Security Scan] MySQL delete:', err.message);
+                    }
+                }
+            }
+
             LOG.info(`[Mobile Security Scan] Deleted ${deleted} scan results for user: ${userId}`);
-            
+
             return { success: true, deleted };
         } catch (error) {
             LOG.error('[Mobile Security Scan] Error deleting scan results:', error);
@@ -337,20 +529,14 @@ class MobileSecurityScanService {
      */
     async getStorageUsage(userId) {
         try {
-            const scans = db.mobileSecurityScans || [];
-            const userScans = scans.filter(s => s.userId === userId);
-            
-            // Calculate storage used by scan results
-            const storageUsed = userScans.reduce((sum, scan) => {
-                // Estimate storage: ~1KB per scan result
-                return sum + 1024;
-            }, 0);
-            
+            const userScans = await this.getScanResults(userId, { limit: 500 });
+            const storageUsed = userScans.length * 1024;
+
             return {
                 totalScans: userScans.length,
-                storageUsed: storageUsed,
+                storageUsed,
                 storageUsedMB: (storageUsed / 1024 / 1024).toFixed(2),
-                canCleanup: userScans.length > 50 // Suggest cleanup if more than 50 scans
+                canCleanup: userScans.length > 50,
             };
         } catch (error) {
             LOG.error('[Mobile Security Scan] Error getting storage usage:', error);

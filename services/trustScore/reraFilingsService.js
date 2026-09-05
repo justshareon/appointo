@@ -264,6 +264,223 @@ function getPendingPreview() {
   return pendingPreview;
 }
 
+function findFilingByRera(reraNumber) {
+  try {
+    const json = readFilingsJson();
+    const reg = String(reraNumber || '').trim().toUpperCase();
+    return (json.filings || []).find((f) => String(f.reraNumber || '').toUpperCase() === reg) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function findSeedProjectByRera(reraNumber) {
+  try {
+    const seedData = require('../../database/data');
+    const reg = String(reraNumber || '').trim().toUpperCase();
+    return (seedData.trustScoreProjects || []).find(
+      (p) => String(p.reraNumber || '').toUpperCase() === reg
+    ) || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function findDbProjectByRera(reraNumber) {
+  const reg = String(reraNumber || '').trim().toUpperCase();
+  if (!reg) return null;
+  const db = require('../../database');
+  if (db.getType?.() === 'mysql') {
+    const pool = getMysqlPool();
+    if (pool) {
+      try {
+        const [rows] = await pool.query(
+          'SELECT * FROM trust_score_projects WHERE rera_number = ? LIMIT 1',
+          [reg]
+        );
+        if (rows?.[0]) {
+          return {
+            id: rows[0].id,
+            name: rows[0].name,
+            reraNumber: rows[0].rera_number,
+            builderName: rows[0].builder_name,
+            address: rows[0].address,
+            location: rows[0].location,
+            projectStatus: rows[0].project_status,
+            status: rows[0].project_status,
+            totalAmountCollected: rows[0].total_amount_collected,
+            loanAmountSanctioned: rows[0].loan_amount_sanctioned,
+            estimatedProjectCost: rows[0].estimated_project_cost,
+            escrowReserveDeposited: rows[0].escrow_reserve_deposited,
+            escrowReservePercentRequired: rows[0].escrow_reserve_percent_required,
+            escrowCompliant: rows[0].escrow_compliant !== 0,
+            documentsFiled: rows[0].documents_filed,
+            registeredAgents: rows[0].registered_agents,
+            reraComplaintsCount: rows[0].rera_complaints_count,
+            reraComplaintsStatus: rows[0].rera_complaints_status,
+            completion: rows[0].completion,
+            dataSource: rows[0].data_source,
+            filingAsOf: rows[0].filing_as_of,
+          };
+        }
+      } catch (_) {}
+    }
+  }
+  const mem = db.trustScoreProjects || db.inMemoryDb?.trustScoreProjects || [];
+  return mem.find((p) => String(p.reraNumber || '').toUpperCase() === reg) || null;
+}
+
+function buildMahaReraPortalUrl({ reraNumber, projectName, builderName } = {}) {
+  const reg = String(reraNumber || '').trim().toUpperCase();
+  const params = new URLSearchParams();
+  if (reg) params.set('certificate_no', reg);
+  if (projectName) params.set('project_name', String(projectName).trim());
+  if (builderName) params.set('promoter_name', String(builderName).trim());
+  params.set('project_state', '27');
+  return `https://maharera.maharashtra.gov.in/projects-search-result?${params.toString()}`;
+}
+
+/**
+ * Resolve govt/RERA details: public filings → DB → seed → RERA service overlay.
+ */
+async function getGovtDetailsByReraNumber(reraNumber) {
+  const reg = String(reraNumber || '').trim().toUpperCase();
+  if (!reg) return null;
+
+  const filing = findFilingByRera(reg);
+  const seed = findSeedProjectByRera(reg);
+  const dbProject = await findDbProjectByRera(reg);
+  const filingMerged = filing ? mergeFilingWithSeed(filing) : null;
+
+  let base = {
+    ...(seed || {}),
+    ...(dbProject || {}),
+    ...(filingMerged || {}),
+    reraNumber: reg,
+    name: filingMerged?.name || dbProject?.name || seed?.name || `Project ${reg}`,
+    projectName: filingMerged?.name || dbProject?.name || seed?.name || `Project ${reg}`,
+    builderName: filingMerged?.builderName || dbProject?.builderName || seed?.builderName || '',
+    location: filingMerged?.location || dbProject?.location || seed?.location || '',
+    address: dbProject?.address || seed?.address || '',
+    status: dbProject?.projectStatus || dbProject?.status || seed?.projectStatus || seed?.status || 'Registered',
+    projectStatus: dbProject?.projectStatus || dbProject?.status || seed?.projectStatus || seed?.status || 'Registered',
+    dataSource: DATA_SOURCE,
+    dataSourceLabel: DATA_SOURCE_LABEL,
+    filingAsOf: FILING_AS_OF,
+  };
+
+  let apiOverlay = {};
+  try {
+    const reraService = require('./reraService');
+    apiOverlay = await reraService.getProjectDetails(reg);
+    if (apiOverlay && typeof apiOverlay === 'object') {
+      base = {
+        ...apiOverlay,
+        ...base,
+        reraNumber: reg,
+        projectName: base.name || base.projectName || apiOverlay.projectName,
+        builderName: base.builderName || apiOverlay.builderName,
+        reraComplaintsCount:
+          base.reraComplaintsCount ??
+          dbProject?.reraComplaintsCount ??
+          seed?.reraComplaintsCount ??
+          apiOverlay.reraComplaintsCount ??
+          0,
+      };
+    }
+  } catch (err) {
+    reraFilingsLog.push('warn', 'govt_overlay', `${reg}: ${err.message}`);
+  }
+
+  let governmentComplaints = [];
+  try {
+    const reraService = require('./reraService');
+    governmentComplaints = await reraService.getProjectComplaints(reg);
+  } catch (_) {}
+
+  return {
+    ...base,
+    governmentComplaints,
+    portalUrl: buildMahaReraPortalUrl({
+      reraNumber: reg,
+      projectName: base.name || base.projectName,
+      builderName: base.builderName,
+    }),
+  };
+}
+
+async function listReraSuggestions(searchQuery = '', limit = 10) {
+  const q = String(searchQuery || '').trim().toLowerCase();
+  const max = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 50);
+  const dbProject = await findDbProjectByRera(q.toUpperCase().startsWith('P') ? q.toUpperCase() : '');
+  const pool = [];
+
+  try {
+    const json = readFilingsJson();
+    (json.filings || []).forEach((f) => {
+      pool.push({
+        reraNumber: f.reraNumber,
+        projectName: f.name || f.projectName,
+        builderName: f.builderName,
+        location: f.location,
+      });
+    });
+  } catch (_) {}
+
+  try {
+    const seedData = require('../../database/data');
+    (seedData.trustScoreProjects || []).forEach((p) => {
+      pool.push({
+        reraNumber: p.reraNumber,
+        projectName: p.name,
+        builderName: p.builderName,
+        location: p.location,
+      });
+    });
+  } catch (_) {}
+
+  const db = require('../../database');
+  const mem = db.trustScoreProjects || db.inMemoryDb?.trustScoreProjects || [];
+  mem.forEach((p) => {
+    pool.push({
+      reraNumber: p.reraNumber,
+      projectName: p.name,
+      builderName: p.builderName,
+      location: p.location,
+    });
+  });
+
+  const seen = new Set();
+  const unique = [];
+  for (const row of pool) {
+    const key = String(row.reraNumber || '').toUpperCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(row);
+  }
+
+  const filtered = q
+    ? unique.filter((row) => {
+        const hay = [row.reraNumber, row.projectName, row.builderName, row.location]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase();
+        return hay.includes(q);
+      })
+    : unique;
+
+  if (dbProject && !filtered.some((r) => String(r.reraNumber).toUpperCase() === String(dbProject.reraNumber).toUpperCase())) {
+    filtered.unshift({
+      reraNumber: dbProject.reraNumber,
+      projectName: dbProject.name,
+      builderName: dbProject.builderName,
+      location: dbProject.location,
+    });
+  }
+
+  return filtered.slice(0, max);
+}
+
 module.exports = {
   DATA_SOURCE,
   DATA_SOURCE_LABEL,
@@ -274,4 +491,10 @@ module.exports = {
   getStatus,
   getPendingPreview,
   getDiagnostics,
+  findFilingByRera,
+  findSeedProjectByRera,
+  mergeFilingWithSeed,
+  getGovtDetailsByReraNumber,
+  listReraSuggestions,
+  buildMahaReraPortalUrl,
 };

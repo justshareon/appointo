@@ -998,7 +998,49 @@ const syncSurakshaData = async ({ onProgress } = {}) => {
 
     if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: validations.length + reports.length });
     LOG.success(`[Suraksha Sync] Completed: ${itemsSynced} suraksha rows synced to MySQL`);
-    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: validations.length + reports.length });
+
+    const scanRows = inMemoryDb.mobileSecurityScans?.length
+        ? inMemoryDb.mobileSecurityScans
+        : (() => {
+            try {
+                return require('./database/data').mobileSecurityScans || [];
+            } catch (_) {
+                return [];
+            }
+        })();
+    for (const s of scanRows) {
+        try {
+            await pool.query(
+                `INSERT INTO mobile_security_scans
+                 (scan_id, user_id, scan_type, status, start_time, end_time, duration_ms, summary_json, results_json, created_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON DUPLICATE KEY UPDATE
+                   status=VALUES(status),
+                   summary_json=VALUES(summary_json),
+                   results_json=VALUES(results_json),
+                   updated_at=VALUES(updated_at)`,
+                [
+                    s.scanId,
+                    s.userId,
+                    s.scanType || 'full',
+                    s.status || 'completed',
+                    s.startTime ? new Date(s.startTime) : new Date(),
+                    s.endTime ? new Date(s.endTime) : null,
+                    s.duration || 0,
+                    JSON.stringify(s.summary || {}),
+                    JSON.stringify(s.results || {}),
+                    s.created_at ? new Date(s.created_at) : new Date(),
+                    new Date(),
+                ]
+            );
+            itemsSynced += 1;
+            queriesSynced += 1;
+        } catch (err) {
+            LOG.warning(`[Suraksha Sync] scan ${s.scanId}:`, err.message);
+        }
+    }
+
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: validations.length + reports.length + scanRows.length });
 };
 
 // ====================
@@ -1289,6 +1331,64 @@ const syncFleetData = async ({ onProgress } = {}) => {
     return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: 1 });
 };
 
+/** Upsert in-memory settings (pool limits, module URLs, RSS) into MySQL system_settings */
+const syncSystemSettings = async ({ onProgress } = {}) => {
+    const pool = await getPool();
+    const { ensureFeatureSettings } = require('./utils/defaultFeatureSettings');
+    const settings = ensureFeatureSettings(inMemoryDb.settings || {});
+    Object.assign(inMemoryDb.settings, settings);
+
+    await pool.query(`
+        CREATE TABLE IF NOT EXISTS system_settings (
+            key_name VARCHAR(64) PRIMARY KEY,
+            value LONGTEXT
+        )
+    `);
+    try {
+        await pool.query('ALTER TABLE system_settings MODIFY value LONGTEXT');
+    } catch (_) { /* already LONGTEXT */ }
+
+    let queriesSynced = 0;
+    for (const [key, val] of Object.entries(settings)) {
+        const serialized = val != null && typeof val === 'object'
+            ? JSON.stringify(val)
+            : String(val ?? '');
+        await pool.query(
+            'INSERT INTO system_settings (key_name, value) VALUES (?, ?) ON DUPLICATE KEY UPDATE value = ?',
+            [key, serialized, serialized]
+        );
+        queriesSynced += 1;
+    }
+
+    try {
+        const apiConfigService = require('./services/trustScore/apiConfigService');
+        await apiConfigService.initializeTable();
+        queriesSynced += 1;
+        const existing = await apiConfigService.getAllConfigs();
+        if (!existing || existing.length === 0) {
+            await apiConfigService.createConfig({
+                id: 'rera_maharashtra',
+                authority_name: 'MahaRERA Public Portal',
+                authority_type: 'RERA',
+                base_url: 'https://maharera.mahaonline.gov.in/',
+                auth_type: 'None',
+                is_enabled: true,
+                use_api: false,
+                description: 'Default RERA reference URL — edit in Super Admin → Trust Score',
+            });
+            queriesSynced += 1;
+            LOG.info('[Settings Sync] Seeded default Trust Score RERA URL');
+        }
+    } catch (e) {
+        LOG.warning('[Settings Sync] trust_score_api_configs init:', e.message);
+    }
+
+    const count = Object.keys(settings).length;
+    LOG.success(`[Settings Sync] ${count} keys upserted to MySQL`);
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced: count, totalItems: count });
+    return doneSync({ itemsSynced: count, version: 1, queriesSynced, totalItems: count });
+};
+
 // ====================
 // MAIN SYNC ORCHESTRATOR
 // ====================
@@ -1313,6 +1413,8 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
             : `[Sync] Full sync — empty table or forceFull (build ${syncStatus.getBuildVersion()})`);
 
         await step('core_schema', () => ensureCoreSchema().then(() => doneSync({ itemsSynced: 1, version: 1, queriesSynced: 1, totalItems: 1 })));
+
+        await step('system_settings', syncSystemSettings);
 
         await step('feature_seed', async () => {
             try {
@@ -1393,6 +1495,7 @@ if (require.main === module) {
 
 module.exports = {
     syncAllToMysql,
+    syncSystemSettings,
     syncUsers,
     syncVendors,
     syncUserVendorMappings,

@@ -3,6 +3,105 @@ const router = express.Router();
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
 
+/** Seed JSON → MySQL before any trust-score read */
+router.use(async (req, res, next) => {
+    try {
+        const { ensureTrustScoreSync } = require('../services/trustScore/trustScoreHydrateService');
+        await ensureTrustScoreSync();
+    } catch (err) {
+        LOG.warning(`[Trust Score Routes] Sync skipped: ${err.message}`);
+    }
+    next();
+});
+
+function mapTrustProjectRow(p) {
+    return {
+        id: p.id,
+        name: p.name,
+        reraNumber: p.reraNumber || p.rera_number,
+        builderName: p.builderName || p.builder_name,
+        builderId: p.builderId || p.builder_id,
+        address: p.address,
+        location: p.location,
+        latitude: p.latitude != null ? Number(p.latitude) : null,
+        longitude: p.longitude != null ? Number(p.longitude) : null,
+        projectStatus: p.projectStatus || p.status || p.project_status,
+        status: p.projectStatus || p.status || p.project_status,
+        trustScore: p.trustScore || p.projectScore || p.score || p.trust_score || 0,
+        score: p.trustScore || p.projectScore || p.score || p.trust_score || 0,
+        projectScore: p.trustScore || p.projectScore || p.score || p.trust_score || 0,
+        builderScore: p.builderScore || p.builder_score || 0,
+        totalArea: p.totalArea || p.total_area,
+        numberOfUnits: p.numberOfUnits || p.number_of_units,
+        numberOfFloors: p.numberOfFloors || p.number_of_floors,
+        launchDate: p.launchDate || p.launch_date,
+        expectedCompletionDate: p.expectedCompletionDate || p.expected_completion_date,
+        actualCompletionDate: p.actualCompletionDate || p.actual_completion_date,
+        reraExtensionDetails: p.reraExtensionDetails || p.rera_extension_details,
+        landOwnershipTitle: p.landOwnershipTitle || p.land_ownership_title,
+        landOwnerName: p.landOwnerName || p.land_owner_name,
+        landArea: p.landArea || p.land_area,
+        approvalAuthorities: typeof p.approvalAuthorities === 'string'
+            ? JSON.parse(p.approvalAuthorities || '[]')
+            : (p.approvalAuthorities || []),
+        approvedBuildingPlans: p.approvedBuildingPlans || p.approved_building_plans,
+        bankName: p.bankName || p.bank_name,
+        loanAmountSanctioned: p.loanAmountSanctioned || p.loan_amount_sanctioned,
+        totalAmountCollected: p.totalAmountCollected || p.total_amount_collected,
+        fundingSources: p.fundingSources || p.funding_sources,
+        litigationHistory: typeof p.litigationHistory === 'string'
+            ? JSON.parse(p.litigationHistory || '[]')
+            : (p.litigationHistory || []),
+        reraComplaintsCount: p.reraComplaintsCount || p.rera_complaints_count || 0,
+        reraComplaintsStatus: p.reraComplaintsStatus || p.rera_complaints_status,
+        completion: p.completion || 0,
+        priceRise: p.priceRise || p.price_rise,
+        estimatedProjectCost: p.estimatedProjectCost || p.estimated_project_cost,
+        escrowReserveDeposited: p.escrowReserveDeposited || p.escrow_reserve_deposited,
+        escrowReservePercentRequired: p.escrowReservePercentRequired ?? p.escrow_reserve_percent_required ?? 70,
+        escrowCompliant: p.escrowCompliant ?? (p.escrow_compliant !== 0 && p.escrow_compliant !== false),
+        documentsFiled: p.documentsFiled ?? p.documents_filed ?? 0,
+        registeredAgents: p.registeredAgents ?? p.registered_agents ?? 0,
+        dataSource: p.dataSource || p.data_source,
+        filingAsOf: p.filingAsOf || p.filing_as_of,
+        dataSourceLabel: p.dataSourceLabel || (p.data_source === 'public_rera_filing_march_2026'
+            ? 'Data sourced from public RERA filings as of March 2026'
+            : undefined),
+    };
+}
+
+function extractAreaToken(project) {
+    const addr = String(project?.address || '').trim();
+    if (addr) {
+        const first = addr.split(',')[0]?.trim();
+        if (first) return first;
+    }
+    return String(project?.location || '').trim();
+}
+
+async function findTrustProjectById(projectId) {
+    const db = require('../database');
+    if (db.getType() === 'mysql') {
+        const pool = db.getPool();
+        if (pool) {
+            const [rows] = await pool.query(
+                'SELECT * FROM trust_score_projects WHERE id = ? OR rera_number = ? LIMIT 1',
+                [projectId, projectId]
+            );
+            if (rows?.[0]) return mapTrustProjectRow(rows[0]);
+        }
+    }
+    const data = require('../database/data');
+    const sources = [
+        ...(data.trustScoreProjects || []),
+        ...(db.trustScoreProjects || []),
+    ];
+    const found = sources.find(
+        (p) => p.id === projectId || String(p.reraNumber) === String(projectId)
+    );
+    return found ? mapTrustProjectRow(found) : null;
+}
+
 /**
  * GET /api/trust-score/projects
  * Get projects with search, filters, pagination
@@ -946,87 +1045,10 @@ router.get('/projects/:projectId',
             }
 
             LOG.info(`[Trust Score Routes] Fetching project ${projectId}`);
-            const db = require('../database');
-            const dbType = db.getType();
 
-            const mapProject = (p) => ({
-                id: p.id,
-                name: p.name,
-                reraNumber: p.reraNumber || p.rera_number,
-                builderName: p.builderName || p.builder_name,
-                builderId: p.builderId || p.builder_id,
-                address: p.address,
-                location: p.location,
-                latitude: p.latitude,
-                longitude: p.longitude,
-                projectStatus: p.projectStatus || p.status,
-                status: p.projectStatus || p.status,
-                trustScore: p.trustScore || p.projectScore || p.score || 0,
-                score: p.trustScore || p.projectScore || p.score || 0,
-                projectScore: p.trustScore || p.projectScore || p.score || 0,
-                builderScore: p.builderScore || p.builder_score || 0,
-                totalArea: p.totalArea || p.total_area,
-                numberOfUnits: p.numberOfUnits || p.number_of_units,
-                numberOfFloors: p.numberOfFloors || p.number_of_floors,
-                launchDate: p.launchDate || p.launch_date,
-                expectedCompletionDate: p.expectedCompletionDate || p.expected_completion_date,
-                actualCompletionDate: p.actualCompletionDate || p.actual_completion_date,
-                reraExtensionDetails: p.reraExtensionDetails || p.rera_extension_details,
-                landOwnershipTitle: p.landOwnershipTitle || p.land_ownership_title,
-                landOwnerName: p.landOwnerName || p.land_owner_name,
-                landArea: p.landArea || p.land_area,
-                approvalAuthorities: typeof p.approvalAuthorities === 'string'
-                    ? JSON.parse(p.approvalAuthorities || '[]')
-                    : (p.approvalAuthorities || []),
-                approvedBuildingPlans: p.approvedBuildingPlans || p.approved_building_plans,
-                bankName: p.bankName || p.bank_name,
-                loanAmountSanctioned: p.loanAmountSanctioned || p.loan_amount_sanctioned,
-                totalAmountCollected: p.totalAmountCollected || p.total_amount_collected,
-                fundingSources: p.fundingSources || p.funding_sources,
-                litigationHistory: typeof p.litigationHistory === 'string'
-                    ? JSON.parse(p.litigationHistory || '[]')
-                    : (p.litigationHistory || []),
-                reraComplaintsCount: p.reraComplaintsCount || p.rera_complaints_count || 0,
-                reraComplaintsStatus: p.reraComplaintsStatus || p.rera_complaints_status,
-                completion: p.completion || 0,
-                priceRise: p.priceRise || p.price_rise,
-                estimatedProjectCost: p.estimatedProjectCost || p.estimated_project_cost,
-                escrowReserveDeposited: p.escrowReserveDeposited || p.escrow_reserve_deposited,
-                escrowReservePercentRequired: p.escrowReservePercentRequired ?? p.escrow_reserve_percent_required ?? 70,
-                escrowCompliant: p.escrowCompliant ?? (p.escrow_compliant !== 0 && p.escrow_compliant !== false),
-                documentsFiled: p.documentsFiled ?? p.documents_filed ?? 0,
-                registeredAgents: p.registeredAgents ?? p.registered_agents ?? 0,
-                dataSource: p.dataSource || p.data_source,
-                filingAsOf: p.filingAsOf || p.filing_as_of,
-                dataSourceLabel: p.dataSourceLabel || (p.data_source === 'public_rera_filing_march_2026'
-                    ? 'Data sourced from public RERA filings as of March 2026'
-                    : undefined),
-            });
-
-            if (dbType === 'mysql') {
-                const pool = db.getPool();
-                if (pool) {
-                    const [rows] = await pool.query(
-                        'SELECT * FROM trust_score_projects WHERE id = ? OR rera_number = ? LIMIT 1',
-                        [projectId, projectId]
-                    );
-                    if (rows?.[0]) {
-                        return res.json(mapProject(rows[0]));
-                    }
-                }
-            }
-
-            const data = require('../database/data');
-            const dbModule = require('../database');
-            const sources = [
-                ...(data.trustScoreProjects || []),
-                ...(dbModule.trustScoreProjects || []),
-            ];
-            const found = sources.find(
-                (p) => p.id === projectId || String(p.reraNumber) === String(projectId)
-            );
-            if (found) {
-                return res.json(mapProject(found));
+            const project = await findTrustProjectById(projectId);
+            if (project) {
+                return res.json(project);
             }
 
             res.status(404).json({ success: false, error: 'Project not found' });
@@ -1101,9 +1123,14 @@ router.get('/projects/:projectId/validation',
             let reraGovt = {};
             if (project.reraNumber) {
                 try {
-                    reraGovt = await reraService.getProjectDetails(project.reraNumber);
+                    const reraFilingsService = require('../services/trustScore/reraFilingsService');
+                    reraGovt = await reraFilingsService.getGovtDetailsByReraNumber(project.reraNumber);
                 } catch {
-                    reraGovt = {};
+                    try {
+                        reraGovt = await reraService.getProjectDetails(project.reraNumber);
+                    } catch {
+                        reraGovt = {};
+                    }
                 }
             }
 
@@ -1111,6 +1138,79 @@ router.get('/projects/:projectId/validation',
             res.json({ success: true, validation, projectId: project.id, reraNumber: project.reraNumber });
         } catch (error) {
             LOG.error('[Trust Score Routes] Validation error:', error);
+            res.status(500).json({ success: false, error: error.message });
+        }
+    }
+);
+
+/**
+ * GET /api/trust-score/projects/:projectId/nearby
+ * Other projects in the same area (MySQL-first)
+ */
+router.get('/projects/:projectId/nearby',
+    authenticateToken,
+    async (req, res) => {
+        try {
+            const { projectId } = req.params;
+            const limit = Math.min(parseInt(req.query.limit, 10) || 6, 20);
+            const current = await findTrustProjectById(projectId);
+            if (!current) {
+                return res.status(404).json({ success: false, error: 'Project not found' });
+            }
+
+            const areaToken = extractAreaToken(current);
+            const cityToken = String(current.location || '').trim();
+            const db = require('../database');
+            let nearby = [];
+
+            if (db.getType() === 'mysql') {
+                const pool = db.getPool();
+                if (pool) {
+                    const likeArea = areaToken ? `%${areaToken}%` : null;
+                    const likeCity = cityToken ? `%${cityToken}%` : null;
+                    let query = 'SELECT * FROM trust_score_projects WHERE id != ?';
+                    const params = [current.id];
+                    if (likeArea || likeCity) {
+                        query += ' AND (';
+                        const parts = [];
+                        if (likeArea) {
+                            parts.push('address LIKE ?');
+                            params.push(likeArea);
+                        }
+                        if (likeCity) {
+                            parts.push('location LIKE ?');
+                            params.push(likeCity);
+                        }
+                        query += parts.join(' OR ') + ')';
+                    }
+                    query += ' ORDER BY trust_score DESC, name ASC LIMIT ?';
+                    params.push(limit);
+                    const [rows] = await pool.query(query, params);
+                    nearby = (rows || []).map(mapTrustProjectRow);
+                }
+            }
+
+            if (!nearby.length) {
+                const data = require('../database/data');
+                const sources = [
+                    ...(data.trustScoreProjects || []),
+                    ...(db.trustScoreProjects || []),
+                ].map(mapTrustProjectRow);
+                nearby = sources
+                    .filter((p) => p.id !== current.id)
+                    .filter((p) => {
+                        if (!areaToken && !cityToken) return true;
+                        const hay = `${p.address || ''} ${p.location || ''}`.toLowerCase();
+                        const areaOk = areaToken && hay.includes(areaToken.toLowerCase());
+                        const cityOk = cityToken && hay.includes(cityToken.toLowerCase());
+                        return areaOk || cityOk;
+                    })
+                    .slice(0, limit);
+            }
+
+            res.json({ success: true, area: areaToken || cityToken, projects: nearby });
+        } catch (error) {
+            LOG.error('[Trust Score Routes] Nearby projects error:', error);
             res.status(500).json({ success: false, error: error.message });
         }
     }
@@ -1318,5 +1418,222 @@ router.post('/complaints',
         }
     }
 );
+
+/**
+ * GET /api/trust-score/rera/suggestions?search=&limit=
+ */
+router.get('/rera/suggestions', authenticateToken, async (req, res) => {
+    try {
+        const reraFilingsService = require('../services/trustScore/reraFilingsService');
+        const rows = await reraFilingsService.listReraSuggestions(req.query.search, req.query.limit);
+        res.json(rows);
+    } catch (error) {
+        LOG.error('[Trust Score Routes] RERA suggestions error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/trust-score/rera/validate
+ * Body: { reraNumber }
+ */
+router.post('/rera/validate', authenticateToken, async (req, res) => {
+    try {
+        const reraNumber = String(req.body?.reraNumber || '').trim();
+        if (!reraNumber) {
+            return res.status(400).json({ success: false, error: 'reraNumber is required' });
+        }
+        const reraFilingsService = require('../services/trustScore/reraFilingsService');
+        const project = await reraFilingsService.getGovtDetailsByReraNumber(reraNumber);
+        if (!project) {
+            return res.json({ success: false, error: 'RERA number not found in govt filings' });
+        }
+        res.json({
+            success: true,
+            project: {
+                reraNumber: project.reraNumber,
+                projectName: project.projectName || project.name,
+                builderName: project.builderName,
+                status: project.status || project.projectStatus,
+                registrationDate: project.registrationDate || project.launchDate,
+                validityDate: project.validityDate || project.expectedCompletionDate,
+                address: project.address || project.location,
+                totalAmountCollected: project.totalAmountCollected,
+                loanAmountSanctioned: project.loanAmountSanctioned,
+                estimatedProjectCost: project.estimatedProjectCost,
+                escrowReserveDeposited: project.escrowReserveDeposited,
+                escrowCompliant: project.escrowCompliant,
+                documentsFiled: project.documentsFiled,
+                reraComplaintsCount: project.reraComplaintsCount,
+                reraComplaintsStatus: project.reraComplaintsStatus,
+                completion: project.completion,
+            },
+            governmentComplaints: project.governmentComplaints || [],
+            dataSource: project.dataSource,
+            dataSourceLabel: project.dataSourceLabel,
+            filingAsOf: project.filingAsOf,
+            portalUrl: project.portalUrl,
+        });
+    } catch (error) {
+        LOG.error('[Trust Score Routes] RERA validate error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/trust-score/rera/govt-details?reraNumber=
+ */
+router.get('/rera/govt-details', authenticateToken, async (req, res) => {
+    try {
+        const reraNumber = String(req.query.reraNumber || '').trim();
+        if (!reraNumber) {
+            return res.status(400).json({ success: false, error: 'reraNumber is required' });
+        }
+        const reraFilingsService = require('../services/trustScore/reraFilingsService');
+        const project = await reraFilingsService.getGovtDetailsByReraNumber(reraNumber);
+        if (!project) {
+            return res.json({ success: false, error: 'Not found' });
+        }
+        res.json({ success: true, ...project });
+    } catch (error) {
+        LOG.error('[Trust Score Routes] RERA govt-details error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/trust-score/watchlist
+ */
+router.get('/watchlist', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.query.user_id || req.user?.id || req.user?.userId;
+        if (!userId) {
+            return res.status(400).json({ success: false, error: 'user_id is required' });
+        }
+
+        const db = require('../database');
+        const dbType = db.getType();
+        let items = [];
+
+        if (dbType === 'mysql') {
+            const pool = db.getPool();
+            if (pool) {
+                const [rows] = await pool.query(
+                    `SELECT w.*, p.trust_score, p.location, p.project_status
+                     FROM trust_score_watchlist w
+                     LEFT JOIN trust_score_projects p ON p.id = w.project_id
+                     WHERE w.user_id = ?
+                     ORDER BY w.created_at DESC`,
+                    [String(userId)]
+                );
+                items = (rows || []).map((row) => ({
+                    id: row.project_id,
+                    watchlistId: row.id,
+                    name: row.project_name,
+                    projectName: row.project_name,
+                    score: row.trust_score,
+                    trustScore: row.trust_score,
+                    location: row.location,
+                    status: row.project_status,
+                    savedAt: row.created_at,
+                }));
+            }
+        }
+
+        if (!items.length) {
+            const mem = db.trustScoreWatchlist || [];
+            items = mem
+                .filter((w) => String(w.userId || w.user_id) === String(userId))
+                .map((w) => ({
+                    id: w.projectId || w.project_id,
+                    watchlistId: w.id,
+                    name: w.projectName || w.project_name,
+                    projectName: w.projectName || w.project_name,
+                    savedAt: w.createdAt || w.created_at,
+                }));
+        }
+
+        res.json(items);
+    } catch (error) {
+        LOG.error('[Trust Score Routes] Error fetching watchlist:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/trust-score/watchlist
+ * Body: { user_id?, project_ids: string[] }
+ */
+router.post('/watchlist', authenticateToken, async (req, res) => {
+    try {
+        const userId = req.body.user_id || req.user?.id || req.user?.userId;
+        const projectIds = Array.isArray(req.body.project_ids) ? req.body.project_ids : [];
+        if (!userId) {
+            return res.status(400).json({ success: false, error: 'user_id is required' });
+        }
+        if (!projectIds.length) {
+            return res.status(400).json({ success: false, error: 'project_ids is required' });
+        }
+
+        const db = require('../database');
+        const dbType = db.getType();
+        const data = require('../database/data');
+        const allProjects = db.trustScoreProjects || data.trustScoreProjects || [];
+        let added = 0;
+
+        const resolveProject = (pid) =>
+            allProjects.find((p) => String(p.id) === String(pid)) || null;
+
+        if (!db.trustScoreWatchlist) db.trustScoreWatchlist = [];
+
+        for (const projectId of projectIds) {
+            const existsMem = db.trustScoreWatchlist.some(
+                (w) =>
+                    String(w.userId || w.user_id) === String(userId) &&
+                    String(w.projectId || w.project_id) === String(projectId)
+            );
+            if (existsMem) continue;
+
+            const proj = resolveProject(projectId);
+            const watchId = `watch_${String(userId)}_${String(projectId)}`;
+
+            if (dbType === 'mysql') {
+                const pool = db.getPool();
+                if (pool) {
+                    const [existing] = await pool.query(
+                        'SELECT id FROM trust_score_watchlist WHERE user_id = ? AND project_id = ? LIMIT 1',
+                        [String(userId), String(projectId)]
+                    );
+                    if (existing?.length) continue;
+
+                    await pool.query(
+                        `INSERT INTO trust_score_watchlist (id, user_id, project_id, project_name, created_at)
+                         VALUES (?, ?, ?, ?, NOW())`,
+                        [
+                            watchId,
+                            String(userId),
+                            String(projectId),
+                            proj?.name || proj?.projectName || String(projectId),
+                        ]
+                    );
+                }
+            }
+
+            db.trustScoreWatchlist.push({
+                id: watchId,
+                userId: String(userId),
+                projectId: String(projectId),
+                projectName: proj?.name || proj?.projectName || String(projectId),
+                createdAt: new Date(),
+            });
+            added += 1;
+        }
+
+        res.json({ success: true, added, total: projectIds.length });
+    } catch (error) {
+        LOG.error('[Trust Score Routes] Error adding to watchlist:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
 
 module.exports = router;

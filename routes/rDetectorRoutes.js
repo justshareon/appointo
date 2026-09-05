@@ -152,6 +152,32 @@ router.get('/commute/pre-departure', authenticateToken, async (req, res) => {
 });
 
 /**
+ * GET /api/r-detector/commute/preferences — user commute times (default 8:30 AM / 7:30 PM)
+ */
+router.get('/commute/preferences', authenticateToken, async (req, res) => {
+  try {
+    const preferences = await commuteService.getPreferences(req.user.id);
+    res.json({ success: true, preferences });
+  } catch (err) {
+    LOG.error('[R-Detector] commute preferences get', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/r-detector/commute/preferences
+ */
+router.post('/commute/preferences', authenticateToken, async (req, res) => {
+  try {
+    const preferences = await commuteService.savePreferences(req.user.id, req.body || {});
+    res.json({ success: true, preferences });
+  } catch (err) {
+    LOG.error('[R-Detector] commute preferences save', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * GET /api/r-detector/incidents/:id
  */
 router.get('/incidents/:id', authenticateToken, async (req, res) => {
@@ -200,7 +226,23 @@ router.post('/bad-road/probe', authenticateToken, async (req, res) => {
       confidence: req.body.confidence,
       confirmed: req.body.confirmed !== false,
       auto_detected: req.body.auto_detected,
+      issue_type: req.body.issue_type || 'pothole',
+      severity: req.body.severity || 'medium',
     });
+    if (io && result.confirmed) {
+      io.emit('rdetector_bad_road_probe', {
+        driver_id: req.user.id,
+        hazard_id: result.hazard_id,
+        reporter_count: result.reporter_count,
+        threshold: result.threshold,
+        incident_created: result.incident_created,
+        issue_type: result.issue_type || req.body.issue_type || 'pothole',
+        severity: result.severity || req.body.severity || 'medium',
+        location: { latitude: lat, longitude: lng },
+        rounded_lat: result.rounded_lat,
+        rounded_lng: result.rounded_lng,
+      });
+    }
     if (io && result.incident_created) {
       io.emit('rdetector_incident_created', {
         driver_id: req.user.id,

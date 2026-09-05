@@ -6,7 +6,14 @@ const rssNewsService = require('./rssNewsService');
 const norm = (v) => String(v || '').trim().toLowerCase();
 
 function googleNewsSearchUrl(query, hl = 'en-IN', gl = 'IN') {
-  return `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=IN:en`;
+  return `https://news.google.com/rss/search?q=${encodeURIComponent(query)}&hl=${hl}&gl=${gl}&ceid=${gl}:${hl.startsWith('hi') ? 'hi' : 'en'}`;
+}
+
+function resolveGoogleHl(ctx = {}) {
+  const lang = norm(ctx.language);
+  if (lang === 'hi') return 'hi-IN';
+  if (lang === 'en') return 'en-IN';
+  return 'en-IN';
 }
 
 function dedupeItems(items) {
@@ -122,10 +129,11 @@ async function fetchLocationNews(settings = {}, ctx = {}, limit = 36) {
   const queries = buildQueries(ctx);
   const perQuery = Math.max(3, Math.ceil(limit / Math.min(queries.length, 8)));
   const items = [];
+  const hl = resolveGoogleHl(ctx);
 
   for (const spec of queries.slice(0, 8)) {
     try {
-      const url = googleNewsSearchUrl(spec.q);
+      const url = googleNewsSearchUrl(spec.q, hl);
       const result = await rssNewsService.fetchNews(
         {
           url,
@@ -175,4 +183,5 @@ module.exports = {
   groupLocationNewsItems,
   buildQueries,
   googleNewsSearchUrl,
+  curatedFallback,
 };

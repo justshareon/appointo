@@ -10,7 +10,8 @@ const mysql = require('mysql2/promise');
 const { logMysqlQuery, logMysqlPool } = require('../utils/dbTiming');
 const { getFeatureIdleMs } = require('./featureIdle');
 const featureMemory = require('./featureMemoryManager');
-const { MYSQL_FEATURES } = require('./featureRegistry');
+const poolConfig = require('../utils/poolConfig');
+const { MYSQL_FEATURES, FEATURES: FEATURE_CATALOG } = require('./featureRegistry');
 
 const LOG = {
     info: (msg) => console.log(`[FeatureDB] ${msg}`),
@@ -26,7 +27,7 @@ const IDLE_CLOSE_MS = getFeatureIdleMs();
 const featurePools = new Map();
 const als = new AsyncLocalStorage();
 
-const FEATURES = MYSQL_FEATURES;
+const MYSQL_FEATURE_IDS = MYSQL_FEATURES;
 
 const lastRebuildAt = new Map();
 
@@ -167,9 +168,11 @@ function instrumentPool(pool, feature) {
 function createPoolInstance(feature) {
     const dbName = process.env[`DB_NAME_${feature.toUpperCase()}`] || process.env.DB_NAME || 'qr_queue';
     const idleTimeout = parseInt(process.env.DB_POOL_IDLE_MS || '60000', 10);
-    const connectionLimit = parseInt(process.env[`DB_CONN_LIMIT_${feature.toUpperCase()}`] || process.env.DB_CONN_LIMIT || '5', 10);
+    poolConfig.loadSettings().catch(() => {});
+    const connectionLimit = poolConfig.resolveLimitSync(feature);
+    const maxIdle = poolConfig.resolveMaxIdle(connectionLimit);
     const useSsl = shouldUseSsl();
-    LOG.info(`Creating MySQL pool for feature "${feature}" (db: ${dbName} host: ${process.env.DB_HOST || 'localhost'} ssl: ${useSsl})`);
+    LOG.info(`Creating MySQL pool for feature "${feature}" (limit: ${connectionLimit}, maxIdle: ${maxIdle}, db: ${dbName})`);
     const config = {
         host: process.env.DB_HOST || 'localhost',
         port: process.env.DB_PORT || 3306,
@@ -182,7 +185,7 @@ function createPoolInstance(feature) {
         enableKeepAlive: true,
         keepAliveInitialDelay: 10000,
         idleTimeout,
-        maxIdle: Math.min(2, connectionLimit),
+        maxIdle,
     };
     if (useSsl) config.ssl = { rejectUnauthorized: false };
     return instrumentPool(mysql.createPool(config), feature);
@@ -330,6 +333,40 @@ function middleware(...features) {
     };
 }
 
+async function applyConfiguredLimits() {
+    poolConfig.clearCache();
+    await closeAll();
+}
+
+function getPoolStats() {
+    poolConfig.loadSettings().catch(() => {});
+    const rows = [];
+    for (const feature of MYSQL_FEATURES) {
+        const entry = liveEntry(feature);
+        const connectionLimit = poolConfig.resolveLimitSync(feature);
+        const row = {
+            feature,
+            label: FEATURE_CATALOG[feature]?.label || feature,
+            open: !!entry,
+            refCount: entry?.refCount || 0,
+            connectionLimit,
+            activeConnections: null,
+            freeConnections: null,
+            queued: null,
+            actualLimit: null,
+        };
+        const inner = entry?.pool?.pool;
+        if (inner) {
+            row.activeConnections = inner._allConnections?.length ?? null;
+            row.freeConnections = inner._freeConnections?.length ?? null;
+            row.queued = inner._connectionQueue?.length ?? null;
+            row.actualLimit = inner.config?.connectionLimit ?? connectionLimit;
+        }
+        rows.push(row);
+    }
+    return rows;
+}
+
 async function closeAll() {
     const entries = [...featurePools.entries()];
     featurePools.clear();
@@ -349,7 +386,8 @@ process.on('SIGINT', () => closeAll().finally(() => process.exit(0)));
 process.on('SIGTERM', () => closeAll().finally(() => process.exit(0)));
 
 module.exports = {
-    FEATURES,
+    MYSQL_FEATURE_IDS,
+    FEATURE_CATALOG,
     acquireForSync,
     isMysqlConfigured,
     isMysqlEnabled,
@@ -357,6 +395,8 @@ module.exports = {
     release,
     getPool,
     getCachedPool,
+    getPoolStats,
+    applyConfiguredLimits,
     middleware,
     closeAll,
     runWithFeatures,

@@ -31,7 +31,20 @@ function clamp(n, min, max) {
  * @param {object} [reraGovt] - optional govt/RERA API overlay
  */
 function buildProjectValidation(project = {}, reraGovt = {}) {
-  const p = { ...project, ...reraGovt };
+  const complaintCount =
+    project.reraComplaintsCount ??
+    project.rera_complaints_count ??
+    reraGovt.reraComplaintsCount ??
+    0;
+  const p = {
+    ...project,
+    ...reraGovt,
+    reraComplaintsCount: complaintCount,
+    reraComplaintsStatus:
+      project.reraComplaintsStatus ??
+      project.rera_complaints_status ??
+      reraGovt.reraComplaintsStatus,
+  };
   const collected = parseAmountToCrores(p.totalAmountCollected);
   const loan = parseAmountToCrores(p.loanAmountSanctioned);
   const deposited = parseAmountToCrores(

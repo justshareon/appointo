@@ -228,8 +228,21 @@ class AdminService {
     /**
      * Get users with vendor mappings (admin view)
      */
-    async getUsersWithMappings() {
-        return await db.getUsersWithVendorMappings();
+    async getUsersWithMappings(query = {}) {
+        const page = parseInt(query.page, 10) || 1;
+        const limit = parseInt(query.limit, 10) || 10;
+        const search = query.search || '';
+        const filterField = query.filterField || 'all';
+        return db.getUsersWithVendorMappingsPaginated({ page, limit, search, filterField });
+    }
+
+    async getVendorPickerList(query = {}) {
+        const page = parseInt(query.page, 10) || 1;
+        const limit = parseInt(query.limit, 10) || 10;
+        const search = query.search || '';
+        const filterField = query.filterField || 'all';
+        const excludeUserId = query.excludeUserId || null;
+        return db.getVendorPickerList({ page, limit, search, filterField, excludeUserId });
     }
 
     /**

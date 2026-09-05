@@ -201,10 +201,26 @@ class AdminController {
             if (!adminService.isSuperAdmin(req.user)) {
                 return res.status(403).json({ error: 'Forbidden: Super admin access required' });
             }
-            const data = await adminService.getUsersWithMappings();
+            const data = await adminService.getUsersWithMappings(req.query || {});
             res.json(data);
         } catch (err) {
             LOG.error('Admin get users with mappings failed', err.message);
+            res.status(500).json({ error: err.message });
+        }
+    }
+
+    /**
+     * GET /api/admin/vendor-picker
+     */
+    async getVendorPickerList(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const data = await adminService.getVendorPickerList(req.query || {});
+            res.json(data);
+        } catch (err) {
+            LOG.error('Admin vendor picker failed', err.message);
             res.status(500).json({ error: err.message });
         }
     }

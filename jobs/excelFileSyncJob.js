@@ -593,10 +593,62 @@ class ExcelFileSyncJob {
         };
     }
 
+    async loadPreviewFromFilePath(filePath, { label = 'upload' } = {}) {
+        if (!filePath || !fs.existsSync(filePath)) {
+            throw tradingExcelLog.attachError(
+                new Error(`Excel file not found: ${filePath || '(empty path)'}`),
+                'file_missing',
+                { filePath }
+            );
+        }
+        if (this.isRunning) {
+            throw tradingExcelLog.attachError(
+                new Error('Sync already in progress — wait for the current load to finish'),
+                'busy',
+                {}
+            );
+        }
+        this.isRunning = true;
+        const t0 = Date.now();
+        try {
+            tradingExcelLog.push('info', 'preview_file', `Reading workbook (${label})`, { filePath });
+            const sheetsData = await excelFileService.readAllSheetsByType(filePath);
+            const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
+            if (!cleaned.length) {
+                throw tradingExcelLog.attachError(
+                    new Error('No stock rows in Excel — check sheets: Gainers, Decliners, Actives, Data'),
+                    'empty_workbook',
+                    { filePath, rawSheets: Object.keys(sheetsData || {}) }
+                );
+            }
+            stockDataService.mirrorLiveDataToMemory(cleaned);
+            this.pendingPreview = cleaned;
+            const summary = this.summarizeCleanedData(cleaned);
+            tradingExcelLog.push('info', 'preview_ready', `${summary.total} rows from ${label}`, {
+                durationMs: Date.now() - t0,
+                filePath,
+                counts: summary.counts,
+            });
+            return summary;
+        } catch (error) {
+            if (!error.tradingExcelStep) {
+                tradingExcelLog.attachError(error, 'preview_failed', { durationMs: Date.now() - t0, filePath });
+            }
+            throw error;
+        } finally {
+            this.isRunning = false;
+        }
+    }
+
     /**
      * Admin: load Excel → preview in memory (no DB write until save).
      */
-    async loadPreviewForAdmin({ restartExcel = false, openExcel = true } = {}) {
+    async loadPreviewForAdmin({ restartExcel = false, openExcel = false, filePath, useUploadedFile = false } = {}) {
+        if (useUploadedFile || filePath) {
+            const tradingExcelUploadService = require('../services/tradingExcelUploadService');
+            const resolved = filePath || tradingExcelUploadService.getLastUploaded()?.filePath;
+            return this.loadPreviewFromFilePath(resolved, { label: 'upload' });
+        }
         if (this.isRunning) {
             throw tradingExcelLog.attachError(
                 new Error('Sync already in progress — wait for the current load to finish'),

@@ -3,6 +3,7 @@ const db = require('../database');
 const newsAggregatorService = require('./newsAggregatorService');
 const settingsService = require('./settingsService');
 const locationNewsService = require('./locationNewsService');
+const { curatedFallback } = locationNewsService;
 const LOG = require('../utils/logger');
 const { clampLimit, sortTodayRecentFirst, withinRecentDays } = require('../utils/recentSlice');
 
@@ -83,7 +84,8 @@ class NewsCacheService {
                 if (item.is_local || item.source_type === 'local_vendor' || item.source_type === 'r_detector') return true;
                 if (locality && blob.includes(locality)) return true;
                 if (city && blob.includes(city)) return true;
-                return item.is_local === true;
+                if (item.is_local === true) return true;
+                return scope === 'town';
             }
             if (scope === 'city' && city) return blob.includes(city);
             if (scope === 'state' && locationCtx.state) return blob.includes(norm(locationCtx.state));
@@ -107,7 +109,7 @@ class NewsCacheService {
     } = {}) {
         const settings = settingsOverride || await settingsService.getSettings();
         const safeLimit = clampLimit(limit, { def: 15, max: 20 });
-        const memKey = `${scope}|${category}|${safeLimit}|${locationCtx.city || ''}|${locationCtx.locality || ''}`;
+        const memKey = `${scope}|${category}|${safeLimit}|${locationCtx.city || ''}|${locationCtx.locality || ''}|${locationCtx.language || 'hi'}`;
         if (!refresh) {
             const hit = sliceMem.get(memKey);
             if (hit && Date.now() - hit.ts < SLICE_TTL_MS) return hit.data;
@@ -125,10 +127,10 @@ class NewsCacheService {
             }
         }
 
-        const hasLocation = !!(locationCtx.city || locationCtx.locality);
+        const hasLocation = !!(locationCtx.city || locationCtx.locality || locationCtx.placeLabel);
         const localScope = ['local', 'town', 'city', 'All'].includes(scope);
 
-        if (hasLocation && localScope && !refresh) {
+        if (localScope && (hasLocation || !(items || []).length)) {
             try {
                 const localItems = await locationNewsService.fetchLocationNews(
                     settings,
@@ -154,6 +156,29 @@ class NewsCacheService {
         }
 
         items = this._filterScope(items, scope, locationCtx);
+        if (!items.length && scope !== 'All') {
+            items = this._filterScope(
+                await db.getNewsItems(fetchLimit).catch(() => []),
+                'All',
+                locationCtx
+            );
+        }
+
+        if (!items.length) {
+            try {
+                const localItems = await locationNewsService.fetchLocationNews(
+                    settings,
+                    locationCtx,
+                    Math.min(safeLimit, 20)
+                );
+                items = localItems || [];
+            } catch (_) {}
+        }
+
+        if (!items.length) {
+            items = curatedFallback(locationCtx);
+        }
+
         items = withinRecentDays(items, 14, ['date', 'published_at']);
         const { sortNewsItems } = require('./newsLocalPriority');
         items = sortTodayRecentFirst(sortNewsItems(items, settings), safeLimit, ['date', 'published_at']);

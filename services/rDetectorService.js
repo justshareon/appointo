@@ -139,31 +139,8 @@ const rDetectorService = {
    */
   async getCities() {
     try {
-      const pool = await getPool();
-      if (!pool) {
-        return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
-      }
-
-      const [rows] = await pool.query(`
-        SELECT id, latitude, longitude, city, region
-        FROM fleet_hazards
-        WHERE reported_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
-      `);
-
-      if (!rows?.length) {
-        return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
-      }
-
-      const counts = {};
-      for (const row of rows) {
-        const filled = row.city ? row : await this.backfillCityForRow(pool, row);
-        const city = normalizeCityName(filled.city || resolveCityFromCoords(filled.latitude, filled.longitude).city);
-        counts[city] = (counts[city] || 0) + 1;
-      }
-
-      return Object.entries(counts)
-        .map(([city, count]) => ({ city, count }))
-        .sort((a, b) => b.count - a.count || a.city.localeCompare(b.city));
+      const incidents = await this.getIncidents({ limit: 500 });
+      return cityCountsFromIncidents(incidents);
     } catch (e) {
       LOG.error('[R-Detector] getCities failed', e.message);
       return cityCountsFromIncidents(readMemoryIncidents({ limit: 500 }));
@@ -197,14 +174,18 @@ const rDetectorService = {
       for (const row of rows) {
         const filled = row.city ? row : await this.backfillCityForRow(pool, row);
         const incident = mapIncident(filled);
+        if (!incident) continue;
         if (cityFilter && incident.city !== cityFilter) continue;
         if (typeFilter && incident.report_category !== typeFilter) continue;
         mapped.push(incident);
         if (mapped.length >= safeLimit) break;
       }
 
-      // MySQL authoritative when synced; in-memory bootstrap until rows exist.
-      if (mapped.length > 0) return mapped;
+      if (rows?.length && !mapped.length) {
+        LOG.warning('[R-Detector] getIncidents mapped zero rows from mysql', `rows=${rows.length}`);
+      }
+      if (mapped.length > 0 || rows?.length) return mapped;
+
       return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
     } catch (e) {
       LOG.error('[R-Detector] getIncidents failed', e.message);

@@ -595,15 +595,122 @@ class CallerValidationService {
     }
 
     /**
+     * Hydrate call history from seed data
+     * @private
+     */
+    _hydrateSeedCallHistory() {
+        this.initializeLocalDatabase();
+        if ((db.callHistory || []).length) return db.callHistory;
+        try {
+            const data = require('../../database/data');
+            if (Array.isArray(data.callHistory)) {
+                data.callHistory.forEach((call) => {
+                    db.callHistory.push({ ...call });
+                });
+            }
+            if (Array.isArray(data.spamNumbers)) {
+                db.spamNumbers.push(...data.spamNumbers.filter(
+                    (s) => !db.spamNumbers.find((x) => x.phone_number === s.phone_number)
+                ));
+            }
+        } catch (err) {
+            LOG.warning('[Caller Validation] Seed hydrate skipped:', err.message);
+        }
+        return db.callHistory;
+    }
+
+    /**
+     * Demo templates for users with no history yet
+     * @private
+     */
+    _getDemoHistoryTemplates() {
+        this._hydrateSeedCallHistory();
+        const templates = (db.callHistory || [])
+            .filter((c) => String(c.user_id) === 'usr_cyber1')
+            .slice(0, 5);
+        if (templates.length) return templates;
+        return [
+            {
+                phone_number: '9769593543',
+                caller_name: 'UPI Support',
+                is_spam: true,
+                is_scam: true,
+                confidence: 95,
+                tags: ['upi', 'pin', 'verification'],
+            },
+            {
+                phone_number: '9876543213',
+                caller_name: 'Credit Card Services',
+                is_spam: true,
+                is_scam: true,
+                confidence: 89,
+                tags: ['credit-card', 'activation'],
+            },
+            {
+                phone_number: '8888888888',
+                caller_name: 'Friend',
+                is_spam: false,
+                is_scam: false,
+                confidence: 5,
+                tags: ['contact'],
+            },
+        ];
+    }
+
+    /**
+     * Seed demo call history for a user
+     * @private
+     */
+    async _ensureDemoCallHistoryForUser(userId) {
+        if (!userId) return [];
+        const templates = this._getDemoHistoryTemplates();
+        const now = Date.now();
+        const seeded = templates.map((tpl, idx) => {
+            const validatedAt = new Date(now - (idx + 1) * 24 * 60 * 60 * 1000);
+            const spam = db.spamNumbers?.find((s) => s.phone_number === tpl.phone_number);
+            return {
+                ...tpl,
+                id: `${userId}_demo_${idx + 1}`,
+                user_id: userId,
+                validated_at: validatedAt,
+                created_at: validatedAt,
+                tags: tpl.tags || spam?.tags || [],
+                sources: tpl.sources || [
+                    { source: 'local_database', isSpam: !!tpl.is_spam, confidence: tpl.confidence || 80 },
+                    { source: 'sanchar_saathi', isSpam: !!tpl.is_scam, confidence: tpl.is_scam ? 90 : 10 },
+                ],
+            };
+        });
+
+        for (const call of seeded) {
+            if (!db.callHistory.find((c) => c.id === call.id)) {
+                db.callHistory.push(call);
+            }
+        }
+        return seeded;
+    }
+
+    /**
      * Get call history for user
      */
     async getCallHistory(userId, limit = 50) {
-        if (!userId) return [];
-        
-        return (db.callHistory || db.inMemoryDb?.callHistory || [])
-            .filter(c => String(c.user_id) === String(userId))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-            .slice(0, limit);
+        this._hydrateSeedCallHistory();
+        if (!userId) {
+            return (db.callHistory || [])
+                .sort((a, b) => new Date(b.created_at || b.validated_at) - new Date(a.created_at || a.validated_at))
+                .slice(0, limit);
+        }
+
+        let history = (db.callHistory || [])
+            .filter((c) => String(c.user_id) === String(userId))
+            .sort((a, b) => new Date(b.created_at || b.validated_at) - new Date(a.created_at || a.validated_at));
+
+        if (!history.length) {
+            history = await this._ensureDemoCallHistoryForUser(userId);
+            history.sort((a, b) => new Date(b.created_at || b.validated_at) - new Date(a.created_at || a.validated_at));
+        }
+
+        return history.slice(0, limit);
     }
 
     /**

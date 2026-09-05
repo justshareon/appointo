@@ -7,23 +7,24 @@ const featureConnectionManager = require('../database/featureConnectionManager')
 
 const SYNC_MODULES = [
     { key: 'core_schema', label: 'Core DB schema', order: 1 },
-    { key: 'feature_seed', label: 'Feature seed (qless / appointments / queue)', order: 2 },
-    { key: 'users', label: 'Users', order: 3 },
-    { key: 'vendor_categories', label: 'Vendor categories', order: 4 },
-    { key: 'vendors', label: 'Vendors', order: 5 },
-    { key: 'user_vendor_mappings', label: 'User–vendor mappings', order: 6 },
-    { key: 'products', label: 'Products', order: 7 },
-    { key: 'orders', label: 'Orders', order: 8 },
-    { key: 'queues', label: 'Queues', order: 9 },
-    { key: 'appointments', label: 'Appointments', order: 10 },
-    { key: 'activities', label: 'Activities', order: 11 },
-    { key: 'otps', label: 'OTPs', order: 12 },
-    { key: 'cyber_threats', label: 'Cyber threats', order: 13 },
-    { key: 'suraksha_data', label: 'Suraksha validations & reports', order: 14 },
-    { key: 'news_cache', label: 'News cache (lazy slices)', order: 15 },
-    { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 16 },
-    { key: 'trading_data', label: 'Trading data', order: 17 },
-    { key: 'fleet_data', label: 'Fleet data', order: 18 },
+    { key: 'system_settings', label: 'System settings (URLs, pools, RSS)', order: 2 },
+    { key: 'feature_seed', label: 'Feature seed (qless / appointments / queue)', order: 3 },
+    { key: 'users', label: 'Users', order: 4 },
+    { key: 'vendor_categories', label: 'Vendor categories', order: 5 },
+    { key: 'vendors', label: 'Vendors', order: 6 },
+    { key: 'user_vendor_mappings', label: 'User–vendor mappings', order: 7 },
+    { key: 'products', label: 'Products', order: 8 },
+    { key: 'orders', label: 'Orders', order: 9 },
+    { key: 'queues', label: 'Queues', order: 10 },
+    { key: 'appointments', label: 'Appointments', order: 11 },
+    { key: 'activities', label: 'Activities', order: 12 },
+    { key: 'otps', label: 'OTPs', order: 13 },
+    { key: 'cyber_threats', label: 'Cyber threats', order: 14 },
+    { key: 'suraksha_data', label: 'Suraksha validations & reports', order: 15 },
+    { key: 'news_cache', label: 'News cache (lazy slices)', order: 16 },
+    { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 17 },
+    { key: 'trading_data', label: 'Trading data', order: 18 },
+    { key: 'fleet_data', label: 'Fleet data', order: 19 },
 ];
 
 let tablesReady = false;
@@ -114,8 +115,9 @@ async function ensureTables(pool) {
     }
     for (const mod of SYNC_MODULES) {
         await pool.query(
-            `INSERT IGNORE INTO sync_module_state (module_key, module_label, sort_order, status, version)
-             VALUES (?, ?, ?, 'PENDING', 0)`,
+            `INSERT INTO sync_module_state (module_key, module_label, sort_order, status, version)
+             VALUES (?, ?, ?, 'PENDING', 0)
+             ON DUPLICATE KEY UPDATE module_label = VALUES(module_label), sort_order = VALUES(sort_order)`,
             [mod.key, mod.label, mod.order]
         );
     }

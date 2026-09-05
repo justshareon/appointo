@@ -36,6 +36,7 @@ router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendo
 
 // User & Mapping Management
 router.get('/users-with-mappings', (req, res) => adminController.getUsersWithMappings(req, res));
+router.get('/vendor-picker', (req, res) => adminController.getVendorPickerList(req, res));
 router.post('/users', (req, res) => adminController.createUser(req, res));
 router.put('/users/:userId', (req, res) => adminController.updateUser(req, res));
 router.delete('/users/:userId', (req, res) => adminController.deleteUser(req, res));
@@ -114,6 +115,14 @@ function getTradingExcelDiagnostics(syncJob) {
         openBeforeSync: config.excelFile?.openBeforeSync !== false,
         excelOpenEnabled: process.platform === 'win32' && process.env.EXCEL_OPEN_BEFORE_SYNC !== 'false',
         googleSheetsId: process.env.GOOGLE_SHEETS_ID ? 'set' : 'missing',
+        uploadedFile: (() => {
+            try {
+                const u = require('../services/tradingExcelUploadService').getLastUploaded();
+                return u ? { fileName: u.fileName, sizeBytes: u.sizeBytes, uploadedAt: u.uploadedAt } : null;
+            } catch (_) {
+                return null;
+            }
+        })(),
         syncJobRunning: !!syncJob?.isRunning,
         ...(syncJob?.getStatus?.() || {}),
     };
@@ -266,13 +275,24 @@ router.post('/trading-data/load-excel', requireSuperAdmin, async (req, res) => {
     let syncJob;
     try {
         syncJob = await ensureTradingExcelReady(req);
-        const { restartExcel = false, openExcel = true } = req.body || {};
+        const {
+            restartExcel = false,
+            openExcel = false,
+            useUploadedFile = false,
+            filePath,
+        } = req.body || {};
         tradingExcelLog.push('info', 'load_start', 'Admin load-excel requested', {
             restartExcel,
             openExcel,
+            useUploadedFile,
             user: req.user?.email || req.user?.id,
         });
-        const preview = await syncJob.loadPreviewForAdmin({ restartExcel, openExcel });
+        const preview = await syncJob.loadPreviewForAdmin({
+            restartExcel,
+            openExcel,
+            useUploadedFile,
+            filePath,
+        });
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
         const ms = Date.now() - started;
         tradingExcelLog.push('info', 'load_done', `Preview ready: ${preview?.total || 0} rows in ${ms}ms`, {
@@ -294,6 +314,80 @@ router.post('/trading-data/load-excel', requireSuperAdmin, async (req, res) => {
             durationMs: ms,
             ...getTradingExcelDiagnostics(syncJob || global.excelFileSyncJob),
         });
+        res.status(500).json(tradingExcelErrorPayload(error, syncJob || global.excelFileSyncJob));
+    }
+});
+
+router.post('/trading-data/upload-excel', requireSuperAdmin, async (req, res) => {
+    try {
+        const tradingExcelUploadService = require('../services/tradingExcelUploadService');
+        const { fileName, dataBase64 } = req.body || {};
+        const upload = tradingExcelUploadService.saveUpload({ fileName, dataBase64 });
+        tradingExcelLog.push('info', 'upload_ok', `Saved ${upload.fileName} (${upload.sizeBytes} bytes)`);
+        res.json({
+            success: true,
+            upload,
+            diagnostics: getTradingExcelDiagnostics(global.excelFileSyncJob),
+            logs: tradingExcelLog.getRecent(25),
+        });
+    } catch (error) {
+        LOG.error('[Admin] upload-excel:', error);
+        tradingExcelLog.attachError(error, 'upload_failed');
+        res.status(400).json(tradingExcelErrorPayload(error, global.excelFileSyncJob));
+    }
+});
+
+router.post('/trading-data/upload-and-load', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    let syncJob;
+    try {
+        syncJob = await ensureTradingExcelReady(req);
+        const tradingExcelUploadService = require('../services/tradingExcelUploadService');
+        const { fileName, dataBase64 } = req.body || {};
+        const upload = tradingExcelUploadService.saveUpload({ fileName, dataBase64 });
+        const preview = await syncJob.loadPreviewFromFilePath(upload.filePath, { label: 'upload' });
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        res.json({
+            success: true,
+            upload,
+            preview,
+            memoryCount,
+            durationMs: Date.now() - started,
+            diagnostics: getTradingExcelDiagnostics(syncJob),
+            logs: tradingExcelLog.getRecent(25),
+        });
+    } catch (error) {
+        LOG.error('[Admin] upload-and-load:', error);
+        tradingExcelLog.attachError(error, error.tradingExcelStep || 'upload_load_failed');
+        res.status(500).json(tradingExcelErrorPayload(error, syncJob || global.excelFileSyncJob));
+    }
+});
+
+router.post('/trading-data/load-and-save', requireSuperAdmin, async (req, res) => {
+    const started = Date.now();
+    let syncJob;
+    try {
+        syncJob = await ensureTradingExcelReady(req);
+        const { fileName, dataBase64 } = req.body || {};
+        if (dataBase64) {
+            const tradingExcelUploadService = require('../services/tradingExcelUploadService');
+            const upload = tradingExcelUploadService.saveUpload({ fileName, dataBase64 });
+            await syncJob.loadPreviewFromFilePath(upload.filePath, { label: 'upload' });
+        }
+        const result = await syncJob.persistCleanedData(req.body?.data);
+        const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        res.json({
+            success: true,
+            message: `Saved ${result.inserted} stock rows`,
+            memoryCount,
+            durationMs: Date.now() - started,
+            diagnostics: getTradingExcelDiagnostics(syncJob),
+            logs: tradingExcelLog.getRecent(25),
+            ...result,
+        });
+    } catch (error) {
+        LOG.error('[Admin] load-and-save:', error);
+        tradingExcelLog.attachError(error, error.tradingExcelStep || 'load_save_failed');
         res.status(500).json(tradingExcelErrorPayload(error, syncJob || global.excelFileSyncJob));
     }
 });
@@ -541,6 +635,273 @@ router.get('/sync/status', async (req, res) => {
     } catch (error) {
         LOG.error('[Admin] Error getting sync status:', error);
         res.status(500).json({ error: error.message || 'Failed to get sync status' });
+    }
+});
+
+/**
+ * POST /api/admin/client-errors
+ * Report UI screen crashes / render errors (any authenticated user).
+ */
+router.post('/client-errors', (req, res) => {
+    try {
+        const { recordClientError } = require('../services/clientErrorService');
+        const entry = recordClientError({
+            ...req.body,
+            userId: req.user?.id || req.userId || null,
+            userRole: req.user?.role || null,
+        });
+        res.json({ success: true, id: entry.id });
+    } catch (error) {
+        LOG.error('[Admin] client-errors error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/sync/status — sync_module_state + sync_runs for APS dashboard
+ */
+router.get('/sync/status', requireSuperAdmin, async (req, res) => {
+    try {
+        const syncStatus = require('../services/syncStatusService');
+        const { isSyncRunning } = require('../services/autoSyncService');
+        const { isMysqlConfigured } = require('../utils/resolveDbType');
+        const moduleState = await syncStatus.getModuleState();
+        const latestRun = await syncStatus.getLatestRun();
+        const complete = await syncStatus.isSyncComplete();
+        res.json({
+            isSyncing: isSyncRunning(),
+            complete,
+            needsSync: !complete,
+            mysqlConfigured: isMysqlConfigured(),
+            buildVersion: syncStatus.getBuildVersion?.() || process.env.BUILD_VERSION || 'local',
+            summary: moduleState.summary,
+            modules: moduleState.modules,
+            latestRun,
+        });
+    } catch (error) {
+        LOG.error('[Admin] sync/status error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/sync/all — one sync attempt (resume-aware)
+ */
+router.post('/sync/all', requireSuperAdmin, async (req, res) => {
+    try {
+        const { runSyncAttempt, isSyncRunning } = require('../services/autoSyncService');
+        if (isSyncRunning()) {
+            return res.status(409).json({ status: 'in_progress', message: 'Sync already in progress' });
+        }
+        const forceFull = req.query.forceFull === 'true' || req.body?.forceFull === true;
+        runSyncAttempt('super-admin', { forceFull }).catch((err) => {
+            LOG.error('[Admin] sync/all background error:', err.message);
+        });
+        res.json({ status: 'started', message: 'Sync started', forceFull });
+    } catch (error) {
+        LOG.error('[Admin] sync/all error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/sync/until-complete — retry until all modules SUCCESS
+ */
+router.post('/sync/until-complete', requireSuperAdmin, async (req, res) => {
+    try {
+        const { syncUntilComplete, isSyncRunning } = require('../services/autoSyncService');
+        if (isSyncRunning()) {
+            return res.status(409).json({ status: 'in_progress', message: 'Sync already in progress' });
+        }
+        syncUntilComplete('super-admin-dashboard').catch((err) => {
+            LOG.error('[Admin] sync/until-complete error:', err.message);
+        });
+        res.json({ status: 'started', message: 'Sync will run until all modules complete' });
+    } catch (error) {
+        LOG.error('[Admin] sync/until-complete error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/system-health
+ * Cross-module diagnostics for super-admin APS dashboard
+ */
+router.get('/system-health', requireSuperAdmin, async (req, res) => {
+    try {
+        const { getSystemHealth } = require('../services/systemHealthService');
+        const health = await getSystemHealth();
+        res.json(health);
+    } catch (error) {
+        LOG.error('[Admin] system-health error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/pool-config — per-feature MySQL pool limits (super-admin)
+ */
+router.get('/pool-config', requireSuperAdmin, async (req, res) => {
+    try {
+        const poolConfig = require('../utils/poolConfig');
+        const fcm = require('../database/featureConnectionManager');
+        const config = await poolConfig.getPoolConfig();
+        const stats = fcm.getPoolStats();
+        res.json({
+            success: true,
+            config,
+            stats,
+            summary: poolConfig.summarizePoolRows(stats),
+            issues: poolConfig.validatePoolHealthRows(stats),
+        });
+    } catch (error) {
+        LOG.error('[Admin] pool-config GET error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * PUT /api/admin/pool-config — update limits and recycle pools
+ */
+router.put('/pool-config', requireSuperAdmin, async (req, res) => {
+    try {
+        const poolConfig = require('../utils/poolConfig');
+        const fcm = require('../database/featureConnectionManager');
+        const config = await poolConfig.updatePoolConfig(req.body || {});
+        await fcm.applyConfiguredLimits();
+        const stats = fcm.getPoolStats();
+        res.json({
+            success: true,
+            config,
+            stats,
+            summary: poolConfig.summarizePoolRows(stats),
+            issues: poolConfig.validatePoolHealthRows(stats),
+        });
+    } catch (error) {
+        LOG.error('[Admin] pool-config PUT error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/pool-config/optimize — bump sub-5 limits to recommended default
+ */
+router.post('/pool-config/optimize', requireSuperAdmin, async (req, res) => {
+    try {
+        const poolConfig = require('../utils/poolConfig');
+        const fcm = require('../database/featureConnectionManager');
+        const current = await poolConfig.getPoolConfig();
+        const featureLimits = { ...(current.featureLimits || {}) };
+        const nextFeatures = {};
+        (current.features || []).forEach((row) => {
+            if ((row.limit || 0) < poolConfig.RECOMMENDED) {
+                nextFeatures[row.id] = poolConfig.RECOMMENDED;
+            }
+        });
+        const patch = {
+            defaultLimit: Math.max(current.defaultLimit || 0, poolConfig.RECOMMENDED),
+            minLimit: Math.max(current.minLimit || 0, poolConfig.ABS_MIN),
+            featureLimits: { ...featureLimits, ...nextFeatures },
+        };
+        const config = await poolConfig.updatePoolConfig(patch);
+        await fcm.applyConfiguredLimits();
+        const stats = fcm.getPoolStats();
+        res.json({
+            success: true,
+            config,
+            stats,
+            summary: poolConfig.summarizePoolRows(stats),
+            issues: poolConfig.validatePoolHealthRows(stats),
+            optimized: Object.keys(nextFeatures).length,
+        });
+    } catch (error) {
+        LOG.error('[Admin] pool-config optimize error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/offer-sources — RSS/API URLs used for offer extraction
+ */
+router.get('/offer-sources', requireSuperAdmin, async (req, res) => {
+    try {
+        const offerSourcesService = require('../services/offerSourcesService');
+        const data = await offerSourcesService.getOfferSources();
+        res.json({ success: true, ...data });
+    } catch (error) {
+        LOG.error('[Admin] offer-sources GET error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * PUT /api/admin/offer-sources — update offer feed URLs (stored in trade_news_sources)
+ */
+router.put('/offer-sources', requireSuperAdmin, async (req, res) => {
+    try {
+        const offerSourcesService = require('../services/offerSourcesService');
+        const data = await offerSourcesService.updateOfferSources(req.body?.sources || []);
+        res.json({ success: true, ...data });
+    } catch (error) {
+        LOG.error('[Admin] offer-sources PUT error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/module-urls/modules — module list only (no URLs)
+ */
+router.get('/module-urls/modules', requireSuperAdmin, async (req, res) => {
+    try {
+        const moduleExternalUrlsService = require('../services/moduleExternalUrlsService');
+        const data = moduleExternalUrlsService.listModules();
+        res.json({ success: true, ...data });
+    } catch (error) {
+        LOG.error('[Admin] module-urls modules error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/module-urls/:moduleId — URLs for one module (lazy load)
+ */
+router.get('/module-urls/:moduleId', requireSuperAdmin, async (req, res) => {
+    try {
+        const moduleExternalUrlsService = require('../services/moduleExternalUrlsService');
+        const data = await moduleExternalUrlsService.getModuleUrls(req.params.moduleId);
+        res.json({ success: true, ...data });
+    } catch (error) {
+        LOG.error('[Admin] module-urls GET error:', error);
+        res.status(error.message?.includes('Unknown') ? 404 : 500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * PUT /api/admin/module-urls/:moduleId — update URLs for one module
+ */
+router.put('/module-urls/:moduleId', requireSuperAdmin, async (req, res) => {
+    try {
+        const moduleExternalUrlsService = require('../services/moduleExternalUrlsService');
+        const data = await moduleExternalUrlsService.updateModuleUrls(req.params.moduleId, req.body?.sources || []);
+        res.json({ success: true, ...data });
+    } catch (error) {
+        LOG.error('[Admin] module-urls PUT error:', error);
+        res.status(error.message?.includes('Unknown') ? 404 : 500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/commute-preferences — all users commute prefs (super-admin)
+ */
+router.get('/commute-preferences', requireSuperAdmin, async (req, res) => {
+    try {
+        const commuteService = require('../services/rDetectorCommuteService');
+        const limit = parseInt(req.query.limit, 10) || 100;
+        const preferences = await commuteService.getAllUserPreferences(limit);
+        res.json({ success: true, count: preferences.length, preferences });
+    } catch (error) {
+        LOG.error('[Admin] commute-preferences error:', error);
+        res.status(500).json({ success: false, error: error.message });
     }
 });
 

@@ -191,7 +191,23 @@ router.post('/bad-road/probe', authenticateToken, async (req, res) => {
             confidence,
             confirmed: confirmed !== false,
             auto_detected,
+            issue_type: req.body.issue_type || 'pothole',
+            severity: req.body.severity || 'medium',
         });
+        if (io && result.confirmed) {
+            io.emit('rdetector_bad_road_probe', {
+                driver_id: driverId,
+                hazard_id: result.hazard_id,
+                reporter_count: result.reporter_count,
+                threshold: result.threshold,
+                incident_created: result.incident_created,
+                issue_type: result.issue_type || req.body.issue_type || 'pothole',
+                severity: result.severity || req.body.severity || 'medium',
+                location: { latitude: lat, longitude: lng },
+                rounded_lat: result.rounded_lat,
+                rounded_lng: result.rounded_lng,
+            });
+        }
         if (io && result.incident_created) {
             io.emit('fleet_hazard_reported', {
                 driver_id: driverId,

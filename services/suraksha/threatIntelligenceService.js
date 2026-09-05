@@ -75,8 +75,16 @@ class ThreatIntelligenceService {
 
             LOG.info('[Threat Intelligence] Starting threat scan...');
             const allThreats = [];
+            let sources = this.sources;
+            try {
+                const { getCyberThreatSourcesForScan } = require('../moduleExternalUrlsService');
+                const configured = await getCyberThreatSourcesForScan();
+                if (configured?.length) sources = configured;
+            } catch (_) {
+                /* fallback to constructor defaults */
+            }
 
-            for (const source of this.sources) {
+            for (const source of sources) {
                 if (!source.enabled) continue;
 
                 try {

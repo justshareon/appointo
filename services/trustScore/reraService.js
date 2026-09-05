@@ -140,11 +140,26 @@ class RERAService {
                 const response = await axios.get(`${this.baseUrl}/api/complaints?rera=${reraNumber}`);
                 return response.data.complaints || [];
             } else {
-                // Mock complaints
-                return [
-                    { id: 'c1', type: 'Delay', status: 'Pending', date: '2023-05-15' },
-                    { id: 'c2', type: 'Quality', status: 'Resolved', date: '2023-03-20' }
-                ];
+                const reg = String(reraNumber || '').trim().toUpperCase();
+                try {
+                    const reraFilingsService = require('./reraFilingsService');
+                    const filing = reraFilingsService.findFilingByRera(reg);
+                    const seed = reraFilingsService.findSeedProjectByRera(reg);
+                    const merged = filing
+                        ? reraFilingsService.mergeFilingWithSeed(filing)
+                        : seed;
+                    const count = Number(merged?.reraComplaintsCount || 0);
+                    if (count <= 0) return [];
+                    const types = ['Delay', 'Quality', 'Documentation', 'Refund'];
+                    return Array.from({ length: count }, (_, i) => ({
+                        id: `c${i + 1}`,
+                        type: types[i % types.length],
+                        status: i === count - 1 && count > 1 ? 'Resolved' : 'Pending',
+                        date: '2023-05-15',
+                    }));
+                } catch (_) {
+                    return [];
+                }
             }
         } catch (error) {
             LOG.error('[RERA Service] Error fetching complaints:', error);
@@ -258,6 +273,38 @@ class RERAService {
      */
     getMockProjectDetails(reraNumber) {
         const reg = String(reraNumber || '').toUpperCase();
+        try {
+            const reraFilingsService = require('./reraFilingsService');
+            const filing = reraFilingsService.findFilingByRera(reg);
+            const seed = reraFilingsService.findSeedProjectByRera(reg);
+            if (filing || seed) {
+                const merged = filing
+                    ? reraFilingsService.mergeFilingWithSeed(filing)
+                    : seed;
+                return {
+                    reraNumber: reg,
+                    projectName: merged.name || merged.projectName || `Project ${reg}`,
+                    builderName: merged.builderName || '',
+                    address: merged.address || merged.location || '',
+                    status: merged.projectStatus || merged.status || 'Ongoing',
+                    registrationDate: merged.launchDate || '2020-01-15',
+                    validityDate: merged.expectedCompletionDate || '2026-12-31',
+                    totalUnits: merged.numberOfUnits || 0,
+                    totalArea: merged.totalArea || '',
+                    totalAmountCollected: merged.totalAmountCollected,
+                    loanAmountSanctioned: merged.loanAmountSanctioned,
+                    estimatedProjectCost: merged.estimatedProjectCost,
+                    escrowReserveDeposited: merged.escrowReserveDeposited,
+                    escrowReservePercentRequired: merged.escrowReservePercentRequired || 70,
+                    bankName: merged.bankName,
+                    documentsFiled: merged.documentsFiled ?? 10,
+                    reraComplaintsCount: merged.reraComplaintsCount ?? 0,
+                    completion: merged.completion ?? 0,
+                    dataSource: 'public_rera_filing_march_2026',
+                };
+            }
+        } catch (_) {}
+
         const base = {
             reraNumber: reg,
             projectName: 'Sunshine Towers',
@@ -279,7 +326,18 @@ class RERAService {
             completion: 68,
         };
         if (reg === 'P52100012345') return base;
-        return { ...base, reraNumber: reg, projectName: `Project ${reg}` };
+        if (reg === 'P52100012354') {
+            return {
+                ...base,
+                reraNumber: reg,
+                projectName: 'Rustomjee Ultima',
+                builderName: 'Rustomjee Group',
+                address: 'Andheri West, Mumbai, Maharashtra 400053',
+                reraComplaintsCount: 1,
+                completion: 55,
+            };
+        }
+        return { ...base, reraNumber: reg, projectName: `Project ${reg}`, reraComplaintsCount: 0 };
     }
 
     getMockBuilderInfo(builderName) {

@@ -39,6 +39,7 @@ router.get('/news/slice', async (req, res) => {
       state: req.query.state || '',
       district: req.query.district || '',
       placeLabel: req.query.placeLabel || '',
+      language: req.query.language || settings.gnews_language || settings.newsapi_language || 'hi',
     };
     const slice = await newsCacheService.getSlice({
       category: req.query.category || 'All',

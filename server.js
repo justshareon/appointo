@@ -69,7 +69,6 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Middleware
 app.use(cors());
-app.use(express.json());
 // Disable ETags globally to prevent 304 responses (trading routes need fresh data)
 app.set('etag', false);
 app.use(requestLogger);

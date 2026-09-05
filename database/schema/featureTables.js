@@ -619,6 +619,22 @@ async function ensureSuraksha(pool) {
             INDEX idx_user_created (user_id, created_at)
         )
     `);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS mobile_security_scans (
+            scan_id VARCHAR(64) PRIMARY KEY,
+            user_id VARCHAR(64) NOT NULL,
+            scan_type VARCHAR(32) DEFAULT 'full',
+            status VARCHAR(32) DEFAULT 'completed',
+            start_time DATETIME NULL,
+            end_time DATETIME NULL,
+            duration_ms INT DEFAULT 0,
+            summary_json JSON NULL,
+            results_json JSON NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            INDEX idx_scan_user (user_id, start_time)
+        )
+    `);
 }
 
 const HANDLERS = {

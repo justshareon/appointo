@@ -139,6 +139,95 @@ async function ensureCommuteTables() {
       UNIQUE KEY uniq_schedule (user_id, day_of_week, direction, departure_minutes)
     )
   `);
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS r_detector_commute_preferences (
+      user_id VARCHAR(64) PRIMARY KEY,
+      morning_departure_minutes SMALLINT DEFAULT 510,
+      evening_departure_minutes SMALLINT DEFAULT 1170,
+      morning_enabled TINYINT DEFAULT 1,
+      evening_enabled TINYINT DEFAULT 1,
+      alert_lead_minutes TINYINT DEFAULT 10,
+      auto_scan_enabled TINYINT DEFAULT 1,
+      home_lat DECIMAL(10,7) NULL,
+      home_lng DECIMAL(10,7) NULL,
+      work_lat DECIMAL(10,7) NULL,
+      work_lng DECIMAL(10,7) NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
+}
+
+function defaultPreferences(userId) {
+  return {
+    user_id: String(userId),
+    morning_departure_minutes: 510,
+    evening_departure_minutes: 1170,
+    morning_enabled: 1,
+    evening_enabled: 1,
+    alert_lead_minutes: ALERT_LEAD_MINUTES,
+    auto_scan_enabled: 1,
+    home_lat: null,
+    home_lng: null,
+    work_lat: null,
+    work_lng: null,
+  };
+}
+
+function parsePrefsRow(row) {
+  if (!row) return null;
+  return {
+    userId: row.user_id,
+    morningDepartureMinutes: Number(row.morning_departure_minutes ?? 510),
+    eveningDepartureMinutes: Number(row.evening_departure_minutes ?? 1170),
+    morningEnabled: row.morning_enabled !== 0,
+    eveningEnabled: row.evening_enabled !== 0,
+    alertLeadMinutes: Number(row.alert_lead_minutes ?? ALERT_LEAD_MINUTES),
+    autoScanEnabled: row.auto_scan_enabled !== 0,
+    home: row.home_lat != null ? { latitude: Number(row.home_lat), longitude: Number(row.home_lng) } : null,
+    work: row.work_lat != null ? { latitude: Number(row.work_lat), longitude: Number(row.work_lng) } : null,
+    morningLabel: formatTime(Number(row.morning_departure_minutes ?? 510)),
+    eveningLabel: formatTime(Number(row.evening_departure_minutes ?? 1170)),
+  };
+}
+
+function buildManualSchedules(userId, prefs, inferred = []) {
+  const p = prefs || defaultPreferences(userId);
+  const outbound = inferred.find((s) => s.direction === 'outbound');
+  const inbound = inferred.find((s) => s.direction === 'inbound');
+  const home = p.home || outbound?.origin || { latitude: 18.52, longitude: 73.85 };
+  const work = p.work || outbound?.destination || inbound?.origin || { latitude: 18.56, longitude: 73.92 };
+  const schedules = [];
+  for (let day = 0; day <= 6; day += 1) {
+    if (p.morningEnabled !== false) {
+      schedules.push({
+        id: `manual_am_${day}`,
+        dayOfWeek: day,
+        departureMinutes: p.morningDepartureMinutes ?? 510,
+        departureLabel: formatTime(p.morningDepartureMinutes ?? 510),
+        alertLeadMinutes: p.alertLeadMinutes ?? ALERT_LEAD_MINUTES,
+        direction: 'outbound',
+        origin: home,
+        destination: work,
+        confidence: 0.85,
+        source: 'manual',
+      });
+    }
+    if (p.eveningEnabled !== false) {
+      schedules.push({
+        id: `manual_pm_${day}`,
+        dayOfWeek: day,
+        departureMinutes: p.eveningDepartureMinutes ?? 1170,
+        departureLabel: formatTime(p.eveningDepartureMinutes ?? 1170),
+        alertLeadMinutes: p.alertLeadMinutes ?? ALERT_LEAD_MINUTES,
+        direction: 'inbound',
+        origin: work,
+        destination: home,
+        confidence: 0.85,
+        source: 'manual',
+      });
+    }
+  }
+  return schedules;
 }
 
 function incidentsAlongRoute(origin, dest, incidents, corridorM = 350) {
@@ -408,7 +497,7 @@ const commuteService = {
         ))[0]
       : mem().r_detector_commute_schedules.filter((s) => s.user_id === String(userId) && s.active !== 0);
 
-    return (rows || []).map((s) => ({
+    const inferred = (rows || []).map((s) => ({
       id: s.id,
       dayOfWeek: Number(s.day_of_week),
       departureMinutes: Number(s.departure_minutes),
@@ -420,6 +509,146 @@ const commuteService = {
       confidence: Number(s.confidence || 0.5),
       source: s.source || 'inferred',
     }));
+
+    const prefs = await this.getPreferences(userId);
+    const manual = buildManualSchedules(userId, prefs, inferred);
+    const merged = [...manual];
+    inferred.forEach((s) => {
+      if (s.confidence >= 0.55 && !merged.some(
+        (m) => m.dayOfWeek === s.dayOfWeek && m.direction === s.direction
+          && Math.abs(m.departureMinutes - s.departureMinutes) < TIME_CLUSTER_MINUTES
+      )) {
+        merged.push(s);
+      }
+    });
+    return merged.sort((a, b) => a.dayOfWeek - b.dayOfWeek || a.departureMinutes - b.departureMinutes);
+  },
+
+  async getPreferences(userId) {
+    await ensureCommuteTables();
+    const pool = getPool();
+    let row = null;
+    if (pool) {
+      const [rows] = await pool.query(
+        'SELECT * FROM r_detector_commute_preferences WHERE user_id = ? LIMIT 1',
+        [String(userId)]
+      );
+      row = rows?.[0] || null;
+      if (!row) {
+        const def = defaultPreferences(userId);
+        await pool.query(
+          `INSERT INTO r_detector_commute_preferences
+           (user_id, morning_departure_minutes, evening_departure_minutes, morning_enabled, evening_enabled, alert_lead_minutes, auto_scan_enabled)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [def.user_id, def.morning_departure_minutes, def.evening_departure_minutes, def.morning_enabled, def.evening_enabled, def.alert_lead_minutes, def.auto_scan_enabled]
+        );
+        row = def;
+      }
+    } else {
+      if (!mem().r_detector_commute_preferences) mem().r_detector_commute_preferences = [];
+      row = mem().r_detector_commute_preferences.find((p) => p.user_id === String(userId));
+      if (!row) {
+        row = defaultPreferences(userId);
+        mem().r_detector_commute_preferences.push(row);
+      }
+    }
+    return parsePrefsRow(row);
+  },
+
+  async savePreferences(userId, payload = {}) {
+    await ensureCommuteTables();
+    const pool = getPool();
+    const current = await this.getPreferences(userId);
+    const next = {
+      morning_departure_minutes: payload.morningDepartureMinutes ?? current.morningDepartureMinutes ?? 510,
+      evening_departure_minutes: payload.eveningDepartureMinutes ?? current.eveningDepartureMinutes ?? 1170,
+      morning_enabled: payload.morningEnabled === false ? 0 : 1,
+      evening_enabled: payload.eveningEnabled === false ? 0 : 1,
+      alert_lead_minutes: payload.alertLeadMinutes ?? current.alertLeadMinutes ?? ALERT_LEAD_MINUTES,
+      auto_scan_enabled: payload.autoScanEnabled === false ? 0 : 1,
+      home_lat: payload.home?.latitude ?? payload.home_lat ?? current.home?.latitude ?? null,
+      home_lng: payload.home?.longitude ?? payload.home_lng ?? current.home?.longitude ?? null,
+      work_lat: payload.work?.latitude ?? payload.work_lat ?? current.work?.latitude ?? null,
+      work_lng: payload.work?.longitude ?? payload.work_lng ?? current.work?.longitude ?? null,
+    };
+    if (pool) {
+      await pool.query(
+        `INSERT INTO r_detector_commute_preferences
+         (user_id, morning_departure_minutes, evening_departure_minutes, morning_enabled, evening_enabled, alert_lead_minutes, auto_scan_enabled, home_lat, home_lng, work_lat, work_lng)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           morning_departure_minutes=VALUES(morning_departure_minutes),
+           evening_departure_minutes=VALUES(evening_departure_minutes),
+           morning_enabled=VALUES(morning_enabled),
+           evening_enabled=VALUES(evening_enabled),
+           alert_lead_minutes=VALUES(alert_lead_minutes),
+           auto_scan_enabled=VALUES(auto_scan_enabled),
+           home_lat=VALUES(home_lat),
+           home_lng=VALUES(home_lng),
+           work_lat=VALUES(work_lat),
+           work_lng=VALUES(work_lng)`,
+        [String(userId), next.morning_departure_minutes, next.evening_departure_minutes, next.morning_enabled, next.evening_enabled, next.alert_lead_minutes, next.auto_scan_enabled, next.home_lat, next.home_lng, next.work_lat, next.work_lng]
+      );
+    } else {
+      const list = mem().r_detector_commute_preferences || [];
+      const idx = list.findIndex((p) => p.user_id === String(userId));
+      const row = { user_id: String(userId), ...next };
+      if (idx >= 0) list[idx] = row;
+      else list.push(row);
+      mem().r_detector_commute_preferences = list;
+    }
+    return this.getPreferences(userId);
+  },
+
+  async getAllUserPreferences(limit = 100) {
+    await ensureCommuteTables();
+    const pool = getPool();
+    if (pool) {
+      const [rows] = await pool.query(
+        `SELECT p.*, u.name AS user_name, u.email AS user_email
+         FROM r_detector_commute_preferences p
+         LEFT JOIN users u ON u.id = p.user_id
+         ORDER BY p.updated_at DESC LIMIT ?`,
+        [Number(limit) || 100]
+      );
+      return (rows || []).map((r) => ({
+        ...parsePrefsRow(r),
+        userName: r.user_name || r.user_id,
+        userEmail: r.user_email || null,
+        updatedAt: r.updated_at,
+      }));
+    }
+    return (mem().r_detector_commute_preferences || []).map((r) => parsePrefsRow(r));
+  },
+
+  async _maybeNotifyCommuteAlert(userId, match, hazards, brief) {
+    try {
+      const alertKey = `${userId}_${match.direction}_${new Date().toISOString().slice(0, 10)}_${match.departureMinutes}`;
+      if (!mem().r_detector_commute_alert_keys) mem().r_detector_commute_alert_keys = new Set();
+      if (mem().r_detector_commute_alert_keys.has(alertKey)) return;
+      mem().r_detector_commute_alert_keys.add(alertKey);
+
+      const title = hazards.length > 0
+        ? `Road issues on your ${brief.directionLabel || 'commute'}`
+        : `Commute scan — ${brief.directionLabel || 'route'} clear`;
+      const message = brief.message || `${hazards.length} issue(s) detected before your usual departure.`;
+      await db.addNotification({
+        user_id: String(userId),
+        title,
+        message,
+        type: 'r_detector_commute',
+        data: {
+          module: 'r_detector',
+          feature: 'commute',
+          hazardCount: hazards.length,
+          departureLabel: match.departureLabel,
+          direction: match.direction,
+          route: 'RDetectorScan',
+        },
+      });
+    } catch (err) {
+      LOG.warning('[Commute] notify failed:', err.message);
+    }
   },
 
   async getPreDepartureBrief(userId, opts = {}) {
@@ -462,7 +691,7 @@ const commuteService = {
     const hazards = incidentsAlongRoute(origin, dest, incidents);
     const dirLabel = match.direction === 'inbound' ? 'return home' : 'morning commute';
 
-    return {
+    const brief = {
       active: true,
       schedule: match,
       directionLabel: dirLabel,
@@ -485,6 +714,13 @@ const commuteService = {
           ? `${hazards.length} issue${hazards.length > 1 ? 's' : ''} on your ${dirLabel} route — usual departure ${match.departureLabel}.`
           : `Your ${dirLabel} route looks clear — usual departure around ${match.departureLabel}.`,
     };
+
+    const prefs = await this.getPreferences(userId);
+    if (prefs?.autoScanEnabled !== false) {
+      await this._maybeNotifyCommuteAlert(userId, match, hazards, brief);
+    }
+
+    return brief;
   },
 };
 

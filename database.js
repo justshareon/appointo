@@ -1769,29 +1769,249 @@ const db = {
         };
     },
 
-    getUsersWithVendorMappings: async () => {
-        const users = await db.getUsers();
+    getUsersWithVendorMappings: async (opts = {}) => {
+        return db.getUsersWithVendorMappingsPaginated(opts);
+    },
+
+    getUsersWithVendorMappingsPaginated: async (opts = {}) => {
+        const page = Math.max(1, parseInt(opts.page, 10) || 1);
+        const limit = Math.min(50, Math.max(1, parseInt(opts.limit, 10) || 10));
+        const search = String(opts.search || '').trim();
+        const filterField = String(opts.filterField || 'all');
+        const offset = (page - 1) * limit;
+
+        const buildSearchFilter = (user, q, field) => {
+            const needle = q.toLowerCase();
+            const mappedNames = (user.mapped_vendors || []).map((v) => v.shop_name).join(' ');
+            if (field === 'name') return String(user.name || '').toLowerCase().includes(needle);
+            if (field === 'email') return String(user.email || '').toLowerCase().includes(needle);
+            if (field === 'mobile') return String(user.mobile || '').toLowerCase().includes(needle);
+            if (field === 'role') return String(user.role || '').toLowerCase().includes(needle);
+            if (field === 'location') return String(user.location_name || '').toLowerCase().includes(needle);
+            if (field === 'vendor') return mappedNames.toLowerCase().includes(needle);
+            return [
+                user.id,
+                user.name,
+                user.email,
+                user.mobile,
+                user.role,
+                user.location_name,
+                mappedNames,
+            ].filter(Boolean).join(' ').toLowerCase().includes(needle);
+        };
+
+        const attachMappings = async (userRows) => {
+            const mappings = await db.getUserVendorMappings();
+            const vendorIds = [...new Set(mappings.map((m) => m.vendor_id))];
+            const vendorMap = {};
+            await Promise.all(vendorIds.map(async (id) => {
+                const v = await db.getVendorById(id);
+                if (v) vendorMap[id] = v;
+            }));
+
+            return (userRows || []).map((user) => {
+                const mappedIds = mappings.filter((m) => String(m.user_id) === String(user.id)).map((m) => m.vendor_id);
+                return {
+                    ...user,
+                    mapped_vendors: mappedIds
+                        .map((id) => vendorMap[id])
+                        .filter(Boolean)
+                        .map((v) => ({ id: v.id, shop_name: v.shop_name, category: v.category })),
+                };
+            });
+        };
+
+        const applySearchToUsers = (users, q, field) => {
+            if (!q) return users;
+            return users.filter((u) => buildSearchFilter({ ...u, mapped_vendors: u.mapped_vendors || [] }, q, field));
+        };
+
+        try {
+            if (getPool()) {
+                await ensureUsersUpdatedAtColumn();
+                let where = '1=1';
+                const params = [];
+                if (search) {
+                    const like = `%${search}%`;
+                    if (filterField === 'name') {
+                        where += ' AND u.name LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'email') {
+                        where += ' AND u.email LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'mobile') {
+                        where += ' AND u.mobile LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'role') {
+                        where += ' AND u.role LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'location') {
+                        where += ' AND u.location_name LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'vendor') {
+                        where += ` AND u.id IN (
+                            SELECT uvm.user_id FROM user_vendor_mappings uvm
+                            INNER JOIN vendors v ON v.id = uvm.vendor_id
+                            WHERE v.shop_name LIKE ?
+                        )`;
+                        params.push(like);
+                    } else {
+                        where += ' AND (u.name LIKE ? OR u.email LIKE ? OR u.mobile LIKE ? OR u.role LIKE ? OR u.location_name LIKE ?)';
+                        params.push(like, like, like, like, like);
+                    }
+                }
+
+                const [countRows] = await getPool().query(
+                    `SELECT COUNT(*) AS cnt FROM users u WHERE ${where}`,
+                    params
+                );
+                const total = Number(countRows?.[0]?.cnt) || 0;
+
+                const [rows] = await getPool().query(
+                    `SELECT u.id, u.name, u.email, u.mobile, u.role, u.location_name, u.created_at, u.updated_at
+                     FROM users u
+                     WHERE ${where}
+                     ORDER BY COALESCE(u.updated_at, u.created_at) DESC, u.id DESC
+                     LIMIT ? OFFSET ?`,
+                    [...params, limit, offset]
+                );
+
+                const usersWithMappings = await attachMappings(rows || []);
+                return {
+                    users: usersWithMappings,
+                    total,
+                    page,
+                    limit,
+                    hasMore: offset + (rows?.length || 0) < total,
+                };
+            }
+        } catch (err) {
+            LOG.error('MySQL getUsersWithVendorMappingsPaginated failed, falling back to local', err.message);
+        }
+
+        const allUsers = await db.getUsers();
         const mappings = await db.getUserVendorMappings();
-        const vendors = await db.getVendors(false, 1, 1000, 'newest', '', true);
-        const vendorList = Array.isArray(vendors) ? vendors : (vendors.vendors || vendors.rows || []);
-
+        const vendorIds = [...new Set(mappings.map((m) => m.vendor_id))];
         const vendorMap = {};
-        vendorList.forEach(v => { vendorMap[v.id] = v; });
+        for (const id of vendorIds) {
+            const v = inMemoryDb.vendors.find((row) => String(row.id) === String(id));
+            if (v) vendorMap[id] = v;
+        }
 
-        const usersWithMappings = users.map(user => {
-            const mappedIds = mappings.filter(m => m.user_id === user.id).map(m => m.vendor_id);
+        let enriched = allUsers.map((user) => {
+            const mappedIds = mappings.filter((m) => String(m.user_id) === String(user.id)).map((m) => m.vendor_id);
             return {
                 ...user,
                 mapped_vendors: mappedIds
-                    .map(id => vendorMap[id])
+                    .map((id) => vendorMap[id])
                     .filter(Boolean)
-                    .map(v => ({ id: v.id, shop_name: v.shop_name, category: v.category }))
+                    .map((v) => ({ id: v.id, shop_name: v.shop_name, category: v.category })),
             };
         });
 
+        if (search) {
+            enriched = enriched.filter((u) => buildSearchFilter(u, search, filterField));
+        }
+
+        enriched.sort((a, b) => {
+            const ta = new Date(a.updated_at || a.created_at || 0).getTime();
+            const tb = new Date(b.updated_at || b.created_at || 0).getTime();
+            return tb - ta;
+        });
+
+        const total = enriched.length;
+        const pageRows = enriched.slice(offset, offset + limit);
+
         return {
-            users: usersWithMappings,
-            vendors: vendorList.map(v => ({ id: v.id, shop_name: v.shop_name, category: v.category, owner_id: v.owner_id }))
+            users: pageRows,
+            total,
+            page,
+            limit,
+            hasMore: offset + pageRows.length < total,
+        };
+    },
+
+    /** Lightweight vendor picker list for admin mapping modal */
+    getVendorPickerList: async (opts = {}) => {
+        const page = Math.max(1, parseInt(opts.page, 10) || 1);
+        const limit = Math.min(50, Math.max(1, parseInt(opts.limit, 10) || 10));
+        const search = String(opts.search || '').trim();
+        const filterField = String(opts.filterField || 'all');
+        const excludeUserId = opts.excludeUserId || null;
+        const offset = (page - 1) * limit;
+
+        const mappedIds = excludeUserId
+            ? new Set((await db.getMappedVendorIdsForUser(excludeUserId)).map(String))
+            : new Set();
+
+        const matchesSearch = (v, q, field) => {
+            const needle = q.toLowerCase();
+            if (field === 'shop_name') return String(v.shop_name || '').toLowerCase().includes(needle);
+            if (field === 'category') return String(v.category || '').toLowerCase().includes(needle);
+            return [v.shop_name, v.category, v.id].filter(Boolean).join(' ').toLowerCase().includes(needle);
+        };
+
+        try {
+            if (getPool()) {
+                let where = '1=1';
+                const params = [];
+                if (search) {
+                    const like = `%${search}%`;
+                    if (filterField === 'shop_name') {
+                        where += ' AND v.shop_name LIKE ?';
+                        params.push(like);
+                    } else if (filterField === 'category') {
+                        where += ' AND v.category LIKE ?';
+                        params.push(like);
+                    } else {
+                        where += ' AND (v.shop_name LIKE ? OR v.category LIKE ? OR v.id LIKE ?)';
+                        params.push(like, like, like);
+                    }
+                }
+                if (mappedIds.size > 0) {
+                    where += ` AND v.id NOT IN (${[...mappedIds].map(() => '?').join(',')})`;
+                    params.push(...mappedIds);
+                }
+
+                const [countRows] = await getPool().query(
+                    `SELECT COUNT(*) AS cnt FROM vendors v WHERE ${where}`,
+                    params
+                );
+                const total = Number(countRows?.[0]?.cnt) || 0;
+                const [rows] = await getPool().query(
+                    `SELECT v.id, v.shop_name, v.category, v.owner_id
+                     FROM vendors v
+                     WHERE ${where}
+                     ORDER BY v.shop_name ASC
+                     LIMIT ? OFFSET ?`,
+                    [...params, limit, offset]
+                );
+                return {
+                    vendors: rows || [],
+                    total,
+                    page,
+                    limit,
+                    hasMore: offset + (rows?.length || 0) < total,
+                };
+            }
+        } catch (err) {
+            LOG.error('MySQL getVendorPickerList failed, falling back to local', err.message);
+        }
+
+        let rows = [...inMemoryDb.vendors]
+            .filter((v) => !mappedIds.has(String(v.id)))
+            .map((v) => ({ id: v.id, shop_name: v.shop_name, category: v.category, owner_id: v.owner_id }));
+
+        if (search) rows = rows.filter((v) => matchesSearch(v, search, filterField));
+        rows.sort((a, b) => String(a.shop_name || '').localeCompare(String(b.shop_name || '')));
+        const total = rows.length;
+        const pageRows = rows.slice(offset, offset + limit);
+        return {
+            vendors: pageRows,
+            total,
+            page,
+            limit,
+            hasMore: offset + pageRows.length < total,
         };
     },
 
@@ -2601,6 +2821,8 @@ const db = {
     getSettings: async () => {
         // Use in-memory settings unless MySQL mode is explicitly enabled
         if (DB_TYPE !== 'mysql') {
+            const { ensureFeatureSettings } = require('./utils/defaultFeatureSettings');
+            inMemoryDb.settings = ensureFeatureSettings(inMemoryDb.settings || {});
             return inMemoryDb.settings;
         }
         try {
@@ -2709,7 +2931,13 @@ const db = {
                         auto_scan_auto_clean: false,
                         enable_lazy_loading: true, // Feature screens load on demand; unload when idle
                         enable_trade_extra_tabs: false,
-                        ui_theme: 'facebook'
+                        ui_theme: 'facebook',
+                        db_pool_min_limit: 3,
+                        db_pool_default_limit: 5,
+                        db_pool_idle_close_minutes: 10,
+                        db_pool_feature_limits: '{}',
+                        cyber_threat_sources: '[{"id":"cyber_cisa","name":"CISA Alerts","url":"https://www.cisa.gov/news-events/cybersecurity-advisories/rss.xml","type":"rss","enabled":true}]',
+                        trading_external_urls: '[{"id":"trade_excel","name":"Excel sync file","url":"./India_Stock_Market_Tracker_v1.0.xlsx","type":"file","enabled":true,"category":"excel"}]',
                     };
                     const parseSettingBool = (raw) => {
                         if (raw === true || raw === false) return raw;
@@ -2737,7 +2965,10 @@ const db = {
                         }
                         if (r.key_name === 'enable_trade_news' && !hasEnableNewsRow) {
                             settings.enable_news = parseSettingBool(rawVal);
+                            return;
                         }
+                        // Pool limits, module URL JSON, and other keys added after deploy
+                        settings[r.key_name] = rawVal;
                     });
                     settings.enable_offer = true;
                     settings.enable_trade = true;
@@ -2757,7 +2988,9 @@ const db = {
                     }
                     inMemoryDb.settings = settings;
                     inMemoryDb.lastSettingsFetch = Date.now();
-                    return settings;
+                    const { ensureFeatureSettings } = require('./utils/defaultFeatureSettings');
+                    inMemoryDb.settings = ensureFeatureSettings(settings);
+                    return inMemoryDb.settings;
                 } catch (e) {
                     // Table might not exist, return defaults
                     return { 
@@ -3027,6 +3260,12 @@ const db = {
             enable_lazy_loading: true,
             enable_trade_extra_tabs: false,
             ui_theme: 'facebook',
+            db_pool_min_limit: 3,
+            db_pool_default_limit: 5,
+            db_pool_idle_close_minutes: 10,
+            db_pool_feature_limits: {},
+            cyber_threat_sources: '[{"id":"cyber_cisa","name":"CISA Alerts","url":"https://www.cisa.gov/news-events/cybersecurity-advisories/rss.xml","type":"rss","enabled":true}]',
+            trading_external_urls: '[{"id":"trade_excel","name":"Excel sync file","url":"./India_Stock_Market_Tracker_v1.0.xlsx","type":"file","enabled":true,"category":"excel"}]',
         };
         const merged = { ...defaultSettings, ...inMemoryDb.settings };
         merged.enable_offer = true;
@@ -3036,7 +3275,8 @@ const db = {
         if (!merged.trade_news_sources || String(merged.trade_news_sources).trim() === '') {
             merged.trade_news_sources = defaultSettings.trade_news_sources;
         }
-        return merged;
+        const { ensureFeatureSettings } = require('./utils/defaultFeatureSettings');
+        return ensureFeatureSettings(merged);
     },
 
     updateSettings: async (newSettings) => {
@@ -3063,7 +3303,9 @@ const db = {
                             [key, String(val), String(val)]
                         );
                     }
-                    return newSettings;
+                    Object.assign(inMemoryDb.settings, newSettings);
+                    inMemoryDb.lastSettingsFetch = Date.now();
+                    return { ...inMemoryDb.settings };
                 } catch (e) {
                     LOG.error("MySQL settings update failed", e.message);
                 }

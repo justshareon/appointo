@@ -352,12 +352,12 @@ class ExcelFileService {
      * Read all sheets by type (GAINERS, DECLINERS, ACTIVES, DATA)
      * @returns {Promise<Object>} Object with keys: gainers, decliners, actives, data
      */
-    async readAllSheetsByType() {
-        const filePath = this.getExcelFilePath();
+    async readAllSheetsByType(filePath = null) {
+        const targetPath = filePath || this.getExcelFilePath();
         
-        if (!fs.existsSync(filePath)) {
-            tradingExcelLog.push('error', 'file_missing', `Workbook not found at ${filePath}`, { filePath });
-            LOG.warning(`[Excel File] File not found: ${filePath}`);
+        if (!fs.existsSync(targetPath)) {
+            tradingExcelLog.push('error', 'file_missing', `Workbook not found at ${targetPath}`, { filePath: targetPath });
+            LOG.warning(`[Excel File] File not found: ${targetPath}`);
             return {
                 gainers: [],
                 decliners: [],
@@ -371,18 +371,18 @@ class ExcelFileService {
 
         try {
             // Try to read file using multiple strategies
-            workbook = await this.readFileWithBuffer(filePath);
+            workbook = await this.readFileWithBuffer(targetPath);
             if (!workbook) {
                 // Try direct read
-                workbook = XLSX.readFile(filePath, { cellDates: false });
+                workbook = XLSX.readFile(targetPath, { cellDates: false });
             }
         } catch (error) {
             LOG.warning(`[Excel File] Buffer read failed, trying temp copy: ${error.message}`);
             try {
-                tempPath = await this.copyToTemp(filePath);
+                tempPath = await this.copyToTemp(targetPath);
                 workbook = XLSX.readFile(tempPath, { cellDates: false });
             } catch (tempError) {
-                tradingExcelLog.push('error', 'read_failed', `All read strategies failed: ${tempError.message}`, { filePath });
+                tradingExcelLog.push('error', 'read_failed', `All read strategies failed: ${tempError.message}`, { filePath: targetPath });
                 LOG.error(`[Excel File] All read strategies failed: ${tempError.message}`);
                 return {
                     gainers: [],
