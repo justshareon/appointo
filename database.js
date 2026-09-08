@@ -31,7 +31,7 @@ const ensureWritePool = async () => {
     }
 };
 
-const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'r_detector', 'realestate', 'cyber', 'trust_score', 'news'];
+const SERVICE_FEATURES = ['trade', 'offer', 'qless', 'fleet', 'r_detector', 'realestate', 'cyber', 'smart', 'trust_score', 'news'];
 const isFeatureFlagOn = (v, feature) => {
     const val = v?.[`features_${feature}`];
     return val === true || val === 1 || val === '1';
@@ -1258,6 +1258,73 @@ const ensureCyberUsersAndVendor = async () => {
     }
 };
 
+/**
+ * Ensure SMART module user and vendor exist in MySQL
+ */
+const ensureSmartUsersAndVendor = async () => {
+    if (!getPool()) return;
+
+    try {
+        await ensureVendorFeatureColumns();
+
+        const smartUsers = [
+            { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
+            { id: 'usr_smartvendor1', name: 'Smart Vendor 1', email: 'smartvendor1@test.com', mobile: '8000000022', role: 'vendor', location_name: 'Mumbai' },
+        ];
+
+        for (const user of smartUsers) {
+            const [existing] = await getPool().query('SELECT id FROM users WHERE id = ?', [user.id]);
+            if (existing.length === 0) {
+                await getPool().query(
+                    `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
+                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
+                    [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
+                );
+                LOG.success(`[Smart Sync] Created user: ${user.id} (${user.name})`);
+            }
+        }
+
+        const smartVendor = {
+            id: 'v_smart1',
+            owner_id: 'usr_smartvendor1',
+            shop_name: 'Smart Home Hub',
+            category: 'Smart Devices',
+            location_name: 'Mumbai',
+            is_active: true,
+            is_promoted: false,
+            latitude: 19.076,
+            longitude: 72.877,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_smart: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false,
+        };
+
+        const { BASE_VENDOR_INSERT_COLUMNS, vendorRowFromSeed, vendorInsertPlaceholders, vendorUpsertUpdateClause } = require('./utils/vendorFeatureColumns');
+        const row = vendorRowFromSeed(smartVendor);
+        const cols = BASE_VENDOR_INSERT_COLUMNS.join(', ');
+        const placeholders = vendorInsertPlaceholders();
+        const values = BASE_VENDOR_INSERT_COLUMNS.map((c) => row[c]);
+
+        await getPool().query(
+            `INSERT INTO vendors (${cols}) VALUES (${placeholders})
+             ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
+            values
+        );
+        LOG.success(`[Smart Sync] Upserted vendor: ${smartVendor.id} (${smartVendor.shop_name})`);
+    } catch (error) {
+        LOG.error('[Smart Sync] Error syncing smart users and vendor:', error.message);
+    }
+};
+
 let fleetTablesReady = false;
 const ensureFleetTables = async () => {
     if (!getPool() || fleetTablesReady) return;
@@ -2210,7 +2277,7 @@ const db = {
                 const baseWhere = activeOnly ? 'v.is_active = TRUE' : '1=1';
                 const featureOnly = featureKey ? `AND IFNULL(v.features_${featureKey}, 0) = 1` : '';
                 const excludeServiceVendors = (!featureKey && !includeTradeOffer)
-                    ? 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_r_detector IS NULL OR v.features_r_detector = 0 OR v.features_r_detector = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)'
+                    ? 'AND (v.features_trade IS NULL OR v.features_trade = 0 OR v.features_trade = false) AND (v.features_offer IS NULL OR v.features_offer = 0 OR v.features_offer = false) AND (v.features_qless IS NULL OR v.features_qless = 0 OR v.features_qless = false) AND (v.features_fleet IS NULL OR v.features_fleet = 0 OR v.features_fleet = false) AND (v.features_r_detector IS NULL OR v.features_r_detector = 0 OR v.features_r_detector = false) AND (v.features_realestate IS NULL OR v.features_realestate = 0 OR v.features_realestate = false) AND (v.features_cyber IS NULL OR v.features_cyber = 0 OR v.features_cyber = false) AND (v.features_smart IS NULL OR v.features_smart = 0 OR v.features_smart = false) AND (v.features_trust_score IS NULL OR v.features_trust_score = 0 OR v.features_trust_score = false)'
                     : '';
                 const whereParts = [baseWhere];
                 if (featureOnly) whereParts.push(featureOnly);
@@ -2696,7 +2763,7 @@ const db = {
         try {
             if (getPool()) {
                 const [rows] = await getPool().query(
-                    'SELECT * FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT ?',
+                    'SELECT * FROM notifications WHERE user_id = ? ORDER BY id DESC, created_at DESC LIMIT ?',
                     [userId, Number(limit) || 50]
                 );
                 return rows || [];
@@ -2706,7 +2773,10 @@ const db = {
         }
         return inMemoryDb.notifications
             .filter(n => String(n.user_id) === String(userId))
-            .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+            .sort((a, b) => {
+                const { compareLatestFirst } = require('./utils/sortLatest');
+                return compareLatestFirst(a, b, { dateFields: ['created_at'] });
+            })
             .slice(0, Number(limit) || 50);
     },
 
@@ -3452,12 +3522,8 @@ const db = {
     },
     _readNewsItemsFromMemory: (limit = 100) => {
         if (!inMemoryDb.news_cache) inMemoryDb.news_cache = [];
-        const sorted = [...inMemoryDb.news_cache].sort((a, b) => {
-            const ta = new Date(a.date || 0).getTime();
-            const tb = new Date(b.date || 0).getTime();
-            return tb - ta;
-        });
-        return sorted.slice(0, limit);
+        const { sortLatestFirst } = require('./utils/sortLatest');
+        return sortLatestFirst(inMemoryDb.news_cache, { dateFields: ['date', 'published_at'] }).slice(0, limit);
     },
     getNewsItems: async (limit = 100) => {
         const readMemory = () => db._readNewsItemsFromMemory(limit);
@@ -3468,7 +3534,7 @@ const db = {
                 const [rows] = await getPool().query(
                     `SELECT unique_key, text, link, source, category, country, city, locality, image, published_at 
                      FROM news_cache 
-                     ORDER BY published_at DESC 
+                     ORDER BY id DESC, published_at DESC 
                      LIMIT ?`,
                     [limit]
                 );
@@ -3673,6 +3739,7 @@ measuredDb.ensureUserVendorMappingTable = ensureUserVendorMappingTable;
 measuredDb.ensureUsersUpdatedAtColumn = ensureUsersUpdatedAtColumn;
 measuredDb.ensureAllUsersAndVendors = ensureAllUsersAndVendors;
 measuredDb.ensureCyberUsersAndVendor = ensureCyberUsersAndVendor;
+measuredDb.ensureSmartUsersAndVendor = ensureSmartUsersAndVendor;
 measuredDb.ensureFeatureSchema = (featureId) => {
     const { ensureFeatureSchema } = require('./database/schema/featureTables');
     return ensureFeatureSchema(featureId, measuredDb);

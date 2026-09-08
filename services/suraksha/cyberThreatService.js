@@ -5,6 +5,7 @@
  */
 const db = require('../../database');
 const { sortTodayRecentFirst, withinRecentDays } = require('../../utils/recentSlice');
+const { sortLatestFirst } = require('../../utils/sortLatest');
 const LOG = require('../../utils/logger');
 
 class CyberThreatService {
@@ -243,10 +244,10 @@ class CyberThreatService {
      */
     async getUserAlerts(userId) {
         try {
-            return db.threatAlerts
-                .filter(alert => alert.user_id === userId && !alert.read)
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-                .slice(0, 20);
+            return sortLatestFirst(
+                db.threatAlerts.filter(alert => alert.user_id === userId && !alert.read),
+                { dateFields: ['created_at'] }
+            ).slice(0, 20);
         } catch (error) {
             LOG.error(`[Cyber Threat] Get user alerts error:`, error);
             return [];

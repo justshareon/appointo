@@ -4,6 +4,7 @@
  */
 const VENDOR_FEATURE_COLUMNS = [
   'features_cyber',
+  'features_smart',
   'features_trade',
   'features_offer',
   'features_qless',
@@ -57,6 +58,7 @@ function vendorRowFromSeed(vendor) {
     features_queue: vendor.features_queue !== false ? 1 : 0,
     features_matchmaking: flag(vendor, 'features_matchmaking'),
     features_cyber: flag(vendor, 'features_cyber'),
+    features_smart: flag(vendor, 'features_smart'),
     features_trade: flag(vendor, 'features_trade'),
     features_offer: flag(vendor, 'features_offer'),
     features_qless: flag(vendor, 'features_qless'),

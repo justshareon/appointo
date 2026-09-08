@@ -178,6 +178,13 @@ const FEATURES = {
         lazy: true,
         memory: mem([], { reclaim: false }),
     },
+    smart: {
+        id: 'smart',
+        label: 'SMART',
+        mysql: false,
+        lazy: true,
+        memory: mem(['smartNearbyVendors', 'smartNearbyScanSessions', 'smartNearbyDeviceControls', 'smartNearbyPolicies', 'smartNearbyVoiceStreams']),
+    },
 };
 
 const FEATURE_IDS = Object.keys(FEATURES);

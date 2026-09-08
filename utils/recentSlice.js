@@ -1,6 +1,7 @@
 /**
  * Shared helpers — today-first ordering + safe limits for lazy slices.
  */
+const { compareLatestFirst } = require('./sortLatest');
 
 function startOfTodayMs() {
   const d = new Date();
@@ -29,10 +30,14 @@ function clampLimit(raw, { def = 20, max = 40 } = {}) {
   return Math.min(n, max);
 }
 
-/** Today items first, then newest — cap to limit. */
+/** Today items first, then newest (id DESC / date DESC) — cap to limit. */
 function sortTodayRecentFirst(items, limit, fields) {
   const list = Array.isArray(items) ? [...items] : [];
-  list.sort((a, b) => itemTimestamp(b, fields) - itemTimestamp(a, fields));
+  list.sort((a, b) => {
+    const byLatest = compareLatestFirst(a, b, { dateFields: fields });
+    if (byLatest !== 0) return byLatest;
+    return itemTimestamp(b, fields) - itemTimestamp(a, fields);
+  });
   const today = [];
   const older = [];
   list.forEach((item) => {
@@ -58,4 +63,5 @@ module.exports = {
   withinRecentDays,
   isTodayItem,
   itemTimestamp,
+  compareLatestFirst,
 };

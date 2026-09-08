@@ -114,6 +114,15 @@ class RssNewsService {
             } else {
                 LOG.error('[RSS News] Fetch failed', errorMsg);
             }
+            try {
+                const { recordNewsLog } = require('./newsLogService');
+                recordNewsLog({
+                    level: 'L2',
+                    stage: 'rss',
+                    message: `${source.name || source.id || 'rss'}: ${errorMsg.substring(0, 120)}`,
+                    meta: { url: source.url, error: errorMsg.substring(0, 200) },
+                });
+            } catch (_) { /* ignore */ }
             return { items: [], error: errorMsg };
         }
     }

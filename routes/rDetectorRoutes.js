@@ -143,7 +143,8 @@ router.get('/commute/schedules', authenticateToken, async (req, res) => {
  */
 router.get('/commute/pre-departure', authenticateToken, async (req, res) => {
   try {
-    const brief = await commuteService.getPreDepartureBrief(req.user.id);
+    const forceRefresh = req.query.refresh === '1' || req.query.refresh === 'true';
+    const brief = await commuteService.getPreDepartureBrief(req.user.id, { forceRefresh });
     res.json(brief);
   } catch (err) {
     LOG.error('[R-Detector] pre-departure', err.message);

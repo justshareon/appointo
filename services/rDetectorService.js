@@ -2,6 +2,7 @@ const db = require('../database');
 const LOG = require('../utils/logger');
 const { resolveCityFromCoords, normalizeCityName } = require('../utils/resolveCity');
 const { normalizeIncidentKey, labelFor, dbHazardType, R_DETECTOR_INCIDENT_TYPES } = require('../utils/rDetectorIncidentTypes');
+const { sortLatestFirst } = require('../utils/sortLatest');
 const fleetService = require('./fleetService');
 
 let cityColumnReady = false;
@@ -92,6 +93,7 @@ function groupIncidents(incidents) {
     }
     const g = bucket.get(key);
     g.incidents.push(inc);
+    g.incidents = sortLatestFirst(g.incidents, { dateFields: ['reported_at', 'created_at'] });
     g.count = g.incidents.length;
   }
   return [...bucket.values()].sort((a, b) => {
@@ -106,7 +108,7 @@ function readMemoryIncidents({ cityFilter = null, typeFilter = null, limit = 100
   let rows = (db.inMemoryDb?.fleet_hazards || []).map(mapIncident).filter(Boolean);
   if (cityFilter) rows = rows.filter((r) => r.city === cityFilter);
   if (typeFilter) rows = rows.filter((r) => r.report_category === typeFilter);
-  return rows.slice(0, limit);
+  return sortLatestFirst(rows, { dateFields: ['reported_at', 'created_at'] }).slice(0, limit);
 }
 
 function cityCountsFromIncidents(incidents) {
@@ -166,7 +168,7 @@ const rDetectorService = {
         FROM fleet_hazards h
         LEFT JOIN users u ON CAST(h.driver_id AS CHAR) = CAST(u.id AS CHAR)
         WHERE h.reported_at >= DATE_SUB(NOW(), INTERVAL 90 DAY)
-        ORDER BY h.reported_at DESC
+        ORDER BY h.id DESC, h.reported_at DESC
         LIMIT ?
       `, [safeLimit * 4]);
 
@@ -184,7 +186,7 @@ const rDetectorService = {
       if (rows?.length && !mapped.length) {
         LOG.warning('[R-Detector] getIncidents mapped zero rows from mysql', `rows=${rows.length}`);
       }
-      if (mapped.length > 0 || rows?.length) return mapped;
+      if (mapped.length > 0 || rows?.length) return sortLatestFirst(mapped, { dateFields: ['reported_at', 'created_at'] });
 
       return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
     } catch (e) {
@@ -444,16 +446,17 @@ const rDetectorService = {
 
     if (!pool) {
       const rows = db.inMemoryDb?.r_detector_scan_results || [];
-      return rows
-        .filter((r) => String(r.user_id) === String(userId) && String(r.scan_date) === scanDate)
-        .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+      return sortLatestFirst(
+        rows.filter((r) => String(r.user_id) === String(userId) && String(r.scan_date) === scanDate),
+        { dateFields: ['created_at'] }
+      );
     }
 
     await this.ensureScanResultsTable(pool);
     const [rows] = await pool.query(
       `SELECT * FROM r_detector_scan_results
        WHERE user_id = ? AND scan_date = ?
-       ORDER BY created_at DESC
+       ORDER BY id DESC, created_at DESC
        LIMIT 200`,
       [String(userId), scanDate]
     );

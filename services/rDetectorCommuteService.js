@@ -651,32 +651,7 @@ const commuteService = {
     }
   },
 
-  async getPreDepartureBrief(userId, opts = {}) {
-    await ensureCommuteTables();
-    const now = opts.now ? new Date(opts.now) : new Date();
-    const day = now.getDay();
-    const nowMin = minutesOfDay(now);
-    const schedules = await this.getSchedules(userId);
-    const today = schedules.filter((s) => s.dayOfWeek === day);
-
-    const match = today.find((s) => {
-      const lead = s.alertLeadMinutes || ALERT_LEAD_MINUTES;
-      const start = s.departureMinutes - lead;
-      const end = s.departureMinutes + ALERT_GRACE_MINUTES;
-      return nowMin >= start && nowMin <= end;
-    });
-
-    if (!match) {
-      return {
-        active: false,
-        reason: 'outside_window',
-        schedules: today,
-        nextHint: today.length
-          ? `Learned ${today.length} commute pattern(s) for today — alerts show ${ALERT_LEAD_MINUTES} min before your usual departure.`
-          : 'Keep using R-Detector scans on your daily route — we learn your schedule from activity.',
-      };
-    }
-
+  async _routeBriefForSchedule(match, nowMin, opts = {}) {
     const minutesUntil = match.departureMinutes - nowMin;
     const origin = { lat: match.origin.latitude, lng: match.origin.longitude };
     const dest = { lat: match.destination.latitude, lng: match.destination.longitude };
@@ -691,8 +666,7 @@ const commuteService = {
     const hazards = incidentsAlongRoute(origin, dest, incidents);
     const dirLabel = match.direction === 'inbound' ? 'return home' : 'morning commute';
 
-    const brief = {
-      active: true,
+    return {
       schedule: match,
       directionLabel: dirLabel,
       departureLabel: match.departureLabel,
@@ -713,11 +687,67 @@ const commuteService = {
         hazards.length > 0
           ? `${hazards.length} issue${hazards.length > 1 ? 's' : ''} on your ${dirLabel} route — usual departure ${match.departureLabel}.`
           : `Your ${dirLabel} route looks clear — usual departure around ${match.departureLabel}.`,
+      preview: !!opts.preview,
+    };
+  },
+
+  async getPreDepartureBrief(userId, opts = {}) {
+    await ensureCommuteTables();
+    const now = opts.now ? new Date(opts.now) : new Date();
+    const day = now.getDay();
+    const nowMin = minutesOfDay(now);
+    const prefs = await this.getPreferences(userId);
+    const schedules = await this.getSchedules(userId);
+    const today = schedules.filter((s) => s.dayOfWeek === day);
+
+    const match = today.find((s) => {
+      const lead = s.alertLeadMinutes || ALERT_LEAD_MINUTES;
+      const start = s.departureMinutes - lead;
+      const end = s.departureMinutes + ALERT_GRACE_MINUTES;
+      return nowMin >= start && nowMin <= end;
+    });
+
+    const inactiveBase = {
+      active: false,
+      reason: 'outside_window',
+      schedules: today,
+      preferences: prefs,
+      nextHint: today.length
+        ? `Learned ${today.length} commute pattern(s) for today — tap refresh before you leave to scan your route.`
+        : prefs
+          ? `Default times: ${prefs.morningLabel} out · ${prefs.eveningLabel} return — scan on your route to improve learning.`
+          : 'Keep using R-Detector scans on your daily route — we learn your schedule from activity.',
     };
 
-    const prefs = await this.getPreferences(userId);
-    if (prefs?.autoScanEnabled !== false) {
-      await this._maybeNotifyCommuteAlert(userId, match, hazards, brief);
+    if (!match) {
+      if (opts.forceRefresh && today.length) {
+        const previewSchedule = [...today].sort(
+          (a, b) => Math.abs(a.departureMinutes - nowMin) - Math.abs(b.departureMinutes - nowMin)
+        )[0];
+        if (previewSchedule) {
+          const routeBrief = await this._routeBriefForSchedule(previewSchedule, nowMin, { preview: true });
+          return {
+            ...inactiveBase,
+            ...routeBrief,
+            active: false,
+            preview: true,
+            message: routeBrief.message,
+          };
+        }
+      }
+      return inactiveBase;
+    }
+
+    const routeBrief = await this._routeBriefForSchedule(match, nowMin);
+    const brief = {
+      active: true,
+      preferences: prefs,
+      schedules: today,
+      ...routeBrief,
+    };
+
+    if (prefs?.autoScanEnabled !== false && !opts.forceRefresh) {
+      await this._maybeNotifyCommuteAlert(userId, match, routeBrief.hazards, brief);
     }
 
     return brief;

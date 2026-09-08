@@ -94,7 +94,7 @@ async function hydrateOnStartup() {
         try {
             if ((mem.news_cache || []).length === 0 && pool) {
                 const [rows] = await pool.query(
-                    'SELECT * FROM news_cache ORDER BY updated_at DESC LIMIT 500'
+                    'SELECT * FROM news_cache ORDER BY id DESC, updated_at DESC LIMIT 500'
                 );
                 if (rows?.length) {
                     mem.news_cache = rows;

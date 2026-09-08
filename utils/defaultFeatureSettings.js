@@ -27,6 +27,7 @@ function ensureFeatureSettings(settings = {}) {
   fill('enable_r_detector', true);
   fill('enable_realestate', true);
   fill('enable_cyber', true);
+  fill('enable_smart', true);
   fill('enable_trust_score', true);
   fill('enable_news', true);
   if (s.news_cache_auto_refresh === undefined) s.news_cache_auto_refresh = true;

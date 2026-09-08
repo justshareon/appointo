@@ -69,10 +69,8 @@ function capArray(arr, max) {
 
 function capByDate(rows, dateField, cap) {
     if (!Array.isArray(rows) || rows.length <= cap) return rows;
-    const sorted = rows
-        .slice()
-        .sort((a, b) => new Date(b?.[dateField] || 0) - new Date(a?.[dateField] || 0));
-    return sorted.slice(0, cap);
+    const { sortLatestFirst } = require('../utils/sortLatest');
+    return sortLatestFirst(rows, { dateFields: [dateField, 'created_at', 'updated_at'] }).slice(0, cap);
 }
 
 function featureSize(feature) {

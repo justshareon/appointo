@@ -739,6 +739,21 @@ router.get('/system-health', requireSuperAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/admin/news-probe
+ * Run full news RSS + slice probe and return diagnostic logs (super-admin).
+ */
+router.post('/news-probe', requireSuperAdmin, async (req, res) => {
+    try {
+        const { probeNewsPipeline } = require('../services/newsLogService');
+        const result = await probeNewsPipeline();
+        res.json({ success: true, ...result });
+    } catch (error) {
+        LOG.error('[Admin] news-probe error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/admin/pool-config — per-feature MySQL pool limits (super-admin)
  */
 router.get('/pool-config', requireSuperAdmin, async (req, res) => {

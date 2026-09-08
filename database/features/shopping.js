@@ -7,6 +7,7 @@ module.exports = function createShoppingFeature(ctx) {
     const LOG = ctx.LOG;
     const mem = () => ctx.inMemoryDb;
     const normalizeProductRow = (row) => ctx.normalizeProductRow(row);
+    const { sortLatestFirst } = require('../../utils/sortLatest');
 
     const productNameKey = (name) =>
         String(name || '')
@@ -67,7 +68,7 @@ module.exports = function createShoppingFeature(ctx) {
                     const k = `${String(p.vendor_id)}::${productNameKey(p.name)}`;
                     if (!byName.has(k)) byName.set(k, p);
                 });
-            return [...byName.values()];
+            return sortLatestFirst([...byName.values()]);
         },
 
         findDuplicateForVendor: async (vendorId, name, excludeId = null) => {
@@ -149,7 +150,7 @@ module.exports = function createShoppingFeature(ctx) {
                     const k = `${String(p.vendor_id)}::${productNameKey(p.name)}`;
                     if (!byVendorName.has(k)) byVendorName.set(k, p);
                 });
-            return [...byVendorName.values()];
+            return sortLatestFirst([...byVendorName.values()]);
         },
 
         addProduct: async (productData) => {
@@ -439,7 +440,7 @@ module.exports = function createShoppingFeature(ctx) {
                          FROM orders o
                          LEFT JOIN vendors v ON o.vendor_id = v.id
                          WHERE o.user_id = ?
-                         ORDER BY o.created_at DESC`,
+                         ORDER BY o.id DESC, o.created_at DESC`,
                         [userId]
                     );
                     if (rows) return rows;
@@ -447,13 +448,14 @@ module.exports = function createShoppingFeature(ctx) {
             } catch (err) {
                 LOG.error(`MySQL getOrdersByUser failed for ${userId}`, err.message);
             }
-            return (inMemoryDb.orders || [])
-                .filter((o) => String(o.user_id) === String(userId))
-                .map((o) => ({
-                    ...o,
-                    shop_name: (inMemoryDb.vendors || []).find((v) => String(v.id) === String(o.vendor_id))?.shop_name || 'Shop',
-                }))
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            return sortLatestFirst(
+                (inMemoryDb.orders || [])
+                    .filter((o) => String(o.user_id) === String(userId))
+                    .map((o) => ({
+                        ...o,
+                        shop_name: (inMemoryDb.vendors || []).find((v) => String(v.id) === String(o.vendor_id))?.shop_name || 'Shop',
+                    }))
+            );
         },
 
         getOrderById: async (orderId) => {
@@ -524,7 +526,7 @@ module.exports = function createShoppingFeature(ctx) {
                          JOIN vendors v ON o.vendor_id = v.id
                          LEFT JOIN users u ON o.user_id = u.id
                          WHERE v.owner_id = ?
-                         ORDER BY o.created_at DESC`,
+                         ORDER BY o.id DESC, o.created_at DESC`,
                         [ownerId]
                     );
                     if (rows) return rows;
@@ -533,14 +535,15 @@ module.exports = function createShoppingFeature(ctx) {
                 LOG.error(`MySQL getOrdersByVendorOwner failed for ${ownerId}, falling back to local`, err.message);
             }
             const ownedVendorIds = inMemoryDb.vendors.filter((v) => v.owner_id === ownerId).map((v) => v.id);
-            return inMemoryDb.orders
-                .filter((o) => ownedVendorIds.includes(o.vendor_id))
-                .map((o) => ({
-                    ...o,
-                    shop_name: inMemoryDb.vendors.find((v) => v.id === o.vendor_id)?.shop_name || 'Unknown Shop',
-                    user_name: inMemoryDb.users.find((u) => u.id === o.user_id)?.name || 'User',
-                }))
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            return sortLatestFirst(
+                inMemoryDb.orders
+                    .filter((o) => ownedVendorIds.includes(o.vendor_id))
+                    .map((o) => ({
+                        ...o,
+                        shop_name: inMemoryDb.vendors.find((v) => v.id === o.vendor_id)?.shop_name || 'Unknown Shop',
+                        user_name: inMemoryDb.users.find((u) => u.id === o.user_id)?.name || 'User',
+                    }))
+            );
         },
 
         getOrdersByVendorId: async (vendorId) => {
@@ -553,7 +556,7 @@ module.exports = function createShoppingFeature(ctx) {
                          JOIN vendors v ON o.vendor_id = v.id
                          LEFT JOIN users u ON o.user_id = u.id
                          WHERE o.vendor_id = ?
-                         ORDER BY o.created_at DESC`,
+                         ORDER BY o.id DESC, o.created_at DESC`,
                         [vendorId]
                     );
                     if (rows) return rows;
@@ -561,21 +564,22 @@ module.exports = function createShoppingFeature(ctx) {
             } catch (err) {
                 LOG.error(`MySQL getOrdersByVendorId failed for ${vendorId}, falling back to local`, err.message);
             }
-            return (inMemoryDb.orders || [])
-                .filter((o) => String(o.vendor_id) === String(vendorId))
-                .map((o) => ({
-                    ...o,
-                    shop_name: inMemoryDb.vendors.find((v) => v.id === o.vendor_id)?.shop_name || 'Unknown Shop',
-                    user_name: inMemoryDb.users.find((u) => u.id === o.user_id)?.name || 'User',
-                }))
-                .sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            return sortLatestFirst(
+                (inMemoryDb.orders || [])
+                    .filter((o) => String(o.vendor_id) === String(vendorId))
+                    .map((o) => ({
+                        ...o,
+                        shop_name: inMemoryDb.vendors.find((v) => v.id === o.vendor_id)?.shop_name || 'Unknown Shop',
+                        user_name: inMemoryDb.users.find((u) => u.id === o.user_id)?.name || 'User',
+                    }))
+            );
         },
 
         getAllOrders: async () => {
             const inMemoryDb = mem();
             try {
                 if (getPool()) {
-                    const [rows] = await getPool().query('SELECT * FROM orders');
+                    const [rows] = await getPool().query('SELECT * FROM orders ORDER BY id DESC, created_at DESC');
                     return rows;
                 }
             } catch (err) {

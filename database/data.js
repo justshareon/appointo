@@ -41,6 +41,8 @@ let inMemoryDb = {
         { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
         { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' },
+        { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_smartvendor1', name: 'Smart Vendor 1', email: 'smartvendor1@test.com', mobile: '8000000022', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_trust1', name: 'Trust User 1', email: 'trust1@test.com', mobile: '8000000101', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' }
     ],
@@ -328,6 +330,30 @@ let inMemoryDb = {
             visibility_feed: false
         },
         {
+            id: 'v_smart1',
+            owner_id: 'usr_smartvendor1',
+            shop_name: 'Smart Home Hub',
+            category: 'Smart Devices',
+            location_name: 'Mumbai',
+            is_active: true,
+            is_promoted: false,
+            latitude: 19.076,
+            longitude: 72.877,
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_smart: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        },
+        {
             id: 'v_trust1',
             owner_id: 'usr_trustvendor1',
             shop_name: 'Trust Score Services',
@@ -551,6 +577,7 @@ let inMemoryDb = {
         enable_r_detector: true,
         enable_realestate: true,
         enable_cyber: true,
+        enable_smart: true,
         enable_trust_score: true,
         theme_position: 'auto',
         enable_news: true,
@@ -2919,8 +2946,14 @@ let inMemoryDb = {
             },
             createdAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000) // 2 days ago
         }
-    ]
+    ],
+
+    /** SMART module — empty at boot; seeded on first use via smartMemoryStore */
+    smartNearbyVendors: [],
+    smartNearbyScanSessions: [],
+    smartNearbyDeviceControls: [],
+    smartNearbyPolicies: [],
+    smartNearbyVoiceStreams: [],
 };
 
 module.exports = inMemoryDb;
-

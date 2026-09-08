@@ -281,6 +281,36 @@ async function getSystemHealth() {
 
   const trustScore = await getTrustScoreHealth(pool, issues);
   const errorLog = readErrorLogTail(50);
+
+  let newsDiagnostics = null;
+  let newsLogs = [];
+  let newsLevelSummary = { L1: 0, L2: 0, L3: 0 };
+  try {
+    const newsLogService = require('./newsLogService');
+    newsDiagnostics = await newsLogService.buildNewsSnapshot();
+    newsLogs = newsLogService.getNewsLogs(50);
+    newsLevelSummary = newsLogService.getLevelSummary(newsLogs);
+    issues.push(...newsLogService.newsLogsToIssues(newsLogs));
+    if (newsDiagnostics?.issues?.length) {
+      for (const ni of newsDiagnostics.issues) {
+        issues.push({
+          severity: ni.level === 'L1' ? 'critical' : 'warning',
+          level: ni.level,
+          module: 'news',
+          message: ni.message,
+          source: 'news_snapshot',
+        });
+      }
+    }
+  } catch (err) {
+    issues.push({
+      severity: 'warning',
+      level: 'L2',
+      module: 'news',
+      message: `News diagnostics unavailable: ${err.message}`,
+    });
+  }
+
   const normalizedIssues = withIssueLevels(issues);
   const levelSummary = summarizeIssueLevels(normalizedIssues);
   const clientLevelSummary = clientErrorService?.getLevelSummary(clientErrors) || { L1: 0, L2: 0, L3: 0 };
@@ -320,6 +350,9 @@ async function getSystemHealth() {
     errorLog,
     clientErrors,
     clientLevelSummary,
+    newsDiagnostics,
+    newsLogs,
+    newsLevelSummary,
     levelSummary,
     issues: normalizedIssues.sort((a, b) => {
       const levelRank = { L1: 0, L2: 1, L3: 2 };

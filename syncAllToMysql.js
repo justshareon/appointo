@@ -71,6 +71,7 @@ const ensureCoreSchema = async () => {
             features_queue BOOLEAN DEFAULT TRUE,
             features_matchmaking BOOLEAN DEFAULT FALSE,
             features_cyber BOOLEAN DEFAULT FALSE,
+            features_smart BOOLEAN DEFAULT FALSE,
             features_trade BOOLEAN DEFAULT FALSE,
             features_offer BOOLEAN DEFAULT FALSE,
             features_qless BOOLEAN DEFAULT FALSE,

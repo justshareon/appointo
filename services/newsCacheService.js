@@ -5,6 +5,7 @@ const settingsService = require('./settingsService');
 const locationNewsService = require('./locationNewsService');
 const { curatedFallback, orderItemsByGeoScope } = locationNewsService;
 const LOG = require('../utils/logger');
+const { recordNewsLog } = require('./newsLogService');
 const { clampLimit, sortTodayRecentFirst, withinRecentDays } = require('../utils/recentSlice');
 
 const norm = (v) => String(v || '').trim().toLowerCase();
@@ -27,15 +28,30 @@ class NewsCacheService {
      */
     async refreshNews(limit = 50, settingsOverride = null) {
         const settings = settingsOverride || await settingsService.getSettings();
-        const result = await newsAggregatorService.fetchNews(settings, limit);
-        const flattened = (result.categories || []).flatMap(c => (c.items || []).map(item => ({
-            ...item,
-            category: item.category || c.name
-        })));
-        const withKeys = flattened.map(item => ({ ...item, unique_key: buildUniqueKey(item) }));
-        await db.saveNewsItems(withKeys);
-        await db.updateSettings({ news_cache_last_updated: new Date().toISOString() });
-        return result;
+        try {
+            const result = await newsAggregatorService.fetchNews(settings, limit);
+            const flattened = (result.categories || []).flatMap(c => (c.items || []).map(item => ({
+                ...item,
+                category: item.category || c.name
+            })));
+            const withKeys = flattened.map(item => ({ ...item, unique_key: buildUniqueKey(item) }));
+            await db.saveNewsItems(withKeys);
+            await db.updateSettings({ news_cache_last_updated: new Date().toISOString() });
+            recordNewsLog({
+                level: flattened.length ? 'L3' : 'L2',
+                stage: 'refresh',
+                message: `Aggregator refresh: ${flattened.length} item(s) saved`,
+                meta: { count: flattened.length, categories: (result.categories || []).length },
+            });
+            return result;
+        } catch (e) {
+            recordNewsLog({
+                level: 'L1',
+                stage: 'refresh',
+                message: `Aggregator refresh failed: ${e?.message || e}`,
+            });
+            throw e;
+        }
     }
 
     async getCachedGrouped(limit = 200, settingsOverride = null) {
@@ -124,6 +140,15 @@ class NewsCacheService {
     } = {}) {
         const settings = settingsOverride || await settingsService.getSettings();
         const safeLimit = clampLimit(limit, { def: 15, max: 20 });
+        if (!settings.enable_news) {
+            recordNewsLog({
+                level: 'L1',
+                stage: 'slice',
+                message: 'Slice blocked — enable_news is OFF',
+                meta: { scope, category },
+            });
+            return { categories: [], slice: true, scope, category, disabled: true, fetchAttempts: 0 };
+        }
         const memKey = `${scope}|${category}|${safeLimit}|${locationCtx.city || ''}|${locationCtx.locality || ''}|${locationCtx.language || 'hi'}`;
         if (!refresh) {
             const hit = sliceMem.get(memKey);
@@ -146,6 +171,12 @@ class NewsCacheService {
                     items = await db.getNewsItems(fetchLimit);
                 } catch (e) {
                     LOG.warning(`[NewsCache] API refresh attempt ${attempt} failed:`, e?.message || e);
+                    recordNewsLog({
+                        level: 'L2',
+                        stage: 'refresh',
+                        message: `API refresh attempt ${attempt} failed: ${e?.message || e}`,
+                        meta: { attempt },
+                    });
                 }
             }
 
@@ -165,6 +196,12 @@ class NewsCacheService {
                     );
                 } catch (e) {
                     LOG.warning(`[NewsCache] Location fetch attempt ${attempt} failed:`, e?.message || e);
+                    recordNewsLog({
+                        level: 'L2',
+                        stage: 'location',
+                        message: `Location fetch attempt ${attempt} failed: ${e?.message || e}`,
+                        meta: { attempt, city: locationCtx.city, locality: locationCtx.locality },
+                    });
                 }
             } else {
                 items = this._dedupeItems(items || []);
@@ -203,6 +240,23 @@ class NewsCacheService {
             fetchAttempts: attempt,
         };
         sliceMem.set(memKey, { data: payload, ts: Date.now() });
+        const itemCount = (payload.categories || []).reduce((n, c) => n + (c.items || []).length, 0);
+        recordNewsLog({
+            level: itemCount ? 'L3' : 'L1',
+            stage: 'slice',
+            message: itemCount
+                ? `Slice OK: ${itemCount} item(s) · scope=${scope} · cat=${category} · attempts=${attempt}`
+                : `Slice EMPTY after ${attempt} attempt(s) · scope=${scope} · cat=${category} — using fallback if any`,
+            meta: {
+                itemCount,
+                attempts: attempt,
+                scope,
+                category,
+                city: locationCtx.city || null,
+                locality: locationCtx.locality || null,
+                refresh,
+            },
+        });
         return payload;
     }
 

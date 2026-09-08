@@ -3,6 +3,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { sortLatestFirst, compareLatestFirst } = require('./sortLatest');
 
 const MAX_ENTRIES = 200;
 const LOG_FILE = path.join(__dirname, '..', 'client-errors.log');
@@ -21,7 +22,7 @@ function hydrateFromDisk() {
         /* skip bad line */
       }
     }
-    entries.sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0));
+    entries.sort((a, b) => compareLatestFirst(a, b, { dateFields: ['reportedAt'] }));
     memory.push(...entries);
   } catch (_) {
     /* ignore */
@@ -66,8 +67,7 @@ function recordClientError(payload = {}) {
 
 function getClientErrors(limit = 50) {
   hydrateFromDisk();
-  return [...memory]
-    .sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0))
+  return sortLatestFirst([...memory], { dateFields: ['reportedAt'] })
     .slice(0, Math.min(limit, MAX_ENTRIES));
 }
 

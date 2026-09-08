@@ -227,6 +227,7 @@ app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDi
 app.use('/api/trading', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
 app.use('/api/trading-data-trace', ...tradeDb, lazyRouter(() => require('./routes/tradingDataTrace')));
 app.use('/api/cyber', ...cyberDb, lazyRouter(() => require('./routes/cyberToolsRoutes')));
+app.use('/api/smart', lazyRouter(() => require('./routes/smartRoutes')));
 app.use('/api/health-predict', ...healthDb, lazyRouter(() => require('./routes/healthPredictRoutes')));
 app.use('/api/realestate', ...realestateDb, lazyRouter(() => require('./routes/realestateRoutes')));
 app.use('/api', ...offerDb, lazyRouter(() => require('./routes/dealsRoutes')));
