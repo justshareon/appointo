@@ -145,6 +145,20 @@ cron.schedule('15 * * * *', async () => {
 });
 LOG.info('[Server] Chat retention purge scheduled hourly (keep 10 days)');
 
+// Purge APS diagnostic logs older than 1 hour (news, client errors, backend error.log)
+cron.schedule('5 * * * *', async () => {
+    try {
+        const { purgeDiagnosticLogs } = require('./services/systemHealthService');
+        const result = purgeDiagnosticLogs();
+        if (result.errorLog?.purged > 0) {
+            LOG.info(`[APS] Purged ${result.errorLog.purged} stale error.log line(s)`);
+        }
+    } catch (e) {
+        LOG.warning('[APS] Diagnostic log purge failed', e.message);
+    }
+});
+LOG.info('[Server] APS diagnostic log purge scheduled hourly (keep 1 hour)');
+
 // Feature jobs, seed, and MySQL pools start on first open (see featureMemoryManager).
 // Seed users/vendors run once via coreDb middleware — do not re-upsert every 5 minutes.
 
@@ -267,7 +281,7 @@ server.listen(PORT, async () => {
         const syncIntervalMinutes = parseInt(process.env.SYNC_INTERVAL_MINUTES) || 30;
         startAutoSync(syncIntervalMinutes);
         const driftMins = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
-        LOG.info(`[AutoSync] Bulk resume every ${syncIntervalMinutes}m; drift sync every ${driftMins}m; failed retry every 5m`);
+        LOG.info(`[AutoSync] Bulk resume every ${syncIntervalMinutes}m; drift sync every ${driftMins}m; failed retry every 5m; transient errors retry 3×`);
     } else if (mysqlOnline) {
         LOG.info('In-memory mode with MySQL configured: mirroring seed so you can switch DB_TYPE=mysql later.');
         if (process.env.AUTO_SYNC_ON_STARTUP !== 'false') {
@@ -276,7 +290,7 @@ server.listen(PORT, async () => {
         const mirrorInterval = parseInt(process.env.SYNC_INTERVAL_MINUTES, 10) || 30;
         startAutoSync(mirrorInterval);
         const driftMinsMem = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES, 10) || 15;
-        LOG.info(`[AutoSync] In-memory ↔ MySQL — bulk every ${mirrorInterval}m, drift every ${driftMinsMem}m, failed retry every 5m`);
+        LOG.info(`[AutoSync] In-memory ↔ MySQL — bulk every ${mirrorInterval}m, drift every ${driftMinsMem}m, failed retry every 5m; transient errors retry 3×`);
     } else {
         LOG.info('In-memory mode: core seed only at boot. Feature seed/jobs start on first open.');
     }

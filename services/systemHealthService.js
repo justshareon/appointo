@@ -1,11 +1,10 @@
 /**
  * Cross-module health diagnostics for super-admin APS dashboard.
  */
-const fs = require('fs');
-const path = require('path');
 const LOG = require('../utils/logger');
 const syncStatus = require('./syncStatusService');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { readErrorLogTail, purgeErrorLogOlderThan } = require('../utils/errorLogRetention');
 
 const MODULE_CHECKS = [
   { key: 'trust_score', label: 'Trust Score', tables: ['trust_score_projects', 'trust_score_builders'] },
@@ -143,20 +142,46 @@ function withIssueLevels(issues = []) {
   }));
 }
 
-function readErrorLogTail(maxLines = 40) {
-  const logPath = path.join(__dirname, '..', 'error.log');
+function issueTime(issue) {
+  const raw = issue?.at || issue?.reportedAt || issue?.checkedAt;
+  const t = new Date(raw).getTime();
+  return Number.isFinite(t) ? t : 0;
+}
+
+function sortIssues(issues = []) {
+  const levelRank = { L1: 0, L2: 1, L3: 2 };
+  const severityRank = { critical: 0, warning: 1, info: 2 };
+  return [...issues].sort((a, b) => {
+    const aLevel = levelRank[a.level] ?? 9;
+    const bLevel = levelRank[b.level] ?? 9;
+    if (aLevel !== bLevel) return aLevel - bLevel;
+    const sevDiff = (severityRank[a.severity] ?? 9) - (severityRank[b.severity] ?? 9);
+    if (sevDiff !== 0) return sevDiff;
+    return issueTime(b) - issueTime(a);
+  });
+}
+
+function purgeDiagnosticLogs() {
+  const errorResult = purgeErrorLogOlderThan();
+  let newsKept = 0;
+  let clientKept = 0;
   try {
-    if (!fs.existsSync(logPath)) return { path: logPath, lines: [], exists: false, recentFirst: true };
-    const raw = fs.readFileSync(logPath, 'utf8');
-    const lines = raw
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .slice(-maxLines)
-      .reverse();
-    return { path: logPath, lines, exists: true, recentFirst: true };
-  } catch (err) {
-    return { path: logPath, lines: [], exists: false, error: err.message, recentFirst: true };
+    newsKept = require('./newsLogService').purgeNewsLogs();
+  } catch (_) {
+    /* ignore */
   }
+  let offerKept = 0;
+  try {
+    offerKept = require('./offerLogService').purgeOfferLogs();
+  } catch (_) {
+    /* ignore */
+  }
+  try {
+    clientKept = require('./clientErrorService').purgeClientErrors();
+  } catch (_) {
+    /* ignore */
+  }
+  return { errorLog: errorResult, newsKept, offerKept, clientKept };
 }
 
 async function getTableHealth(pool) {
@@ -264,6 +289,7 @@ async function getSystemHealth() {
         kind: 'sync',
         module: 'sync',
         message: `Last sync run failed: ${sync.latestRun.error_message || 'unknown error'}`,
+        at: sync.latestRun.completed_at || sync.latestRun.started_at || checkedAt,
       });
     }
   } catch (err) {
@@ -285,6 +311,9 @@ async function getSystemHealth() {
   let newsDiagnostics = null;
   let newsLogs = [];
   let newsLevelSummary = { L1: 0, L2: 0, L3: 0 };
+  let offerDiagnostics = null;
+  let offerLogs = [];
+  let offerLevelSummary = { L1: 0, L2: 0, L3: 0 };
   try {
     const newsLogService = require('./newsLogService');
     newsDiagnostics = await newsLogService.buildNewsSnapshot();
@@ -308,6 +337,32 @@ async function getSystemHealth() {
       level: 'L2',
       module: 'news',
       message: `News diagnostics unavailable: ${err.message}`,
+    });
+  }
+
+  try {
+    const offerLogService = require('./offerLogService');
+    offerDiagnostics = await offerLogService.buildOfferSnapshot();
+    offerLogs = offerLogService.getOfferLogs(50);
+    offerLevelSummary = offerLogService.getLevelSummary(offerLogs);
+    issues.push(...offerLogService.offerLogsToIssues(offerLogs));
+    if (offerDiagnostics?.issues?.length) {
+      for (const oi of offerDiagnostics.issues) {
+        issues.push({
+          severity: oi.level === 'L1' ? 'critical' : 'warning',
+          level: oi.level,
+          module: 'offers',
+          message: oi.message,
+          source: 'offer_snapshot',
+        });
+      }
+    }
+  } catch (err) {
+    issues.push({
+      severity: 'warning',
+      level: 'L2',
+      module: 'offers',
+      message: `Offer diagnostics unavailable: ${err.message}`,
     });
   }
 
@@ -353,17 +408,13 @@ async function getSystemHealth() {
     newsDiagnostics,
     newsLogs,
     newsLevelSummary,
+    offerDiagnostics,
+    offerLogs,
+    offerLevelSummary,
     levelSummary,
-    issues: normalizedIssues.sort((a, b) => {
-      const levelRank = { L1: 0, L2: 1, L3: 2 };
-      const aLevel = levelRank[a.level] ?? 9;
-      const bLevel = levelRank[b.level] ?? 9;
-      if (aLevel !== bLevel) return aLevel - bLevel;
-      const rank = { critical: 0, warning: 1, info: 2 };
-      return (rank[a.severity] ?? 9) - (rank[b.severity] ?? 9);
-    }),
+    issues: sortIssues(normalizedIssues),
     summary,
   };
 }
 
-module.exports = { getSystemHealth, MODULE_CHECKS };
+module.exports = { getSystemHealth, MODULE_CHECKS, purgeDiagnosticLogs };

@@ -253,7 +253,9 @@ class NewsCacheService {
                 scope,
                 category,
                 city: locationCtx.city || null,
+                town: locationCtx.town || locationCtx.locality || null,
                 locality: locationCtx.locality || null,
+                state: locationCtx.state || null,
                 refresh,
             },
         });

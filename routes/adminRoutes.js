@@ -53,6 +53,7 @@ const tradingConfigService = require('../services/tradingConfigService');
 const stockDataService = require('../services/stockDataService');
 const LOG = require('../utils/logger');
 const tradingExcelLog = require('../utils/tradingExcelLog');
+const { withOperationRetry } = require('../utils/operationRetry');
 const path = require('path');
 const fs = require('fs');
 const config = require('../config/tradingConfig');
@@ -105,6 +106,12 @@ function getTradingExcelDiagnostics(syncJob) {
         : path.resolve(__dirname, '../India_Stock_Market_Tracker_v1.0.xlsx');
     const filePath = syncJob?.getLocalExcelPath?.() || candidate;
     const db = require('../database');
+    let jobStatus = {};
+    try {
+        jobStatus = syncJob?.getStatus?.() || {};
+    } catch (statusErr) {
+        jobStatus = { statusReadError: statusErr.message };
+    }
     return {
         platform: process.platform,
         dbType: typeof db.getType === 'function' ? db.getType() : process.env.DB_TYPE || 'unknown',
@@ -124,7 +131,7 @@ function getTradingExcelDiagnostics(syncJob) {
             }
         })(),
         syncJobRunning: !!syncJob?.isRunning,
-        ...(syncJob?.getStatus?.() || {}),
+        ...jobStatus,
     };
 }
 
@@ -345,7 +352,10 @@ router.post('/trading-data/upload-and-load', requireSuperAdmin, async (req, res)
         const tradingExcelUploadService = require('../services/tradingExcelUploadService');
         const { fileName, dataBase64 } = req.body || {};
         const upload = tradingExcelUploadService.saveUpload({ fileName, dataBase64 });
-        const preview = await syncJob.loadPreviewFromFilePath(upload.filePath, { label: 'upload' });
+        const preview = await withOperationRetry(
+            () => syncJob.loadPreviewFromFilePath(upload.filePath, { label: 'upload' }),
+            { label: 'trading upload-and-load', maxAttempts: 3 }
+        );
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
         res.json({
             success: true,
@@ -376,9 +386,13 @@ router.post('/trading-data/load-and-save', requireSuperAdmin, async (req, res) =
         }
         const result = await syncJob.persistCleanedData(req.body?.data);
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const loadMsg = result.partial
+            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed`
+            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} in MySQL)`;
         res.json({
             success: true,
-            message: `Saved ${result.inserted} stock rows`,
+            partial: !!result.partial,
+            message: loadMsg,
             memoryCount,
             durationMs: Date.now() - started,
             diagnostics: getTradingExcelDiagnostics(syncJob),
@@ -408,13 +422,18 @@ router.post('/trading-data/save-excel', requireSuperAdmin, async (req, res) => {
         const result = await syncJob.persistCleanedData(req.body?.data);
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
         const ms = Date.now() - started;
-        tradingExcelLog.push('info', 'save_done', `Saved ${result.inserted} rows (${result.storage}) in ${ms}ms`, {
+        const saveMsg = result.partial
+            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed`
+            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} in MySQL)`;
+        tradingExcelLog.push('info', 'save_done', saveMsg, {
             memoryCount,
             archived: result.archived,
+            partial: result.partial,
         });
         res.json({
             success: true,
-            message: `Saved ${result.inserted} stock rows`,
+            partial: !!result.partial,
+            message: saveMsg,
             memoryCount,
             durationMs: ms,
             diagnostics: getTradingExcelDiagnostics(syncJob),
@@ -705,6 +724,25 @@ router.post('/sync/all', requireSuperAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/admin/sync/retry-failed — retry only FAILED/IN_PROGRESS modules (transient-safe)
+ */
+router.post('/sync/retry-failed', requireSuperAdmin, async (req, res) => {
+    try {
+        const { retryFailedModules, isSyncRunning } = require('../services/autoSyncService');
+        if (isSyncRunning()) {
+            return res.status(409).json({ status: 'in_progress', message: 'Sync already in progress' });
+        }
+        retryFailedModules('super-admin-retry-failed').catch((err) => {
+            LOG.error('[Admin] sync/retry-failed background error:', err.message);
+        });
+        res.json({ status: 'started', message: 'Retrying failed sync modules (3× on transient errors)' });
+    } catch (error) {
+        LOG.error('[Admin] sync/retry-failed error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * POST /api/admin/sync/until-complete — retry until all modules SUCCESS
  */
 router.post('/sync/until-complete', requireSuperAdmin, async (req, res) => {
@@ -749,6 +787,21 @@ router.post('/news-probe', requireSuperAdmin, async (req, res) => {
         res.json({ success: true, ...result });
     } catch (error) {
         LOG.error('[Admin] news-probe error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/offer-probe
+ * Run offer marketplace slice probe across geo scopes (super-admin).
+ */
+router.post('/offer-probe', requireSuperAdmin, async (req, res) => {
+    try {
+        const { probeOfferPipeline } = require('../services/offerLogService');
+        const result = await probeOfferPipeline();
+        res.json({ success: true, ...result });
+    } catch (error) {
+        LOG.error('[Admin] offer-probe error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });

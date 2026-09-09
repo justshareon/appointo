@@ -5,6 +5,8 @@
 const LOG = require('../utils/logger');
 
 const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { withOperationRetry } = require('../utils/operationRetry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
 
 const DEBOUNCE_MS = parseInt(process.env.SYNC_ENSURE_DEBOUNCE_MS, 10) || 30000;
 let lastTriggeredAt = 0;
@@ -23,7 +25,12 @@ function ensureSyncOnLoadMiddleware(req, res, next) {
             const syncStatus = require('../services/syncStatusService');
             const { syncUntilComplete, isSyncRunning } = require('../services/autoSyncService');
             const { runDriftSync } = require('../services/driftSyncService');
-            await syncStatus.init();
+            await withOperationRetry(() => syncStatus.init(), {
+                label: 'ensure-sync-init',
+                maxAttempts: 3,
+                delayMs: 1500,
+                shouldRetry: (err) => isTransientConnectionError(err),
+            });
 
             if (await syncStatus.needsSync()) {
                 if (isSyncRunning()) return;

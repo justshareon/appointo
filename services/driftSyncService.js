@@ -4,6 +4,8 @@
  */
 const LOG = require('../utils/logger');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { withOperationRetry } = require('../utils/operationRetry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
 
 let driftRunning = false;
 let lastDriftAt = 0;
@@ -28,36 +30,44 @@ async function runDriftSync(triggerSource = 'auto') {
   try {
     LOG.info(`[DriftSync] Starting memory ↔ MySQL alignment (${triggerSource})`);
 
-    const db = require('../database');
-    if (typeof db.ensureAllUsersAndVendors === 'function') {
-      await db.ensureAllUsersAndVendors();
-    }
-    if (typeof db.ensureSmartUsersAndVendor === 'function') {
-      await db.ensureSmartUsersAndVendor();
-    }
+    const result = await withOperationRetry(async () => {
+      const db = require('../database');
+      if (typeof db.ensureAllUsersAndVendors === 'function') {
+        await db.ensureAllUsersAndVendors();
+      }
+      if (typeof db.ensureSmartUsersAndVendor === 'function') {
+        await db.ensureSmartUsersAndVendor();
+      }
 
-    const { syncVendors, syncUserVendorMappings } = require('../syncAllToMysql');
-    const vendorResult = await syncVendors();
-    const mappingResult = await syncUserVendorMappings();
+      const { syncVendors, syncUserVendorMappings } = require('../syncAllToMysql');
+      const vendorResult = await syncVendors();
+      const mappingResult = await syncUserVendorMappings();
 
-    const { syncLast3Hours } = require('../syncLast3Hours');
-    const recent = await syncLast3Hours({ exit: false });
+      const { syncLast3Hours } = require('../syncLast3Hours');
+      const recent = await syncLast3Hours({ exit: false });
 
-    const { hydrateOnStartup } = require('./dbHydrateService');
-    const hydrate = await hydrateOnStartup();
+      const { hydrateOnStartup } = require('./dbHydrateService');
+      const hydrate = await hydrateOnStartup();
 
-    LOG.success(
-      `[DriftSync] Done (${triggerSource}) — vendors:${vendorResult?.itemsSynced ?? 0} `
-      + `mappings:${mappingResult?.itemsSynced ?? 0} recent:${JSON.stringify(recent || {})}`
-    );
+      LOG.success(
+        `[DriftSync] Done (${triggerSource}) — vendors:${vendorResult?.itemsSynced ?? 0} `
+        + `mappings:${mappingResult?.itemsSynced ?? 0} recent:${JSON.stringify(recent || {})}`
+      );
 
-    return {
-      ok: true,
-      vendors: vendorResult?.itemsSynced ?? 0,
-      mappings: mappingResult?.itemsSynced ?? 0,
-      recent,
-      hydrate,
-    };
+      return {
+        ok: true,
+        vendors: vendorResult?.itemsSynced ?? 0,
+        mappings: mappingResult?.itemsSynced ?? 0,
+        recent,
+        hydrate,
+      };
+    }, {
+      label: `drift-sync:${triggerSource}`,
+      maxAttempts: 3,
+      delayMs: 1500,
+      shouldRetry: (err) => isTransientConnectionError(err),
+    });
+    return result;
   } catch (err) {
     LOG.error(`[DriftSync] Failed (${triggerSource}):`, err.message);
     return { ok: false, error: err.message };

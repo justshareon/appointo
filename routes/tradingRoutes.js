@@ -39,6 +39,10 @@ router.use(disableCaching);
 router.use(async (req, res, next) => {
     try {
         await featureMemory.ensureFeature('trade', { mode: 'heavy' });
+        const liveCount = await stockDataService.getMysqlLiveCount().catch(() => 0);
+        if (liveCount === 0 || !(require('../database').inMemoryDb?.live_stock_data || []).length) {
+            await stockDataService.hydrateMemoryFromMysql().catch(() => 0);
+        }
     } catch (err) {
         LOG.warning('[Trading] Lazy feature load skipped:', err.message);
     }

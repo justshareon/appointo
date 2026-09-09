@@ -1337,7 +1337,8 @@ const ensureSmartUsersAndVendor = async () => {
             LOG.success(`[Smart Sync] Upserted user: ${user.id} (${user.email})`);
         }
 
-        const smartVendor = {
+        const smartVendors = [
+        {
             id: 'v_smart1',
             owner_id: 'usr_smartvendor1',
             shop_name: 'Smart Home Hub',
@@ -1359,27 +1360,93 @@ const ensureSmartUsersAndVendor = async () => {
             visibility_top_rated: false,
             visibility_list: true,
             visibility_feed: false,
-        };
+        },
+        {
+            id: 'v_smart2',
+            owner_id: 'usr_smartvendor1',
+            shop_name: 'IoT Connect Store',
+            category: 'Smart Devices',
+            location_name: 'Delhi',
+            is_active: true,
+            is_promoted: false,
+            latitude: 28.6139,
+            longitude: 77.209,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_smart: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false,
+        },
+        {
+            id: 'v_smart3',
+            owner_id: 'usr_smartvendor1',
+            shop_name: 'Home Automation Pro',
+            category: 'Smart Devices',
+            location_name: 'Bangalore',
+            is_active: true,
+            is_promoted: false,
+            latitude: 12.9716,
+            longitude: 77.5946,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_smart: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false,
+        },
+        ];
 
         const { BASE_VENDOR_INSERT_COLUMNS, vendorRowFromSeed, vendorInsertPlaceholders, vendorUpsertUpdateClause } = require('./utils/vendorFeatureColumns');
-        const row = vendorRowFromSeed(smartVendor);
         const cols = BASE_VENDOR_INSERT_COLUMNS.join(', ');
         const placeholders = vendorInsertPlaceholders();
-        const values = BASE_VENDOR_INSERT_COLUMNS.map((c) => row[c]);
 
-        await pool.query(
-            `INSERT INTO vendors (${cols}) VALUES (${placeholders})
-             ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
-            values
-        );
-        const vIdx = (inMemoryDb.vendors || []).findIndex((v) => String(v.id) === smartVendor.id);
-        if (vIdx >= 0) inMemoryDb.vendors[vIdx] = { ...inMemoryDb.vendors[vIdx], ...smartVendor };
-        else inMemoryDb.vendors.push(smartVendor);
-        LOG.success(`[Smart Sync] Upserted vendor: ${smartVendor.id} (${smartVendor.shop_name})`);
+        for (const smartVendor of smartVendors) {
+            const row = vendorRowFromSeed(smartVendor);
+            const values = BASE_VENDOR_INSERT_COLUMNS.map((c) => row[c]);
+            await pool.query(
+                `INSERT INTO vendors (${cols}) VALUES (${placeholders})
+                 ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
+                values
+            );
+            const vIdx = (inMemoryDb.vendors || []).findIndex((v) => String(v.id) === smartVendor.id);
+            if (vIdx >= 0) inMemoryDb.vendors[vIdx] = { ...inMemoryDb.vendors[vIdx], ...smartVendor };
+            else inMemoryDb.vendors.push(smartVendor);
+            LOG.success(`[Smart Sync] Upserted vendor: ${smartVendor.id} (${smartVendor.shop_name})`);
+        }
+
+        try {
+            const [mysqlSmart] = await pool.query(
+                `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`
+            );
+            if (!inMemoryDb.smartNearbyVendors) inMemoryDb.smartNearbyVendors = [];
+            (mysqlSmart || []).forEach((v) => {
+                const idx = inMemoryDb.smartNearbyVendors.findIndex((x) => String(x.id) === String(v.id));
+                const row = { ...v, features_smart: true };
+                if (idx >= 0) inMemoryDb.smartNearbyVendors[idx] = row;
+                else inMemoryDb.smartNearbyVendors.push(row);
+            });
+        } catch (_) {
+            /* optional */
+        }
 
         const mappings = [
             { user_id: 'usr_smart1', vendor_id: 'v_smart1' },
             { user_id: 'usr_smartvendor1', vendor_id: 'v_smart1' },
+            { user_id: 'usr_smartvendor1', vendor_id: 'v_smart2' },
+            { user_id: 'usr_smartvendor1', vendor_id: 'v_smart3' },
         ];
         for (const m of mappings) {
             await pool.query(
@@ -1392,7 +1459,7 @@ const ensureSmartUsersAndVendor = async () => {
                 inMemoryDb.user_vendor_mappings.push({ ...m, created_at: new Date() });
             }
         }
-        LOG.success('[Smart Sync] User/vendor mappings ensured for v_smart1');
+        LOG.success('[Smart Sync] User/vendor mappings ensured for SMART vendors');
     } catch (error) {
         LOG.error('[Smart Sync] Error syncing smart users and vendor:', error.message);
     }

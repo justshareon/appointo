@@ -5,6 +5,8 @@
 const cron = require('node-cron');
 const LOG = require('../utils/logger');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { withOperationRetry } = require('../utils/operationRetry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
 
 const RETRY_INTERVAL_MS = parseInt(process.env.MYSQL_RETRY_DELAY_MS, 10)
     || parseInt(process.env.SYNC_RETRY_DELAY_MS, 10)
@@ -33,10 +35,18 @@ async function tryReconnectMysql() {
     if (!isMysqlConfigured()) return false;
     try {
         const fcm = require('../database/featureConnectionManager');
-        await fcm.acquireForSync('core');
+        await withOperationRetry(
+            () => fcm.acquireForSync('core'),
+            {
+                label: 'mysql-reconnect',
+                maxAttempts: 3,
+                delayMs: 2000,
+                shouldRetry: (err) => isTransientConnectionError(err),
+            }
+        );
         return true;
     } catch (err) {
-        LOG.warning(`[FailedRetry] MySQL reconnect failed: ${err.message}`);
+        LOG.warning(`[FailedRetry] MySQL reconnect failed after 3 attempts: ${err.message}`);
         return false;
     }
 }
@@ -44,7 +54,12 @@ async function tryReconnectMysql() {
 async function retryFailedSyncModules() {
     const syncStatus = require('./syncStatusService');
     try {
-        await syncStatus.init();
+        await withOperationRetry(() => syncStatus.init(), {
+            label: 'failed-retry-init',
+            maxAttempts: 3,
+            delayMs: 1500,
+            shouldRetry: (err) => isTransientConnectionError(err),
+        });
     } catch (err) {
         LOG.warning(`[FailedRetry] sync status init skipped: ${err.message}`);
         return { retried: 0 };
@@ -53,9 +68,17 @@ async function retryFailedSyncModules() {
     const keys = await syncStatus.getFailedModuleKeys();
     if (!keys.length) return { retried: 0 };
 
-    const { syncAllToMysql } = require('../syncAllToMysql');
+    const { runSyncAttempt } = require('./autoSyncService');
     LOG.info(`[FailedRetry] Retrying ${keys.length} failed sync module(s): ${keys.join(', ')}`);
-    await syncAllToMysql({ triggerSource: 'auto-failed-retry', failedOnly: true });
+    await withOperationRetry(
+        () => runSyncAttempt('auto-failed-retry', { failedOnly: true }),
+        {
+            label: 'failed-sync-modules',
+            maxAttempts: 3,
+            delayMs: 2000,
+            shouldRetry: (err) => isTransientConnectionError(err),
+        }
+    );
     return { retried: keys.length };
 }
 

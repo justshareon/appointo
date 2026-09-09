@@ -4,6 +4,8 @@
  * queries_synced = SQL queries executed in last run for that module.
  */
 const featureConnectionManager = require('../database/featureConnectionManager');
+const { withOperationRetry } = require('../utils/operationRetry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
 
 const SYNC_MODULES = [
     { key: 'core_schema', label: 'Core DB schema', order: 1 },
@@ -39,17 +41,30 @@ function getBuildVersion() {
 }
 
 async function getPool() {
-    try {
-        const db = require('../database');
-        if (typeof db.getPool === 'function') {
-            const p = db.getPool();
-            if (p) return p;
+    if (!process.env.DB_HOST && !process.env.DB_NAME) {
+        try {
+            const db = require('../database');
+            if (typeof db.getPool === 'function') {
+                const p = db.getPool();
+                if (p) return p;
+            }
+        } catch {
+            /* database may not be loaded yet */
         }
-    } catch {
-        /* database may not be loaded yet */
+        return null;
     }
-    if (!process.env.DB_HOST && !process.env.DB_NAME) return null;
-    return featureConnectionManager.acquireForSync('core');
+    return withOperationRetry(async () => {
+        try {
+            const db = require('../database');
+            if (typeof db.getPool === 'function') {
+                const p = db.getPool();
+                if (p) return p;
+            }
+        } catch {
+            /* database may not be loaded yet */
+        }
+        return featureConnectionManager.acquireForSync('core');
+    }, { label: 'sync-get-pool', maxAttempts: 3, delayMs: 1500 });
 }
 
 async function addColumnIfMissing(pool, table, column, definition) {
@@ -158,12 +173,57 @@ async function isSyncComplete() {
     return total >= SYNC_MODULES.length && done >= SYNC_MODULES.length;
 }
 
-/** True when table empty, missing rows, or any module not SUCCESS. */
+/** True when table empty, missing rows, any module not SUCCESS, or backing data missing. */
+async function revalidateEmptyModules() {
+    const pool = await getPool();
+    if (!pool) return false;
+    let flagged = false;
+    const checks = [
+        {
+            key: 'smart_data',
+            sql: `SELECT COUNT(*) AS c FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`,
+        },
+        {
+            key: 'trading_data',
+            sql: 'SELECT COUNT(*) AS c FROM live_stock_data',
+        },
+        {
+            key: 'news_cache',
+            sql: 'SELECT COUNT(*) AS c FROM news_cache',
+        },
+    ];
+    for (const check of checks) {
+        try {
+            const [rows] = await pool.query(check.sql);
+            const count = Number(rows[0]?.c) || 0;
+            if (count > 0) continue;
+            const [mod] = await pool.query(
+                `SELECT status FROM sync_module_state WHERE module_key = ? LIMIT 1`,
+                [check.key]
+            );
+            if (mod[0]?.status === 'SUCCESS') {
+                await pool.query(
+                    `UPDATE sync_module_state SET status = 'PENDING', last_error = ? WHERE module_key = ?`,
+                    [`Auto-reset: ${check.key} backing table empty`, check.key]
+                );
+                flagged = true;
+            }
+        } catch {
+            /* table may not exist yet — core_schema will create it */
+        }
+    }
+    return flagged;
+}
+
 async function needsSync() {
     const pool = await getPool();
     if (!pool) return false;
     await init();
-    return !(await isSyncComplete());
+    if (await isSyncComplete()) {
+        if (await revalidateEmptyModules()) return true;
+        return false;
+    }
+    return true;
 }
 
 async function startRun(triggerSource = 'manual', { forceFull = false } = {}) {
@@ -389,10 +449,18 @@ async function runStep(moduleKey, fn, runId, { forceFull = false, resume = false
     const startOffset = resume && !forceFull ? checkpoint.version : 0;
 
     try {
-        const result = await fn({
-            startOffset,
-            onProgress: (p) => updateProgress(moduleKey, p),
-        });
+        const result = await withOperationRetry(
+            () => fn({
+                startOffset,
+                onProgress: (p) => updateProgress(moduleKey, p),
+            }),
+            {
+                label: `sync-module:${moduleKey}`,
+                maxAttempts: 3,
+                delayMs: 2000,
+                shouldRetry: (err) => isTransientConnectionError(err) || /ECONNRESET|ETIMEDOUT|timeout|socket|503|502|504/i.test(String(err?.message || err)),
+            }
+        );
         const out = normalizeResult(result);
         await markSuccess(moduleKey, {
             ...out,
@@ -402,8 +470,9 @@ async function runStep(moduleKey, fn, runId, { forceFull = false, resume = false
         return out.itemsSynced;
     } catch (err) {
         const cp = await getModuleCheckpoint(moduleKey);
+        const transientNote = isTransientConnectionError(err) ? ' (transient — retried 3×)' : '';
         await markFailed(moduleKey, {
-            error: err.message,
+            error: `${err.message}${transientNote}`,
             durationMs: Date.now() - t0,
             version: cp.version,
             queriesSynced: cp.queriesSynced,
@@ -514,6 +583,7 @@ module.exports = {
     getModuleState,
     getLatestRun,
     isSyncComplete,
+    revalidateEmptyModules,
     needsSync,
     printSummary,
 };

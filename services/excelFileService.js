@@ -736,6 +736,14 @@ class ExcelFileService {
         LOG.info(`[Excel File] Header row:`, headerRow);
 
         const stockData = [];
+        const skipStats = {
+            invalidSymbol: 0,
+            noLetters: 0,
+            noValidData: 0,
+            unrealisticChange: 0,
+            parseError: 0,
+        };
+        const skipSamples = { noValidData: [] };
 
         // Log first few data rows for debugging
         if (dataRows.length > 0) {
@@ -780,14 +788,14 @@ class ExcelFileService {
                     symbol.toLowerCase().includes('row') ||
                     symbol.toLowerCase().includes('header')) {
                     if (symbol) {
-                        LOG.warning(`[Excel File] Skipping row with invalid symbol: "${symbol}" (from column ${symbolColumn})`);
+                        skipStats.invalidSymbol += 1;
                     }
                     continue;
                 }
                 
                 // Validate symbol looks like a stock symbol (must contain letters, not just numbers)
                 if (!/[A-Z]/.test(symbol) || symbol.length < 2) {
-                    LOG.warning(`[Excel File] Skipping invalid symbol (no letters): "${symbol}"`);
+                    skipStats.noLetters += 1;
                     continue;
                 }
                 
@@ -824,13 +832,14 @@ class ExcelFileService {
                 // Validate data - skip rows with invalid data
                 // Must have at least symbol and one of: price, per_change, or volume
                 if (!lastPrice && !percentChange && !volume) {
-                    LOG.warning(`[Excel File] Skipping row with no valid data for symbol: ${symbol}`);
+                    skipStats.noValidData += 1;
+                    if (skipSamples.noValidData.length < 3) skipSamples.noValidData.push(symbol);
                     continue;
                 }
                 
                 // Skip if per_change is unrealistic (>10000% or <-100%)
                 if (percentChange !== null && (percentChange > 10000 || percentChange < -100)) {
-                    LOG.warning(`[Excel File] Skipping row with unrealistic per_change (${percentChange}%) for symbol: ${symbol}`);
+                    skipStats.unrealisticChange += 1;
                     continue;
                 }
 
@@ -908,10 +917,26 @@ class ExcelFileService {
                 
                 stockData.push(stock);
             } catch (error) {
-                LOG.warning(`[Excel File] Error parsing row: ${row.join(', ')} - ${error.message}`);
-                LOG.warning(`[Excel File] Row data:`, row);
+                skipStats.parseError += 1;
+                if (skipStats.parseError <= 3) {
+                    LOG.warning(`[Excel File] Error parsing row: ${error.message}`);
+                }
                 continue;
             }
+        }
+
+        if (skipStats.noValidData > 0) {
+            const sample = skipSamples.noValidData.join(', ');
+            LOG.warning(
+                `[Excel File] Skipped ${skipStats.noValidData} rows with no valid price/change/volume`
+                + (sample ? ` (e.g. ${sample}${skipStats.noValidData > 3 ? '…' : ''})` : '')
+            );
+        }
+        if (skipStats.invalidSymbol > 0 || skipStats.noLetters > 0 || skipStats.unrealisticChange > 0 || skipStats.parseError > 0) {
+            LOG.info(
+                `[Excel File] Skip summary — invalid symbol: ${skipStats.invalidSymbol}, `
+                + `no letters: ${skipStats.noLetters}, bad change: ${skipStats.unrealisticChange}, parse errors: ${skipStats.parseError}`
+            );
         }
 
         LOG.info(`[Excel File] Transformed ${stockData.length} rows to stock data`);

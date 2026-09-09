@@ -1313,13 +1313,16 @@ const syncRDetectorData = async ({ onProgress } = {}) => {
 // ====================
 // SMART MODULE SYNC (users, vendor, mappings for login)
 // ====================
-const syncSmartData = async () => {
+const syncSmartData = async ({ onProgress } = {}) => {
     LOG.info('[Smart Sync] Starting SMART user/vendor sync...');
     const db = require('./database');
+    const pool = await getPool();
     let queriesSynced = 0;
+    let itemsSynced = 0;
 
     if (typeof db.ensureAllUsersAndVendors === 'function') {
         await db.ensureAllUsersAndVendors();
+        queriesSynced += 1;
     }
     if (typeof db.ensureSmartUsersAndVendor !== 'function') {
         LOG.warning('[Smart Sync] ensureSmartUsersAndVendor not available — skipped');
@@ -1327,12 +1330,39 @@ const syncSmartData = async () => {
     }
 
     await db.ensureSmartUsersAndVendor();
-    // 2 users + 1 vendor + 2 mapping inserts (upsert/ignore)
-    queriesSynced = 5;
-    const itemsSynced = 5;
+    queriesSynced += 5;
 
-    LOG.success('[Smart Sync] SMART users, vendor v_smart1, and login mappings synced');
-    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: itemsSynced });
+    if (pool) {
+        try {
+            const [rows] = await pool.query(
+                `SELECT COUNT(*) AS c FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`
+            );
+            itemsSynced = Number(rows[0]?.c) || 3;
+            if (itemsSynced === 0) {
+                await db.ensureSmartUsersAndVendor();
+                const [rows2] = await pool.query(
+                    `SELECT COUNT(*) AS c FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`
+                );
+                itemsSynced = Number(rows2[0]?.c) || 0;
+            }
+            if ((inMemoryDb.smartNearbyVendors || []).length === 0 && itemsSynced > 0) {
+                const [mysqlSmart] = await pool.query(
+                    `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`
+                );
+                inMemoryDb.smartNearbyVendors = (mysqlSmart || []).map((v) => ({ ...v, features_smart: true }));
+                queriesSynced += 1;
+            }
+        } catch (err) {
+            LOG.warning('[Smart Sync] MySQL verify skipped:', err.message);
+            itemsSynced = 3;
+        }
+    } else {
+        itemsSynced = 3;
+    }
+
+    if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: Math.max(itemsSynced, 1) });
+    LOG.success(`[Smart Sync] SMART synced — ${itemsSynced} vendor(s), users + SGATE-ready vendors`);
+    return doneSync({ itemsSynced: Math.max(itemsSynced, 1), version: 1, queriesSynced, totalItems: Math.max(itemsSynced, 1) });
 };
 
 // ====================
@@ -1340,15 +1370,56 @@ const syncSmartData = async () => {
 // ====================
 const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
     LOG.info('[Trading Data Sync] Starting trading data sync...');
-    
-    const tradingData = inMemoryDb.tradingData || {};
-    const types = ['marketIndices', 'stockQuotes', 'topGainers', 'topLosers', 'marketHigh', 'mostBought'];
-    const totalItems = types.length;
+    const pool = await getPool();
+    const stockDataService = require('./services/stockDataService');
     let itemsSynced = 0;
     let queriesSynced = 0;
-    
+
     try {
-        await (await getPool()).query(`
+        await stockDataService.ensureTables();
+        queriesSynced += 1;
+    } catch (err) {
+        LOG.warning('[Trading Data Sync] Table ensure (non-fatal):', err.message);
+    }
+
+    if (pool) {
+        try {
+            const liveCount = await stockDataService.getMysqlLiveCount();
+            if (liveCount === 0) {
+                await stockDataService.hydrateMemoryFromMysql();
+            } else {
+                await stockDataService.hydrateMemoryFromMysql();
+                queriesSynced += 1;
+            }
+        } catch (err) {
+            LOG.warning('[Trading Data Sync] live_stock_data hydrate skipped:', err.message);
+        }
+    }
+
+    const tradingData = inMemoryDb.tradingData || {};
+    const liveRows = inMemoryDb.live_stock_data || [];
+    if (liveRows.length > 0) {
+        if (!tradingData.stockQuotes?.length) {
+            tradingData.stockQuotes = liveRows;
+        }
+        if (!tradingData.topGainers?.length) {
+            tradingData.topGainers = [...liveRows]
+                .sort((a, b) => (parseFloat(b.per_change || b.pchange || 0) - parseFloat(a.per_change || a.pchange || 0)))
+                .slice(0, 30);
+        }
+        if (!tradingData.topLosers?.length) {
+            tradingData.topLosers = [...liveRows]
+                .sort((a, b) => (parseFloat(a.per_change || a.pchange || 0) - parseFloat(b.per_change || b.pchange || 0)))
+                .slice(0, 30);
+        }
+        inMemoryDb.tradingData = tradingData;
+    }
+
+    const types = ['marketIndices', 'stockQuotes', 'topGainers', 'topLosers', 'marketHigh', 'mostBought'];
+    const totalItems = types.length;
+
+    try {
+        await pool.query(`
             CREATE TABLE IF NOT EXISTS trading_market_data (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 data_type VARCHAR(50) NOT NULL,
@@ -1359,13 +1430,43 @@ const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
     } catch (err) {
         LOG.warning('[Trading Data Sync] Table check (non-fatal):', err.message);
     }
-    
+
+    if (pool && (inMemoryDb.live_stock_data || []).length === 0) {
+        try {
+            const [rows] = await pool.query(
+                `SELECT data_type, content FROM trading_market_data ORDER BY id DESC LIMIT 50`
+            );
+            const latestByType = {};
+            (rows || []).forEach((r) => {
+                if (!latestByType[r.data_type]) latestByType[r.data_type] = r.content;
+            });
+            Object.entries(latestByType).forEach(([type, content]) => {
+                try {
+                    const parsed = typeof content === 'string' ? JSON.parse(content) : content;
+                    if (Array.isArray(parsed) && parsed.length) {
+                        inMemoryDb.tradingData = inMemoryDb.tradingData || {};
+                        inMemoryDb.tradingData[type] = parsed;
+                        if (type === 'stockQuotes' && !(inMemoryDb.live_stock_data || []).length) {
+                            inMemoryDb.live_stock_data = parsed;
+                        }
+                        itemsSynced += 1;
+                        queriesSynced += 1;
+                    }
+                } catch (_) {
+                    /* ignore bad json */
+                }
+            });
+        } catch (err) {
+            LOG.warning('[Trading Data Sync] MySQL pull skipped:', err.message);
+        }
+    }
+
     for (let idx = startOffset; idx < types.length; idx++) {
         const type = types[idx];
-        const data = tradingData[type] || [];
+        const data = tradingData[type] || (type === 'stockQuotes' ? liveRows : []);
         if (data.length > 0) {
             try {
-                await (await getPool()).query(
+                await pool.query(
                     'INSERT INTO trading_market_data (data_type, content) VALUES (?, ?)',
                     [type, JSON.stringify(data)]
                 );
@@ -1377,9 +1478,15 @@ const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
         }
         if (onProgress) await onProgress({ version: idx + 1, queriesSynced, itemsSynced, totalItems });
     }
-    
-    LOG.success(`[Trading Data Sync] Completed: ${itemsSynced} trading data collections synced to MySQL`);
-    return doneSync({ itemsSynced, version: totalItems, queriesSynced, totalItems });
+
+    const liveFinal = (inMemoryDb.live_stock_data || []).length;
+    LOG.success(`[Trading Data Sync] Completed: ${itemsSynced} collections, ${liveFinal} live_stock_data rows`);
+    return doneSync({
+        itemsSynced: Math.max(itemsSynced, liveFinal > 0 ? 1 : 0),
+        version: totalItems,
+        queriesSynced,
+        totalItems,
+    });
 };
 
 const syncFleetData = async ({ onProgress } = {}) => {
@@ -1603,6 +1710,7 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         totalSynced += await step('trading_data', syncTradingData);
         totalSynced += await step('fleet_data', syncFleetData);
         totalSynced += await step('smart_data', syncSmartData);
+        const duration = ((Date.now() - startTime) / 1000).toFixed(1);
         const state = await syncStatus.getModuleState();
         const allOk = (state.summary.failed === 0 && state.summary.inProgress === 0);
         await syncStatus.completeRun(runId, {

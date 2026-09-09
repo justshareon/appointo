@@ -157,6 +157,9 @@ class StockDataService {
                 }
             }
             
+            // Add pe_ratio, week_52_low, week_52_high to live_stock_data (legacy tables miss these)
+            await this.ensureLiveStockColumns(pool);
+
             // Add pe_ratio, week_52_low, week_52_high columns if they don't exist (migration)
             try {
                 await pool.query(`
@@ -201,6 +204,58 @@ class StockDataService {
         } catch (error) {
             LOG.error('[Stock Data] Error initializing tables:', error.message);
             throw error;
+        }
+    }
+
+    /**
+     * Ensure live_stock_data has all columns (MySQL 5.7 / Render — no ADD IF NOT EXISTS on live table).
+     */
+    async ensureLiveStockColumns(connOrPool) {
+        const runner = connOrPool?.query ? connOrPool : db.getPool();
+        if (!runner?.query) return false;
+
+        const query = runner.query.bind(runner);
+        const columnDefs = [
+            ['data_type', "ENUM('gainers', 'decliners', 'actives', 'data') DEFAULT 'data' AFTER market_cap"],
+            ['pe_ratio', 'DECIMAL(10, 2) NULL AFTER market_cap'],
+            ['week_52_low', 'DECIMAL(10, 2) NULL AFTER pe_ratio'],
+            ['week_52_high', 'DECIMAL(10, 2) NULL AFTER week_52_low'],
+            ['additional_data', 'JSON NULL AFTER week_52_high'],
+        ];
+
+        for (const [col, def] of columnDefs) {
+            try {
+                const [rows] = await query(
+                    `SELECT 1 AS ok FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'live_stock_data' AND COLUMN_NAME = ?
+                     LIMIT 1`,
+                    [col]
+                );
+                if (!rows?.length) {
+                    await query(`ALTER TABLE live_stock_data ADD COLUMN ${col} ${def}`);
+                    LOG.info(`[Stock Data] Added live_stock_data.${col}`);
+                }
+            } catch (err) {
+                if (!String(err.message || '').includes('Duplicate column')) {
+                    LOG.warning(`[Stock Data] Column ${col}:`, err.message);
+                }
+            }
+        }
+        return true;
+    }
+
+    /** Keys already saved this calendar date + hour (symbol|data_type). */
+    async getUploadHourKeys(connOrPool) {
+        const runner = connOrPool?.query ? connOrPool : db.getPool();
+        if (!runner?.query) return new Set();
+        try {
+            const [rows] = await runner.query(`
+                SELECT symbol, data_type FROM live_stock_data
+                WHERE DATE(last_updated) = CURDATE() AND HOUR(last_updated) = HOUR(NOW())
+            `);
+            return new Set((rows || []).map((r) => `${String(r.symbol).toUpperCase()}|${r.data_type || 'data'}`));
+        } catch (_) {
+            return new Set();
         }
     }
 

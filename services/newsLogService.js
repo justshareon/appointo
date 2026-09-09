@@ -2,13 +2,16 @@
  * News pipeline diagnostic log for super-admin APS dashboard.
  * Records slice/refresh/RSS/location/config events in a ring buffer + disk tail.
  */
-const fs = require('fs');
 const path = require('path');
-const { sortLatestFirst, compareLatestFirst } = require('../utils/sortLatest');
+const { createDiagnosticLogStore } = require('../utils/diagnosticLogStore');
 
 const MAX_ENTRIES = 300;
 const LOG_FILE = path.join(__dirname, '..', 'news-diagnostics.log');
-const memory = [];
+const store = createDiagnosticLogStore({
+  logFile: LOG_FILE,
+  maxEntries: MAX_ENTRIES,
+  dateFields: ['at'],
+});
 
 function normalizeLevel(level) {
   const l = String(level || 'L3').toUpperCase();
@@ -16,28 +19,7 @@ function normalizeLevel(level) {
   return 'L3';
 }
 
-function hydrateFromDisk() {
-  if (memory.length) return;
-  try {
-    if (!fs.existsSync(LOG_FILE)) return;
-    const lines = fs.readFileSync(LOG_FILE, 'utf8').split(/\r?\n/).filter(Boolean);
-    const entries = [];
-    for (const line of lines.slice(-MAX_ENTRIES)) {
-      try {
-        entries.push(JSON.parse(line));
-      } catch (_) {
-        /* skip bad line */
-      }
-    }
-    entries.sort((a, b) => compareLatestFirst(a, b, { dateFields: ['at'] }));
-    memory.push(...entries);
-  } catch (_) {
-    /* ignore */
-  }
-}
-
 function recordNewsLog(payload = {}) {
-  hydrateFromDisk();
   const level = normalizeLevel(payload.level);
   const entry = {
     id: `nl_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -48,22 +30,15 @@ function recordNewsLog(payload = {}) {
     at: new Date().toISOString(),
   };
 
-  memory.unshift(entry);
-  if (memory.length > MAX_ENTRIES) memory.length = MAX_ENTRIES;
-
-  try {
-    fs.appendFileSync(LOG_FILE, `${JSON.stringify(entry)}\n`);
-  } catch (_) {
-    /* ignore disk failures */
-  }
-
-  return entry;
+  return store.append(entry);
 }
 
 function getNewsLogs(limit = 50) {
-  hydrateFromDisk();
-  return sortLatestFirst([...memory], { dateFields: ['at'] })
-    .slice(0, Math.min(limit, MAX_ENTRIES));
+  return store.getEntries(limit);
+}
+
+function purgeNewsLogs() {
+  return store.purgeExpired();
 }
 
 function parseSources(raw) {
@@ -199,37 +174,46 @@ async function probeNewsPipeline() {
   }
 
   if (settings.enable_news) {
-    try {
-      const slice = await newsCacheService.getSlice({
-        scope: 'All',
-        category: 'All',
-        limit: 15,
-        locationCtx: {
-          city: settings.news_default_city || 'Mumbai',
-          locality: settings.news_default_locality || '',
-          language: settings.gnews_language || 'hi',
-        },
-        settingsOverride: settings,
-        refresh: true,
-      });
-      const count = countSliceItems(slice);
-      recordNewsLog({
-        level: count ? 'L3' : 'L1',
-        stage: 'slice',
-        message: `Slice probe: ${count} item(s) after ${slice.fetchAttempts || 1} attempt(s)`,
-        meta: {
-          count,
-          attempts: slice.fetchAttempts || 1,
-          scope: slice.scope,
-          category: slice.category,
-        },
-      });
-    } catch (err) {
-      recordNewsLog({
-        level: 'L1',
-        stage: 'slice',
-        message: `Slice probe failed: ${err.message}`,
-      });
+    const locationCtx = {
+      city: settings.news_default_city || 'Delhi',
+      town: settings.news_default_locality || '',
+      locality: settings.news_default_locality || '',
+      state: settings.news_default_state || '',
+      language: settings.gnews_language || 'hi',
+    };
+    const GEO_PROBE_SCOPES = ['local', 'town', 'city', 'state', 'All'];
+    for (const probeScope of GEO_PROBE_SCOPES) {
+      try {
+        const slice = await newsCacheService.getSlice({
+          scope: probeScope,
+          category: 'All',
+          limit: 15,
+          locationCtx,
+          settingsOverride: settings,
+          refresh: true,
+        });
+        const count = countSliceItems(slice);
+        recordNewsLog({
+          level: count ? 'L3' : 'L2',
+          stage: 'probe_scope',
+          message: `Probe ${probeScope}: ${count} item(s) · attempts=${slice.fetchAttempts || 1}`,
+          meta: {
+            count,
+            attempts: slice.fetchAttempts || 1,
+            scope: probeScope,
+            category: 'All',
+            city: locationCtx.city,
+            locality: locationCtx.locality,
+          },
+        });
+      } catch (err) {
+        recordNewsLog({
+          level: 'L1',
+          stage: 'probe_scope',
+          message: `Probe ${probeScope} failed: ${err.message}`,
+          meta: { scope: probeScope },
+        });
+      }
     }
   }
 
@@ -241,8 +225,9 @@ async function probeNewsPipeline() {
 }
 
 function newsLogsToIssues(logs = []) {
-  return logs
+  return [...logs]
     .filter((l) => l.level === 'L1' || l.level === 'L2')
+    .sort((a, b) => new Date(b.at || 0) - new Date(a.at || 0))
     .slice(0, 20)
     .map((l) => ({
       severity: l.level === 'L1' ? 'critical' : 'warning',
@@ -265,6 +250,7 @@ function getLevelSummary(logs = []) {
 module.exports = {
   recordNewsLog,
   getNewsLogs,
+  purgeNewsLogs,
   buildNewsSnapshot,
   probeNewsPipeline,
   newsLogsToIssues,

@@ -117,10 +117,25 @@ async function hydrateOnStartup() {
             LOG.warning(`[Hydrate] Trust score pull skipped: ${err.message}`);
         }
 
+        let smartVendorRows = 0;
+        try {
+            if (pool && (!mem.smartNearbyVendors || mem.smartNearbyVendors.length === 0)) {
+                const [rows] = await pool.query(
+                    `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE LIMIT 50`
+                );
+                if (rows?.length) {
+                    mem.smartNearbyVendors = rows.map((v) => ({ ...v, features_smart: true }));
+                    smartVendorRows = rows.length;
+                }
+            }
+        } catch (err) {
+            LOG.warning(`[Hydrate] SMART vendors pull skipped: ${err.message}`);
+        }
+
         LOG.info(
-            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}, stocks +${stockRows}, news +${newsRows}, trust +${trustRows}`
+            `[Hydrate] Startup complete — users +${usersAdded}, vendors +${vendorsAdded}, recent +${recentHydrated}, stocks +${stockRows}, news +${newsRows}, trust +${trustRows}, smart +${smartVendorRows}`
         );
-        return { ok: true, usersAdded, vendorsAdded, recentHydrated, stockRows, newsRows, trustRows };
+        return { ok: true, usersAdded, vendorsAdded, recentHydrated, stockRows, newsRows, trustRows, smartVendorRows };
     })().catch((err) => {
         hydratePromise = null;
         LOG.error('[Hydrate] Startup failed:', err.message);

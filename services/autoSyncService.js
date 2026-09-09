@@ -11,6 +11,8 @@ const { isMysqlConfigured } = require('../utils/resolveDbType');
 const { hydrateOnStartup } = require('./dbHydrateService');
 const { runDriftSync } = require('./driftSyncService');
 const { startFailedRetryCron, RETRY_INTERVAL_MS: FAILED_RETRY_MS } = require('./failedRetryService');
+const { withOperationRetry } = require('../utils/operationRetry');
+const { isTransientConnectionError } = require('../utils/mysqlTransientErrors');
 
 let syncSchedule = null;
 let driftSchedule = null;
@@ -26,18 +28,28 @@ const DRIFT_INTERVAL_MINUTES = parseInt(process.env.SYNC_DRIFT_INTERVAL_MINUTES,
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function runSyncAttempt(triggerSource, { forceFull = false } = {}) {
+const SYNC_RETRY_OPTS = {
+    maxAttempts: 3,
+    delayMs: 2000,
+    shouldRetry: (err) => isTransientConnectionError(err)
+        || /ECONNRESET|ETIMEDOUT|timeout|socket|503|502|504|temporarily unavailable/i.test(String(err?.message || err)),
+};
+
+async function runSyncAttempt(triggerSource, { forceFull = false, failedOnly = false } = {}) {
     if (isSyncRunning) {
         LOG.warning('[AutoSync] Sync already in progress');
         return { ok: false, skipped: true, reason: 'in_progress' };
     }
     isSyncRunning = true;
     try {
-        const result = await syncAllToMysql({ triggerSource, forceFull });
+        const result = await withOperationRetry(
+            () => syncAllToMysql({ triggerSource, forceFull, failedOnly }),
+            { ...SYNC_RETRY_OPTS, label: failedOnly ? 'sync-retry-failed' : 'sync-all-to-mysql' }
+        );
         return { ok: true, result };
     } catch (err) {
-        LOG.error('[AutoSync] Sync attempt failed:', err.message);
-        return { ok: false, error: err.message };
+        LOG.error('[AutoSync] Sync attempt failed after retries:', err.message);
+        return { ok: false, error: err.message, transient: isTransientConnectionError(err) };
     } finally {
         isSyncRunning = false;
     }
@@ -56,7 +68,7 @@ async function syncUntilComplete(triggerSource = 'startup') {
 
     completionLoopRunning = true;
     try {
-        await syncStatus.init();
+        await withOperationRetry(() => syncStatus.init(), { ...SYNC_RETRY_OPTS, label: 'sync-status-init' });
 
         if (!(await syncStatus.needsSync())) {
             LOG.info('[AutoSync] All modules already synced — hydrating from MySQL');
@@ -186,14 +198,21 @@ const stopAutoSync = () => {
 const syncOnStartup = (enabled = true) => {
     if (!enabled || !isMysqlConfigured()) return;
 
-    LOG.info('[AutoSync] Checking sync_module_state on startup...');
+    LOG.info('[AutoSync] Checking sync_module_state on startup (3× retry on transient MySQL errors)...');
     hydrateOnStartup().catch((err) => {
         LOG.warning('[AutoSync] Initial hydrate skipped:', err.message);
     });
-    syncUntilComplete('startup').catch((err) => {
-        LOG.error('[AutoSync] Startup sync loop error:', err.message);
+    withOperationRetry(
+        () => syncUntilComplete('startup'),
+        { ...SYNC_RETRY_OPTS, label: 'startup-sync-until-complete', delayMs: 3000 }
+    ).catch((err) => {
+        LOG.error('[AutoSync] Startup sync loop error after retries:', err.message);
     });
 };
+
+async function retryFailedModules(triggerSource = 'super-admin-retry') {
+    return runSyncAttempt(triggerSource, { failedOnly: true });
+}
 
 module.exports = {
     startAutoSync,
@@ -202,5 +221,6 @@ module.exports = {
     syncOnStartup,
     syncUntilComplete,
     runSyncAttempt,
+    retryFailedModules,
     isSyncRunning: () => isSyncRunning || completionLoopRunning,
 };

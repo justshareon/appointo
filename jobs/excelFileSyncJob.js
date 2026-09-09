@@ -16,7 +16,25 @@ const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
 const tradingExcelLog = require('../utils/tradingExcelLog');
 const LOG = require('../utils/logger');
+const { withOperationRetry } = require('../utils/operationRetry');
 require('../loadEnv');
+
+/** node-cron v3 removed nextDates() — never throw from status helpers. */
+function safeCronNextExecution(cronJob) {
+    if (!cronJob) return 'Not scheduled';
+    try {
+        if (typeof cronJob.nextDates === 'function') {
+            const raw = cronJob.nextDates(1);
+            const date = Array.isArray(raw) ? raw[0] : raw;
+            if (date instanceof Date && !Number.isNaN(date.getTime())) {
+                return date.toISOString();
+            }
+        }
+    } catch (_) {
+        /* ignore — v3 ScheduledTask has no nextDates */
+    }
+    return 'Scheduled (cron active)';
+}
 
 let googleApi = null;
 const getGoogle = () => {
@@ -183,10 +201,7 @@ class ExcelFileSyncJob {
 
             LOG.success('[Excel File Sync] ✅ Cron job scheduled successfully');
             this.initialized = true;
-            
-            // Log next execution time
-            const nextDates = this.cronJob.nextDates();
-            LOG.info(`[Excel File Sync] Next execution: ${nextDates instanceof Date ? nextDates.toISOString() : 'Unknown'}`);
+            LOG.info(`[Excel File Sync] Next execution: ${safeCronNextExecution(this.cronJob)}`);
 
         } catch (cronError) {
             LOG.error('[Excel File Sync] Failed to schedule cron job:', cronError.message);
@@ -612,7 +627,10 @@ class ExcelFileSyncJob {
         const t0 = Date.now();
         try {
             tradingExcelLog.push('info', 'preview_file', `Reading workbook (${label})`, { filePath });
-            const sheetsData = await excelFileService.readAllSheetsByType(filePath);
+            const sheetsData = await withOperationRetry(
+                () => excelFileService.readAllSheetsByType(filePath),
+                { label: 'excel preview read', maxAttempts: 3 }
+            );
             const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
             if (!cleaned.length) {
                 throw tradingExcelLog.attachError(
@@ -703,7 +721,8 @@ class ExcelFileSyncJob {
     }
 
     /**
-     * Persist cleaned rows to in-memory + MySQL (archive → truncate → insert).
+     * Persist cleaned rows to in-memory + MySQL.
+     * Admin merge: no truncate, skip same date+hour duplicates, partial row saves (no full rollback).
      */
     async persistCleanedData(cleanedData, { fromSync = false } = {}) {
         if (this.isRunning && !fromSync) {
@@ -719,45 +738,96 @@ class ExcelFileSyncJob {
         }
 
         const pool = require('../database').getPool();
+        const mergeMode = !fromSync;
+
         tradingExcelLog.push('info', 'persist_start', `Saving ${rows.length} rows`, {
             storage: pool ? 'mysql' : 'memory_only',
             fromSync,
+            mergeMode,
         });
+
         if (!pool) {
             await stockDataService.archiveCurrentData();
-            await stockDataService.truncateLiveData();
+            if (!mergeMode) await stockDataService.truncateLiveData();
             const inserted = await stockDataService.insertLiveData(rows);
             this.lastSyncTime = new Date();
             this.lastSyncStatus = 'success';
             this.pendingPreview = null;
             tradingExcelLog.push('info', 'persist_memory', `Saved ${inserted} rows to in-memory only`);
-            return { inserted, storage: 'memory' };
+            return { inserted, storage: 'memory', skippedDuplicates: 0, failed: 0, partial: false };
         }
 
+        await stockDataService.initializeTables();
         const connection = await pool.getConnection();
-        await connection.beginTransaction();
+        let archivedCount = 0;
+
         try {
-            const archivedCount = await this.archiveWithConnection(connection);
-            await connection.query('TRUNCATE TABLE live_stock_data');
-            const insertedCount = await this.insertWithConnection(connection, rows);
-            await connection.commit();
-            stockDataService.mirrorLiveDataToMemory(rows);
+            await stockDataService.ensureLiveStockColumns(connection);
+
+            if (!mergeMode) {
+                await connection.beginTransaction();
+                archivedCount = await this.archiveWithConnection(connection);
+                await connection.query('TRUNCATE TABLE live_stock_data');
+            }
+
+            const stats = await this.upsertRowsResilient(connection, rows, { mergeMode });
+
+            if (!mergeMode) {
+                await connection.commit();
+            }
+
+            await stockDataService.hydrateMemoryFromMysql();
+            const mysqlCount = await stockDataService.getMysqlLiveCount();
+
             this.lastSyncTime = new Date();
-            this.lastSyncStatus = 'success';
-            this.lastSyncError = null;
+            this.lastSyncStatus = stats.failed > 0 ? 'partial' : 'success';
+            this.lastSyncError = stats.failed > 0 ? `${stats.failed} row(s) failed` : null;
             this.pendingPreview = null;
+
             try {
                 await featureEngineeringService.generateFeaturesForML();
             } catch (featureError) {
                 LOG.warning('[Excel File Sync] Feature generation failed (non-critical):', featureError.message);
             }
-            tradingExcelLog.push('info', 'persist_mysql', `MySQL save OK: ${insertedCount} inserted, ${archivedCount} archived`);
-            return { inserted: insertedCount, archived: archivedCount, storage: 'mysql' };
+
+            const msg = `MySQL save: ${stats.inserted} saved, ${stats.skippedDuplicates} skipped (same hour), ${stats.failed} failed, ${mysqlCount} total in DB`;
+            tradingExcelLog.push(
+                stats.failed > 0 && stats.inserted > 0 ? 'warn' : 'info',
+                stats.failed > 0 && stats.inserted === 0 ? 'persist_mysql_failed' : 'persist_mysql',
+                msg,
+                stats
+            );
+
+            if (stats.inserted === 0 && stats.skippedDuplicates === 0 && stats.failed > 0) {
+                const err = new Error(stats.errors?.[0]?.error || 'All rows failed to save');
+                err.tradingExcelStep = 'persist_mysql_failed';
+                throw err;
+            }
+
+            return {
+                inserted: stats.inserted,
+                updated: stats.updated,
+                skippedDuplicates: stats.skippedDuplicates,
+                failed: stats.failed,
+                archived: archivedCount,
+                storage: 'mysql',
+                mysqlCount,
+                partial: stats.failed > 0,
+                errors: stats.errors,
+            };
         } catch (error) {
-            await connection.rollback();
+            if (!mergeMode) {
+                try {
+                    await connection.rollback();
+                } catch (_) {
+                    /* ignore */
+                }
+            }
             this.lastSyncStatus = 'error';
             this.lastSyncError = error.message;
-            tradingExcelLog.attachError(error, 'persist_mysql_failed', { rowCount: rows.length });
+            if (!error.tradingExcelStep) {
+                tradingExcelLog.attachError(error, 'persist_mysql_failed', { rowCount: rows.length });
+            }
             throw error;
         } finally {
             connection.release();
@@ -809,11 +879,10 @@ class ExcelFileSyncJob {
                 }
             }
 
-            const sheetsData = await this.readStockData({
-                openExcel: true,
-                restartExcel,
-                waitMs,
-            });
+            const sheetsData = await withOperationRetry(
+                () => this.readStockData({ openExcel: true, restartExcel, waitMs }),
+                { label: 'excel readStockData', maxAttempts: 3 }
+            );
 
             const cleanedData = this.cleanStockRows(this.flattenSheetsData(sheetsData));
 
@@ -868,42 +937,84 @@ class ExcelFileSyncJob {
         }
     }
 
-    async insertWithConnection(connection, stockData) {
-        try {
-            const values = stockData.map(stock => [
-                stock.symbol, stock.company_name, stock.last_price,
-                stock.pchange, stock.per_change, stock.volume,
-                stock.market_cap, stock.pe_ratio,
-                stock.week_52_low, stock.week_52_high,
-                stock.data_type, stock.additional_data
-            ]);
+    async upsertRowsResilient(connection, stockData, { mergeMode = true } = {}) {
+        await stockDataService.ensureLiveStockColumns(connection);
+        const hourKeys = await stockDataService.getUploadHourKeys(connection);
+        const stats = { inserted: 0, updated: 0, skippedDuplicates: 0, failed: 0, errors: [] };
 
-            const placeholders = values.map(() => '(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').join(', ');
-            const [result] = await connection.query(`
-                INSERT INTO live_stock_data 
-                (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
-                VALUES ${placeholders}
-                ON DUPLICATE KEY UPDATE
-                    company_name = VALUES(company_name),
-                    last_price = VALUES(last_price),
-                    pchange = VALUES(pchange),
-                    per_change = VALUES(per_change),
-                    volume = VALUES(volume),
-                    market_cap = VALUES(market_cap),
-                    pe_ratio = VALUES(pe_ratio),
-                    week_52_low = VALUES(week_52_low),
-                    week_52_high = VALUES(week_52_high),
-                    data_type = VALUES(data_type),
-                    additional_data = VALUES(additional_data),
-                    last_updated = CURRENT_TIMESTAMP
-            `, values.flat());
-            
-            LOG.info(`[Excel File Sync] Insert result: ${result.affectedRows} rows affected`);
-            return result.affectedRows || stockData.length;
-        } catch (error) {
-            LOG.error('[Excel File Sync] Insert error:', error.message);
-            throw error;
+        const insertSql = `
+            INSERT INTO live_stock_data
+            (symbol, company_name, last_price, pchange, per_change, volume, market_cap, pe_ratio, week_52_low, week_52_high, data_type, additional_data)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE
+                company_name = VALUES(company_name),
+                last_price = VALUES(last_price),
+                pchange = VALUES(pchange),
+                per_change = VALUES(per_change),
+                volume = VALUES(volume),
+                market_cap = VALUES(market_cap),
+                pe_ratio = VALUES(pe_ratio),
+                week_52_low = VALUES(week_52_low),
+                week_52_high = VALUES(week_52_high),
+                data_type = VALUES(data_type),
+                additional_data = VALUES(additional_data),
+                last_updated = CURRENT_TIMESTAMP
+        `;
+
+        for (const stock of stockData) {
+            const symbol = String(stock.symbol || '').toUpperCase().substring(0, 20);
+            const dataType = (stock.data_type || 'data').toString().substring(0, 50);
+            const key = `${symbol}|${dataType}`;
+
+            if (mergeMode && hourKeys.has(key)) {
+                stats.skippedDuplicates += 1;
+                continue;
+            }
+
+            const additional = stock.additional_data != null
+                ? (typeof stock.additional_data === 'string' ? stock.additional_data : JSON.stringify(stock.additional_data))
+                : null;
+
+            try {
+                const [result] = await connection.query(insertSql, [
+                    symbol,
+                    (stock.company_name || symbol).toString().substring(0, 255),
+                    stock.last_price || 0,
+                    stock.pchange || 0,
+                    stock.per_change || 0,
+                    stock.volume || 0,
+                    stock.market_cap || null,
+                    stock.pe_ratio || null,
+                    stock.week_52_low || null,
+                    stock.week_52_high || null,
+                    dataType,
+                    additional,
+                ]);
+                if (result.affectedRows === 2) stats.updated += 1;
+                else stats.inserted += 1;
+                hourKeys.add(key);
+            } catch (rowErr) {
+                stats.failed += 1;
+                if (stats.errors.length < 8) {
+                    stats.errors.push({ symbol, error: rowErr.message });
+                }
+                LOG.warning(`[Excel File Sync] Row save skipped (${symbol}): ${rowErr.message}`);
+            }
         }
+
+        LOG.info(
+            `[Excel File Sync] Upsert done — saved: ${stats.inserted}, updated: ${stats.updated}, `
+            + `skipped (same hour): ${stats.skippedDuplicates}, failed: ${stats.failed}`
+        );
+        return stats;
+    }
+
+    async insertWithConnection(connection, stockData) {
+        const stats = await this.upsertRowsResilient(connection, stockData, { mergeMode: false });
+        if (stats.failed > 0) {
+            throw new Error(stats.errors?.[0]?.error || `${stats.failed} rows failed`);
+        }
+        return stats.inserted + stats.updated;
     }
 
     /**
@@ -926,6 +1037,12 @@ class ExcelFileSyncJob {
     }
 
     getStatus() {
+        let nextExecution = 'Not scheduled';
+        try {
+            nextExecution = safeCronNextExecution(this.cronJob);
+        } catch (_) {
+            nextExecution = 'Unknown';
+        }
         return {
             isRunning: this.isRunning,
             initialized: this.initialized,
@@ -940,7 +1057,7 @@ class ExcelFileSyncJob {
             excelFilePath: this.getLocalExcelPath(),
             excelLoadWaitMs: excelLauncherService.getWaitMs(),
             excelOpenEnabled: excelLauncherService.isEnabled(),
-            nextExecution: this.cronJob ? (this.cronJob.nextDates() instanceof Date ? this.cronJob.nextDates().toISOString() : 'Unknown') : 'Not scheduled'
+            nextExecution,
         };
     }
 }

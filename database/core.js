@@ -11,7 +11,7 @@ const LOG_FILE = path.join(__dirname, '..', 'error.log');
 const appendErrorLog = (msg, detail) => {
     const timestamp = new Date().toISOString();
     const logEntry = `[${timestamp}] ERROR: ${msg} | DETAIL: ${detail}\n`;
-    fs.appendFile(LOG_FILE, (err) => {
+    fs.appendFile(LOG_FILE, logEntry, (err) => {
         if (err) console.error("Failed to write to error log file:", err);
     });
 };

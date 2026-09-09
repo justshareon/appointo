@@ -1,33 +1,17 @@
 /**
  * In-memory + file-backed client UI error log for super-admin APS dashboard.
  */
-const fs = require('fs');
 const path = require('path');
-const { sortLatestFirst, compareLatestFirst } = require('../utils/sortLatest');
+const { sortLatestFirst } = require('../utils/sortLatest');
+const { createDiagnosticLogStore } = require('../utils/diagnosticLogStore');
 
 const MAX_ENTRIES = 200;
 const LOG_FILE = path.join(__dirname, '..', 'client-errors.log');
-const memory = [];
-
-function hydrateFromDisk() {
-  if (memory.length) return;
-  try {
-    if (!fs.existsSync(LOG_FILE)) return;
-    const lines = fs.readFileSync(LOG_FILE, 'utf8').split(/\r?\n/).filter(Boolean);
-    const entries = [];
-    for (const line of lines.slice(-MAX_ENTRIES)) {
-      try {
-        entries.push(JSON.parse(line));
-      } catch (_) {
-        /* skip bad line */
-      }
-    }
-    entries.sort((a, b) => compareLatestFirst(a, b, { dateFields: ['reportedAt'] }));
-    memory.push(...entries);
-  } catch (_) {
-    /* ignore */
-  }
-}
+const store = createDiagnosticLogStore({
+  logFile: LOG_FILE,
+  maxEntries: MAX_ENTRIES,
+  dateFields: ['reportedAt'],
+});
 
 function normalizeLevel(level) {
   const l = String(level || 'L1').toUpperCase();
@@ -36,7 +20,6 @@ function normalizeLevel(level) {
 }
 
 function recordClientError(payload = {}) {
-  hydrateFromDisk();
   const level = normalizeLevel(payload.level);
   const entry = {
     id: `ce_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
@@ -53,22 +36,15 @@ function recordClientError(payload = {}) {
     reportedAt: new Date().toISOString(),
   };
 
-  memory.unshift(entry);
-  if (memory.length > MAX_ENTRIES) memory.length = MAX_ENTRIES;
-
-  try {
-    fs.appendFileSync(LOG_FILE, `${JSON.stringify(entry)}\n`);
-  } catch (_) {
-    /* ignore disk failures */
-  }
-
-  return entry;
+  return store.append(entry);
 }
 
 function getClientErrors(limit = 50) {
-  hydrateFromDisk();
-  return sortLatestFirst([...memory], { dateFields: ['reportedAt'] })
-    .slice(0, Math.min(limit, MAX_ENTRIES));
+  return store.getEntries(limit);
+}
+
+function purgeClientErrors() {
+  return store.purgeExpired();
 }
 
 function levelToSeverity(level) {
@@ -87,7 +63,9 @@ function clientErrorsToIssues(errors = []) {
       severity: levelToSeverity(level),
       level,
       kind: err.kind || (level === 'L1' ? 'crash' : 'feature'),
-      module: level === 'L1' ? 'ui' : err.kind === 'empty_data' ? 'news' : 'ui',
+      module: level === 'L1' ? 'ui' : err.kind === 'empty_data'
+        ? (/offer/i.test(String(err.screen || '')) ? 'offers' : 'news')
+        : 'ui',
       message: `[${level}] ${err.screen}: ${err.message}`,
       source: 'client',
       screen: err.screen,
@@ -110,6 +88,7 @@ function getLevelSummary(errors = []) {
 module.exports = {
   recordClientError,
   getClientErrors,
+  purgeClientErrors,
   clientErrorsToIssues,
   getLevelSummary,
   normalizeLevel,

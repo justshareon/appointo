@@ -14,6 +14,21 @@ router.use(async (req, res, next) => {
     if (typeof db.ensureSmartUsersAndVendor === 'function') {
       await db.ensureSmartUsersAndVendor();
     }
+    const mem = db.inMemoryDb;
+    if (mem && (!mem.smartNearbyVendors || mem.smartNearbyVendors.length === 0)) {
+      const pool = typeof db.getPool === 'function' ? db.getPool() : null;
+      if (pool) {
+        const [rows] = await pool.query(
+          `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE LIMIT 50`
+        );
+        if (rows?.length) {
+          mem.smartNearbyVendors = rows.map((v) => ({ ...v, features_smart: true }));
+        }
+      }
+    }
+    if (mem && (!mem.smartNearbyVendors || mem.smartNearbyVendors.length === 0)) {
+      nearbyMem.acquire();
+    }
   } catch (err) {
     LOG.warning('[Smart] ensureSmartUsersAndVendor:', err.message);
   }
