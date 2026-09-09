@@ -297,6 +297,32 @@ router.get('/scan-results/today', authenticateToken, async (req, res) => {
   }
 });
 
+/**
+ * GET /api/r-detector/scan-settings — persisted rule toggles (MySQL / in-memory)
+ */
+router.get('/scan-settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = await rDetectorService.getScanSettings(req.user.id);
+    res.json({ success: true, settings });
+  } catch (err) {
+    LOG.error('[R-Detector] scan settings get', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/r-detector/scan-settings
+ */
+router.post('/scan-settings', authenticateToken, async (req, res) => {
+  try {
+    const settings = await rDetectorService.saveScanSettings(req.user.id, req.body?.settings || req.body || {});
+    res.json({ success: true, settings });
+  } catch (err) {
+    LOG.error('[R-Detector] scan settings save', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/incidents/:id/vote', authenticateToken, async (req, res) => {
   try {
     const vote = req.body.vote || 'upvote';

@@ -20,6 +20,41 @@ const EXTENSIONS = ['.js', '.json', '.node'];
 const errors = [];
 const warnings = [];
 
+/** Dev-only patch scripts — not loaded on Render; skip static require scan. */
+const SKIP_SCAN_BASENAMES = /^patch-.*\.js$/;
+
+/**
+ * Files under services/ must use ../utils/* — not ./sortLatest (Render crash pattern).
+ */
+const BAD_SERVICE_REQUIRES = [
+    { pattern: /require\s*\(\s*['"]\.\/sortLatest['"]\s*\)/, fix: "require('../utils/sortLatest')" },
+    { pattern: /require\s*\(\s*['"]\.\/recentSlice['"]\s*\)/, fix: "require('../utils/recentSlice')" },
+    { pattern: /require\s*\(\s*['"]\.\/layeredRead['"]\s*\)/, fix: "require('../utils/layeredRead')" },
+    { pattern: /require\s*\(\s*['"]\.\/logger['"]\s*\)/, fix: "require('../utils/logger')" },
+];
+
+/** Lazy routes + services that must require() cleanly on Render first request. */
+const BOOT_MODULES = [
+    'utils/sortLatest.js',
+    'utils/recentSlice.js',
+    'utils/layeredRead.js',
+    'services/newsLogService.js',
+    'services/clientErrorService.js',
+    'services/newsCacheService.js',
+    'services/systemHealthService.js',
+    'services/smartService.js',
+    'services/rDetectorService.js',
+    'services/marketplaceSliceService.js',
+    'routes/newsSliceRoutes.js',
+    'routes/smartRoutes.js',
+    'routes/rDetectorRoutes.js',
+    'routes/tradingRoutes.js',
+    'routes/marketplaceRoutes.js',
+    'routes/dealsRoutes.js',
+    'routes/surakshaRoutes.js',
+    'routes/trustScoreRoutes.js',
+];
+
 function rel(file) {
     return path.relative(BACKEND_ROOT, file).split(path.sep).join('/');
 }
@@ -99,8 +134,26 @@ function scanRequires() {
     const files = walkJsFiles(BACKEND_ROOT);
 
     for (const file of files) {
-        if (path.basename(file) === 'verifyDeploy.js') continue;
+        const base = path.basename(file);
+        if (base === 'verifyDeploy.js') continue;
+        if (SKIP_SCAN_BASENAMES.test(base)) continue;
+
         const source = fs.readFileSync(file, 'utf8');
+        const fileRel = rel(file);
+
+        if (fileRel.startsWith('services/') || fileRel.startsWith('services\\')) {
+            for (const rule of BAD_SERVICE_REQUIRES) {
+                if (rule.pattern.test(source)) {
+                    addError(
+                        'BAD_SERVICE_PATH',
+                        `Use ${rule.fix} — ./ paths crash on Render (see newsLogService fix)`,
+                        file,
+                        rule.pattern.toString()
+                    );
+                }
+            }
+        }
+
         LOCAL_REQUIRE.lastIndex = 0;
         let match;
         while ((match = LOCAL_REQUIRE.exec(source)) !== null) {
@@ -139,6 +192,27 @@ function scanRequires() {
     }
 }
 
+function bootTestModules() {
+    process.env.DB_TYPE = process.env.DB_TYPE || 'inmemory';
+    for (const mod of BOOT_MODULES) {
+        const abs = path.join(BACKEND_ROOT, mod);
+        if (!fs.existsSync(abs)) {
+            addError('BOOT_MISSING', `Boot module file missing: ${mod}`, abs, mod);
+            continue;
+        }
+        try {
+            delete require.cache[abs];
+            require(abs);
+        } catch (err) {
+            if (err.code === 'MODULE_NOT_FOUND') {
+                addError('BOOT_FAIL', err.message, abs, mod);
+            } else {
+                addWarning('BOOT_RUNTIME', `${mod}: ${err.message}`, abs, err.code || '');
+            }
+        }
+    }
+}
+
 function printReport() {
     console.log('\n=== Deploy verify (Render/Linux simulation) ===\n');
     console.log('Why local Windows + remote MySQL still miss these:');
@@ -148,7 +222,7 @@ function printReport() {
     console.log(`Backend root (simulated Render root): ${BACKEND_ROOT}\n`);
 
     if (errors.length === 0 && warnings.length === 0) {
-        console.log('OK — no deploy blockers found.\n');
+        console.log(`OK — no deploy blockers (${BOOT_MODULES.length} boot modules checked).\n`);
         return 0;
     }
 
@@ -192,5 +266,7 @@ try {
         addWarning('BOOT_RUNTIME', `database.js runtime: ${err.message}`, 'database.js', err.code);
     }
 }
+
+bootTestModules();
 
 process.exitCode = printReport();

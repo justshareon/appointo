@@ -138,6 +138,8 @@ let inMemoryDb = {
         { id: 'usr_realvendor1', name: 'Realestate Vendor 1', email: 'realvendor1@test.com', mobile: '8000000010', role: 'vendor', location_name: 'Bangalore' },
         { id: 'usr_cyber1', name: 'Cyber User 1', email: 'cyber1@test.com', mobile: '8000000011', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_cybervendor1', name: 'Cyber Vendor 1', email: 'cybervendor1@test.com', mobile: '8000000012', role: 'vendor', location_name: 'Mumbai' },
+        { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
+        { id: 'usr_smartvendor1', name: 'Smart Vendor 1', email: 'smartvendor1@test.com', mobile: '8000000022', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_trust1', name: 'Trust User 1', email: 'trust1@test.com', mobile: '8000000101', role: 'user', location_name: 'Mumbai' },
         { id: 'usr_trustvendor1', name: 'Trust Vendor 1', email: 'trustvendor1@test.com', mobile: '8000000102', role: 'vendor', location_name: 'Mumbai' },
         { id: 'usr_rdetectoruser1', name: 'Ravi Deshmukh', email: 'rdetectoruser1@test.com', mobile: '8000000037', role: 'user', location_name: 'Pune' },
@@ -431,6 +433,30 @@ let inMemoryDb = {
             visibility_feed: false
         },
         {
+            id: 'v_smart1',
+            owner_id: 'usr_smartvendor1',
+            shop_name: 'Smart Home Hub',
+            category: 'Smart Devices',
+            location_name: 'Mumbai',
+            is_active: true,
+            is_promoted: false,
+            latitude: 19.076,
+            longitude: 72.877,
+            appointmentCount: 0,
+            google_link: '',
+            instagram_handle: '',
+            facebook_link: '',
+            features_products: false,
+            features_payments: false,
+            features_appointments: false,
+            features_queue: false,
+            features_matchmaking: false,
+            features_smart: true,
+            visibility_top_rated: false,
+            visibility_list: true,
+            visibility_feed: false
+        },
+        {
             id: 'v_trust1',
             owner_id: 'usr_trustvendor1',
             shop_name: 'Trust Score Services',
@@ -666,6 +692,8 @@ let inMemoryDb = {
         { id: 23, user_id: 'usr_fleetuser3', vendor_id: 'v_fleet1' },
         { id: 15, user_id: 'usr_realuser1', vendor_id: 'v_realestate1' },
         { id: 16, user_id: 'usr_cyber1', vendor_id: 'v_cyber1' },
+        { id: 25, user_id: 'usr_smart1', vendor_id: 'v_smart1' },
+        { id: 26, user_id: 'usr_smartvendor1', vendor_id: 'v_smart1' },
         { id: 17, user_id: 'usr_match_u1', vendor_id: 'v_match_super' },
         { id: 18, user_id: 'usr_match_u2', vendor_id: 'v_match_super' },
         { id: 19, user_id: 'usr_trust1', vendor_id: 'v_trust1' },
@@ -687,6 +715,7 @@ let inMemoryDb = {
         enable_r_detector: true,
         enable_realestate: true,
         enable_cyber: true,
+        enable_smart: true,
         enable_trust_score: true,
         theme_position: 'auto',
         enable_news: true,
@@ -1169,6 +1198,10 @@ const ensureAllUsersAndVendors = async () => {
 
             seedUsersVendorsDone = true;
             LOG.success('[Database Init] Seed check complete (missing rows only; existing MySQL data kept)');
+
+            if (typeof ensureSmartUsersAndVendor === 'function') {
+                await ensureSmartUsersAndVendor();
+            }
         } catch (error) {
             seedUsersVendorsPromise = null;
             LOG.error('[All Users/Vendors Sync] Error syncing all data:', error.message);
@@ -1259,13 +1292,27 @@ const ensureCyberUsersAndVendor = async () => {
 };
 
 /**
- * Ensure SMART module user and vendor exist in MySQL
+ * Ensure SMART module user and vendor exist in MySQL (+ vendor mapping for login).
+ * Safe to call on every /users or /smart request — upserts missing rows.
  */
 const ensureSmartUsersAndVendor = async () => {
-    if (!getPool()) return;
+    const pool = (await ensureWritePool()) || getPool();
+    if (!pool) {
+        if (inMemoryDb.users) {
+            const smartUsers = [
+                { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
+                { id: 'usr_smartvendor1', name: 'Smart Vendor 1', email: 'smartvendor1@test.com', mobile: '8000000022', role: 'vendor', location_name: 'Mumbai' },
+            ];
+            smartUsers.forEach((u) => {
+                if (!inMemoryDb.users.find((x) => String(x.id) === u.id)) inMemoryDb.users.push(u);
+            });
+        }
+        return;
+    }
 
     try {
         await ensureVendorFeatureColumns();
+        await ensureUserVendorMappingTable();
 
         const smartUsers = [
             { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
@@ -1273,15 +1320,21 @@ const ensureSmartUsersAndVendor = async () => {
         ];
 
         for (const user of smartUsers) {
-            const [existing] = await getPool().query('SELECT id FROM users WHERE id = ?', [user.id]);
-            if (existing.length === 0) {
-                await getPool().query(
-                    `INSERT IGNORE INTO users (id, name, email, mobile, role, location_name, created_at)
-                     VALUES (?, ?, ?, ?, ?, ?, NOW())`,
-                    [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
-                );
-                LOG.success(`[Smart Sync] Created user: ${user.id} (${user.name})`);
-            }
+            await pool.query(
+                `INSERT INTO users (id, name, email, mobile, role, location_name, created_at)
+                 VALUES (?, ?, ?, ?, ?, ?, NOW())
+                 ON DUPLICATE KEY UPDATE
+                   name = VALUES(name),
+                   email = VALUES(email),
+                   mobile = VALUES(mobile),
+                   role = VALUES(role),
+                   location_name = VALUES(location_name)`,
+                [user.id, user.name, user.email, user.mobile, user.role, user.location_name]
+            );
+            const memIdx = (inMemoryDb.users || []).findIndex((x) => String(x.id) === user.id);
+            if (memIdx >= 0) inMemoryDb.users[memIdx] = { ...inMemoryDb.users[memIdx], ...user };
+            else inMemoryDb.users.push(user);
+            LOG.success(`[Smart Sync] Upserted user: ${user.id} (${user.email})`);
         }
 
         const smartVendor = {
@@ -1314,12 +1367,32 @@ const ensureSmartUsersAndVendor = async () => {
         const placeholders = vendorInsertPlaceholders();
         const values = BASE_VENDOR_INSERT_COLUMNS.map((c) => row[c]);
 
-        await getPool().query(
+        await pool.query(
             `INSERT INTO vendors (${cols}) VALUES (${placeholders})
              ON DUPLICATE KEY UPDATE ${vendorUpsertUpdateClause()}`,
             values
         );
+        const vIdx = (inMemoryDb.vendors || []).findIndex((v) => String(v.id) === smartVendor.id);
+        if (vIdx >= 0) inMemoryDb.vendors[vIdx] = { ...inMemoryDb.vendors[vIdx], ...smartVendor };
+        else inMemoryDb.vendors.push(smartVendor);
         LOG.success(`[Smart Sync] Upserted vendor: ${smartVendor.id} (${smartVendor.shop_name})`);
+
+        const mappings = [
+            { user_id: 'usr_smart1', vendor_id: 'v_smart1' },
+            { user_id: 'usr_smartvendor1', vendor_id: 'v_smart1' },
+        ];
+        for (const m of mappings) {
+            await pool.query(
+                `INSERT IGNORE INTO user_vendor_mappings (user_id, vendor_id, created_at) VALUES (?, ?, NOW())`,
+                [m.user_id, m.vendor_id]
+            );
+            if (!inMemoryDb.user_vendor_mappings) inMemoryDb.user_vendor_mappings = [];
+            const key = `${m.user_id}::${m.vendor_id}`;
+            if (!inMemoryDb.user_vendor_mappings.some((x) => `${x.user_id}::${x.vendor_id}` === key)) {
+                inMemoryDb.user_vendor_mappings.push({ ...m, created_at: new Date() });
+            }
+        }
+        LOG.success('[Smart Sync] User/vendor mappings ensured for v_smart1');
     } catch (error) {
         LOG.error('[Smart Sync] Error syncing smart users and vendor:', error.message);
     }

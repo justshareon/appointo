@@ -32,6 +32,9 @@ async function runDriftSync(triggerSource = 'auto') {
     if (typeof db.ensureAllUsersAndVendors === 'function') {
       await db.ensureAllUsersAndVendors();
     }
+    if (typeof db.ensureSmartUsersAndVendor === 'function') {
+      await db.ensureSmartUsersAndVendor();
+    }
 
     const { syncVendors, syncUserVendorMappings } = require('../syncAllToMysql');
     const vendorResult = await syncVendors();

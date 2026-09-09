@@ -10,6 +10,7 @@ const STORE_KEYS = [
   'smartNearbyDeviceControls',
   'smartNearbyPolicies',
   'smartNearbyVoiceStreams',
+  'smartNearbyGateSessions',
 ];
 
 const IDLE_MS = parseInt(
@@ -48,6 +49,7 @@ function loadSeed() {
   mem.smartNearbyDeviceControls = [];
   mem.smartNearbyPolicies = [];
   mem.smartNearbyVoiceStreams = [];
+  mem.smartNearbyGateSessions = [];
 }
 
 function scheduleDispose() {
@@ -145,6 +147,7 @@ function status() {
           deviceControls: mem.smartNearbyDeviceControls?.length || 0,
           policies: mem.smartNearbyPolicies?.length || 0,
           voiceStreams: mem.smartNearbyVoiceStreams?.length || 0,
+          gateSessions: mem.smartNearbyGateSessions?.length || 0,
         }
       : null,
   };

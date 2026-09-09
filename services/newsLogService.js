@@ -4,7 +4,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { sortLatestFirst, compareLatestFirst } = require('./sortLatest');
+const { sortLatestFirst, compareLatestFirst } = require('../utils/sortLatest');
 
 const MAX_ENTRIES = 300;
 const LOG_FILE = path.join(__dirname, '..', 'news-diagnostics.log');

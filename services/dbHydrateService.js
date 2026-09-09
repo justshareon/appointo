@@ -28,6 +28,9 @@ async function hydrateOnStartup() {
         if (typeof db.ensureAllUsersAndVendors === 'function') {
             await db.ensureAllUsersAndVendors();
         }
+        if (typeof db.ensureSmartUsersAndVendor === 'function') {
+            await db.ensureSmartUsersAndVendor();
+        }
 
         const mem = db.inMemoryDb;
         const pool = typeof db.getPool === 'function' ? db.getPool() : null;

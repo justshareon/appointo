@@ -26,6 +26,7 @@ const SYNC_MODULES = [
     { key: 'r_detector_data', label: 'R-Detector commute & scans', order: 18 },
     { key: 'trading_data', label: 'Trading data', order: 19 },
     { key: 'fleet_data', label: 'Fleet data', order: 20 },
+    { key: 'smart_data', label: 'SMART users & vendor (login)', order: 21 },
 ];
 
 let tablesReady = false;

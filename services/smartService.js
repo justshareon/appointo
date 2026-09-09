@@ -39,6 +39,22 @@ function seedBeacons(vendor) {
       rssi: -52,
       connectable: true,
     },
+    {
+      id: `beacon-ir-${vendor.id}`,
+      kind: 'infrared',
+      label: `${name}_IR_Gate`,
+      vendorName: vendor.shop_name,
+      distanceM: 5,
+      signalStrength: 78,
+    },
+    {
+      id: `beacon-nfc-${vendor.id}`,
+      kind: 'nfc',
+      label: `${name}_NFC_Gate`,
+      vendorName: vendor.shop_name,
+      distanceCm: 12,
+      protocol: 'NDEF',
+    },
   ];
 }
 
@@ -186,6 +202,79 @@ function getVendorVoiceStream(vendorId, { since = null, limit = 80 } = {}) {
   return sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
 }
 
+const MAX_GATE_SESSIONS = 200;
+
+function recordGateConnection(payload = {}) {
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyGateSessions)) store.smartNearbyGateSessions = [];
+  const entry = {
+    id: `sgate_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    userId: payload.userId || null,
+    vendorId: payload.vendorId ? String(payload.vendorId) : null,
+    channel: payload.channel || 'wifi',
+    networkLabel: payload.networkLabel || '',
+    userSide: payload.userSide || { role: 'user', status: 'connected' },
+    vendorSide: payload.vendorSide || { role: 'vendor', status: 'connected' },
+    inRange: true,
+    connectedAt: payload.connectedAt || new Date().toISOString(),
+    lastHeartbeatAt: new Date().toISOString(),
+    disconnectedAt: null,
+    disconnectReason: null,
+  };
+  store.smartNearbyGateSessions.unshift(entry);
+  if (store.smartNearbyGateSessions.length > MAX_GATE_SESSIONS) {
+    store.smartNearbyGateSessions.length = MAX_GATE_SESSIONS;
+  }
+  return entry;
+}
+
+function updateGateHeartbeat(sessionId, { inRange = true, match = null } = {}) {
+  const store = mem();
+  const rows = store.smartNearbyGateSessions || [];
+  const idx = rows.findIndex((r) => r.id === sessionId && !r.disconnectedAt);
+  if (idx < 0) return null;
+  const row = rows[idx];
+  row.lastHeartbeatAt = new Date().toISOString();
+  row.inRange = !!inRange;
+  if (match?.label) row.networkLabel = match.label;
+  if (!inRange) {
+    row.disconnectedAt = new Date().toISOString();
+    row.disconnectReason = 'out_of_range';
+    row.userSide = { ...row.userSide, status: 'disconnected' };
+    row.vendorSide = { ...row.vendorSide, status: 'idle', gateOpen: false };
+  }
+  rows[idx] = row;
+  return row;
+}
+
+function endGateConnection(sessionId, reason = 'manual') {
+  const store = mem();
+  const rows = store.smartNearbyGateSessions || [];
+  const idx = rows.findIndex((r) => r.id === sessionId && !r.disconnectedAt);
+  if (idx < 0) return null;
+  const row = rows[idx];
+  row.disconnectedAt = new Date().toISOString();
+  row.disconnectReason = reason;
+  row.inRange = false;
+  row.userSide = { ...row.userSide, status: 'disconnected' };
+  row.vendorSide = { ...row.vendorSide, status: 'idle', gateOpen: false };
+  rows[idx] = row;
+  return row;
+}
+
+function getUserActiveGate(userId) {
+  return (mem().smartNearbyGateSessions || []).find(
+    (r) => r.userId === userId && !r.disconnectedAt && r.inRange
+  ) || null;
+}
+
+function getVendorGateSessions(vendorId, { activeOnly = false, limit = 40 } = {}) {
+  const key = String(vendorId);
+  let rows = (mem().smartNearbyGateSessions || []).filter((r) => r.vendorId === key);
+  if (activeOnly) rows = rows.filter((r) => !r.disconnectedAt && r.inRange);
+  return sortLatestFirst(rows, { dateFields: ['connectedAt', 'lastHeartbeatAt'] }).slice(0, limit);
+}
+
 module.exports = {
   listNearbyVendors,
   getVendorPolicy,
@@ -200,5 +289,10 @@ module.exports = {
   appendVoiceTranscript,
   getVendorVoiceStream,
   seedBeacons,
+  recordGateConnection,
+  updateGateHeartbeat,
+  endGateConnection,
+  getUserActiveGate,
+  getVendorGateSessions,
 };
 

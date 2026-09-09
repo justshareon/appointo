@@ -550,6 +550,71 @@ const rDetectorService = {
     const trust = Math.min(100, 40 + scans * 4);
     return { user_id: userId, scans, trust_score: trust, level: trust >= 80 ? 'Road Scout' : 'Contributor' };
   },
+
+  async ensureScanSettingsTable(pool) {
+    if (!pool) return;
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS r_detector_scan_settings (
+        user_id VARCHAR(64) PRIMARY KEY,
+        settings_json JSON NOT NULL,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      )
+    `);
+  },
+
+  defaultScanSettings() {
+    return {
+      primaryRuleId: 1,
+      enabledRules: { 1: false, 2: false, 3: false, 4: false, 5: false },
+      autoLogSmallBumps: false,
+      cameraEnabled: false,
+      primaryCameraRuleId: 1,
+      enabledCameraRules: { 1: false, 2: false, 3: false, 4: false, 5: false },
+    };
+  },
+
+  async getScanSettings(userId) {
+    const uid = String(userId);
+    const pool = await getPool();
+    if (!pool) {
+      if (!db.inMemoryDb.r_detector_scan_settings) db.inMemoryDb.r_detector_scan_settings = {};
+      return db.inMemoryDb.r_detector_scan_settings[uid] || this.defaultScanSettings();
+    }
+    await this.ensureScanSettingsTable(pool);
+    const [rows] = await pool.query(
+      'SELECT settings_json FROM r_detector_scan_settings WHERE user_id = ? LIMIT 1',
+      [uid]
+    );
+    if (!rows?.[0]?.settings_json) return this.defaultScanSettings();
+    try {
+      const parsed = typeof rows[0].settings_json === 'string'
+        ? JSON.parse(rows[0].settings_json)
+        : rows[0].settings_json;
+      return { ...this.defaultScanSettings(), ...(parsed || {}) };
+    } catch (_) {
+      return this.defaultScanSettings();
+    }
+  },
+
+  async saveScanSettings(userId, settings = {}) {
+    const uid = String(userId);
+    const current = await this.getScanSettings(uid);
+    const next = { ...current, ...(settings || {}), updatedAt: new Date().toISOString() };
+    const pool = await getPool();
+    if (!pool) {
+      if (!db.inMemoryDb.r_detector_scan_settings) db.inMemoryDb.r_detector_scan_settings = {};
+      db.inMemoryDb.r_detector_scan_settings[uid] = next;
+      return next;
+    }
+    await this.ensureScanSettingsTable(pool);
+    await pool.query(
+      `INSERT INTO r_detector_scan_settings (user_id, settings_json)
+       VALUES (?, ?)
+       ON DUPLICATE KEY UPDATE settings_json = VALUES(settings_json)`,
+      [uid, JSON.stringify(next)]
+    );
+    return next;
+  },
 };
 
 function haversineKm(lat1, lon1, lat2, lon2) {

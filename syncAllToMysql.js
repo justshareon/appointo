@@ -1311,6 +1311,31 @@ const syncRDetectorData = async ({ onProgress } = {}) => {
 };
 
 // ====================
+// SMART MODULE SYNC (users, vendor, mappings for login)
+// ====================
+const syncSmartData = async () => {
+    LOG.info('[Smart Sync] Starting SMART user/vendor sync...');
+    const db = require('./database');
+    let queriesSynced = 0;
+
+    if (typeof db.ensureAllUsersAndVendors === 'function') {
+        await db.ensureAllUsersAndVendors();
+    }
+    if (typeof db.ensureSmartUsersAndVendor !== 'function') {
+        LOG.warning('[Smart Sync] ensureSmartUsersAndVendor not available — skipped');
+        return doneSync({ itemsSynced: 0, version: 1, queriesSynced: 0, totalItems: 0 });
+    }
+
+    await db.ensureSmartUsersAndVendor();
+    // 2 users + 1 vendor + 2 mapping inserts (upsert/ignore)
+    queriesSynced = 5;
+    const itemsSynced = 5;
+
+    LOG.success('[Smart Sync] SMART users, vendor v_smart1, and login mappings synced');
+    return doneSync({ itemsSynced, version: 1, queriesSynced, totalItems: itemsSynced });
+};
+
+// ====================
 // TRADING DATA SYNC
 // ====================
 const syncTradingData = async ({ startOffset = 0, onProgress } = {}) => {
@@ -1577,8 +1602,7 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         totalSynced += await step('r_detector_data', syncRDetectorData);
         totalSynced += await step('trading_data', syncTradingData);
         totalSynced += await step('fleet_data', syncFleetData);
-        
-        const duration = ((Date.now() - startTime) / 1000).toFixed(2);
+        totalSynced += await step('smart_data', syncSmartData);
         const state = await syncStatus.getModuleState();
         const allOk = (state.summary.failed === 0 && state.summary.inProgress === 0);
         await syncStatus.completeRun(runId, {
@@ -1647,5 +1671,6 @@ module.exports = {
     syncNewsCache,
     syncRDetectorData,
     syncTradingData,
-    syncFleetData
+    syncFleetData,
+    syncSmartData,
 };

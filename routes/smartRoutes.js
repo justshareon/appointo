@@ -3,10 +3,22 @@
  */
 const express = require('express');
 const router = express.Router();
+const db = require('../database');
 const { authenticateToken } = require('../middleware/auth');
 const nearby = require('../services/smartService');
 const nearbyMem = require('../services/smartMemoryStore');
 const LOG = require('../utils/logger');
+
+router.use(async (req, res, next) => {
+  try {
+    if (typeof db.ensureSmartUsersAndVendor === 'function') {
+      await db.ensureSmartUsersAndVendor();
+    }
+  } catch (err) {
+    LOG.warning('[Smart] ensureSmartUsersAndVendor:', err.message);
+  }
+  next();
+});
 
 router.use(nearbyMem.middleware());
 
@@ -153,6 +165,89 @@ router.get('/vendor/:vendorId/voice-stream', authenticateToken, async (req, res)
       limit: parseInt(req.query.limit, 10) || 80,
     });
     res.json({ success: true, lines, count: lines.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** SGATE — proximity WiFi / IR / NFC vendor gate connections */
+router.post('/gate/connect', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId, channel, networkLabel, userSide, vendorSide, connectedAt } = req.body || {};
+    if (!vendorId || !channel) {
+      return res.status(400).json({ success: false, error: 'vendorId and channel required' });
+    }
+    const userId = req.user?.id || req.userId;
+    const existing = nearby.getUserActiveGate(userId);
+    if (existing) {
+      return res.status(409).json({ success: false, error: 'Already connected on SGATE', session: existing });
+    }
+    const session = nearby.recordGateConnection({
+      userId,
+      vendorId,
+      channel,
+      networkLabel,
+      userSide,
+      vendorSide,
+      connectedAt,
+    });
+    res.json({ success: true, session });
+  } catch (err) {
+    LOG.error('[Smart] gate connect error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/gate/heartbeat', authenticateToken, async (req, res) => {
+  try {
+    const { sessionId, inRange, match } = req.body || {};
+    if (!sessionId) {
+      return res.status(400).json({ success: false, error: 'sessionId required' });
+    }
+    const session = nearby.updateGateHeartbeat(sessionId, { inRange, match });
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Gate session not found' });
+    }
+    res.json({ success: true, session });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/gate/disconnect', authenticateToken, async (req, res) => {
+  try {
+    const { sessionId, reason } = req.body || {};
+    if (!sessionId) {
+      return res.status(400).json({ success: false, error: 'sessionId required' });
+    }
+    const session = nearby.endGateConnection(sessionId, reason || 'manual');
+    if (!session) {
+      return res.status(404).json({ success: false, error: 'Gate session not found' });
+    }
+    res.json({ success: true, session });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/gate/status', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const session = nearby.getUserActiveGate(userId);
+    res.json({ success: true, session, connected: !!session });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/vendor/:vendorId/gate-sessions', authenticateToken, async (req, res) => {
+  try {
+    const activeOnly = req.query.active === '1' || req.query.active === 'true';
+    const sessions = nearby.getVendorGateSessions(req.params.vendorId, {
+      activeOnly,
+      limit: parseInt(req.query.limit, 10) || 40,
+    });
+    res.json({ success: true, sessions, count: sessions.length });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

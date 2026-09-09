@@ -8,6 +8,12 @@ const LOG = require('../utils/logger');
 // Get all users (for admin/testing purposes)
 router.get('/users', async (req, res) => {
     try {
+        if (typeof db.ensureAllUsersAndVendors === 'function') {
+            await db.ensureAllUsersAndVendors();
+        }
+        if (typeof db.ensureSmartUsersAndVendor === 'function') {
+            await db.ensureSmartUsersAndVendor();
+        }
         const users = await db.getUsers();
         LOG.info(`[API /users] Returning ${users.length} users`);
         res.json(users);
