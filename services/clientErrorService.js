@@ -36,7 +36,32 @@ function recordClientError(payload = {}) {
     reportedAt: new Date().toISOString(),
   };
 
-  return store.append(entry);
+  const saved = store.append(entry);
+
+  try {
+    const { recordModuleDiagnostic } = require('./moduleDiagnosticLogService');
+    const { resolveModuleFromScreen } = require('./moduleDiagnosticsService');
+    const module =
+      payload.module
+      || resolveModuleFromScreen(payload.screen || payload.route)
+      || (payload.kind === 'empty_data' ? 'unknown' : null);
+    if (module) {
+      recordModuleDiagnostic({
+        module,
+        level: entry.level,
+        kind: entry.kind,
+        source: 'client_error',
+        screen: entry.screen,
+        message: entry.message,
+        platform: entry.platform,
+        userId: entry.userId,
+      });
+    }
+  } catch (_) {
+    /* non-blocking */
+  }
+
+  return saved;
 }
 
 function getClientErrors(limit = 50) {
@@ -54,24 +79,40 @@ function levelToSeverity(level) {
 }
 
 function clientErrorsToIssues(errors = []) {
+  let resolveModuleFromScreen = null;
+  try {
+    resolveModuleFromScreen = require('./moduleDiagnosticsService').resolveModuleFromScreen;
+  } catch (_) {
+    /* ignore */
+  }
+
   return [...errors]
     .sort((a, b) => new Date(b.reportedAt || 0) - new Date(a.reportedAt || 0))
     .slice(0, 40)
     .map((err) => {
     const level = normalizeLevel(err.level);
+    const mapped =
+      resolveModuleFromScreen?.(err.screen || err.route)
+      || (err.kind === 'empty_data' && /offer/i.test(String(err.screen || '')) ? 'offers' : null)
+      || (err.kind === 'empty_data' && /news/i.test(String(err.screen || '')) ? 'news' : null);
+    const module = mapped || (level === 'L1' ? 'ui' : 'ui');
     return {
       severity: levelToSeverity(level),
       level,
       kind: err.kind || (level === 'L1' ? 'crash' : 'feature'),
-      module: level === 'L1' ? 'ui' : err.kind === 'empty_data'
-        ? (/offer/i.test(String(err.screen || '')) ? 'offers' : 'news')
-        : 'ui',
+      module,
       message: `[${level}] ${err.screen}: ${err.message}`,
       source: 'client',
       screen: err.screen,
+      route: err.route,
       platform: err.platform,
       reportedAt: err.reportedAt,
       userId: err.userId,
+      userRole: err.userRole,
+      clientErrorId: err.id,
+      stack: err.stack || null,
+      componentStack: err.componentStack || null,
+      detailMessage: err.message,
     };
   });
 }

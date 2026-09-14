@@ -15,6 +15,7 @@ const MODULE_CHECKS = [
   { key: 'trading', label: 'Trading', tables: ['live_stock_data'] },
   { key: 'shopping', label: 'Shopping', tables: ['products', 'orders'] },
   { key: 'news', label: 'News cache', tables: ['news_cache'] },
+  { key: 'offers', label: 'Offers / deals', tables: ['deals'] },
 ];
 
 async function safeCount(pool, table) {
@@ -176,12 +177,24 @@ function purgeDiagnosticLogs() {
   } catch (_) {
     /* ignore */
   }
+  let featureScanKept = 0;
+  try {
+    featureScanKept = require('./featureScanLogService').purgeFeatureScanLogs();
+  } catch (_) {
+    /* ignore */
+  }
+  let moduleDiagKept = 0;
+  try {
+    moduleDiagKept = require('./moduleDiagnosticLogService').purgeModuleDiagnostics();
+  } catch (_) {
+    /* ignore */
+  }
   try {
     clientKept = require('./clientErrorService').purgeClientErrors();
   } catch (_) {
     /* ignore */
   }
-  return { errorLog: errorResult, newsKept, offerKept, clientKept };
+  return { errorLog: errorResult, newsKept, offerKept, featureScanKept, moduleDiagKept, clientKept };
 }
 
 async function getTableHealth(pool) {
@@ -231,35 +244,74 @@ async function getTrustScoreHealth(pool, issues) {
   }
 }
 
+const HEALTH_SCOPES = ['core', 'sync', 'tables', 'news', 'offer', 'scan', 'modules', 'client', 'backend'];
+
+function resolveHealthScopes(scopes) {
+  if (!scopes || scopes.length === 0) return new Set(HEALTH_SCOPES);
+  const s = new Set(scopes);
+  if (s.has('modules')) {
+    ['sync', 'tables', 'client', 'scan', 'news', 'offer'].forEach((x) => s.add(x));
+  }
+  return s;
+}
+
 /**
- * Full system health snapshot for super-admin APS page.
+ * System health for super-admin APS — full snapshot or one scope (event refresh).
  */
-async function getSystemHealth() {
+async function getSystemHealth(options = {}) {
+  const active = resolveHealthScopes(options.scopes);
+  const on = (name) => active.has(name);
+  const singleScope =
+    options.scopes?.length === 1 ? options.scopes[0] : active.size < HEALTH_SCOPES.length ? [...active][0] : null;
+  const partial = active.size < HEALTH_SCOPES.length;
+
   const checkedAt = new Date().toISOString();
   const issues = [];
   let clientErrors = [];
   let clientErrorService = null;
-  try {
-    clientErrorService = require('./clientErrorService');
-    clientErrors = clientErrorService.getClientErrors(50);
-    issues.push(...clientErrorService.clientErrorsToIssues(clientErrors));
-  } catch (err) {
-    issues.push({ severity: 'warning', module: 'ui', message: `Client error log unavailable: ${err.message}` });
+
+  if (on('client') || on('modules')) {
+    try {
+      clientErrorService = require('./clientErrorService');
+      clientErrors = clientErrorService.getClientErrors(50);
+      issues.push(...clientErrorService.clientErrorsToIssues(clientErrors));
+    } catch (err) {
+      issues.push({ severity: 'warning', module: 'ui', message: `Client error log unavailable: ${err.message}` });
+    }
   }
-  const { pool, dbType, issues: mysqlProbeIssues } = await probeMysqlPool();
-  issues.push(...mysqlProbeIssues);
 
-  const { pools: featurePools, issues: featureIssues } = await probeFeaturePools();
-  issues.push(...featureIssues);
+  let pool = null;
+  let dbType = 'inmemory';
+  if (on('core') || on('tables') || on('modules')) {
+    const mysqlProbe = await probeMysqlPool();
+    pool = mysqlProbe.pool;
+    dbType = mysqlProbe.dbType;
+    issues.push(...mysqlProbe.issues);
+  }
 
-  const { config: poolConfig, stats: poolStats, summary: poolSummary, issues: poolConfigIssues } = await probePoolConfig();
-  issues.push(...poolConfigIssues);
+  let featurePools = [];
+  let poolConfig = null;
+  let poolStats = [];
+  let poolSummary = null;
+  if (on('core') || on('modules')) {
+    const { pools, issues: featureIssues } = await probeFeaturePools();
+    featurePools = pools;
+    issues.push(...featureIssues);
+
+    const poolProbe = await probePoolConfig();
+    poolConfig = poolProbe.config;
+    poolStats = poolProbe.stats;
+    poolSummary = poolProbe.summary;
+    issues.push(...poolProbe.issues);
+  }
 
   let sync = { available: false, modules: [], summary: {}, latestRun: null };
+  if (on('sync') || on('modules')) {
   try {
-    sync.modules = (await syncStatus.getModuleState()).modules || [];
-    sync.summary = (await syncStatus.getModuleState()).summary || {};
-    sync.available = (await syncStatus.getModuleState()).available;
+    const state = await syncStatus.getModuleState();
+    sync.modules = state.modules || [];
+    sync.summary = state.summary || {};
+    sync.available = state.available;
     sync.latestRun = await syncStatus.getLatestRun();
     for (const m of sync.modules) {
       if (m.status === 'FAILED') {
@@ -301,12 +353,34 @@ async function getSystemHealth() {
       message: err.message,
     });
   }
+  }
 
-  const { modules: tableModules, issues: tableIssues } = await getTableHealth(pool);
-  issues.push(...tableIssues);
+  let tableModules = [];
+  if (on('tables') || on('modules')) {
+    const tableProbe = await getTableHealth(pool);
+    tableModules = tableProbe.modules;
+    issues.push(...tableProbe.issues);
+  }
 
-  const trustScore = await getTrustScoreHealth(pool, issues);
-  const errorLog = readErrorLogTail(50);
+  let trustScore = null;
+  if (on('core') || on('modules')) {
+    trustScore = await getTrustScoreHealth(pool, issues);
+  }
+
+  let errorLog = { lines: [] };
+  if (on('backend')) {
+    errorLog = readErrorLogTail(50);
+    for (const line of errorLog.lines.slice(0, 10)) {
+      if (/error|fail|exception|crash/i.test(line)) {
+        issues.push({
+          severity: 'warning',
+          module: 'backend',
+          message: line.slice(0, 2000),
+          source: 'error.log',
+        });
+      }
+    }
+  }
 
   let newsDiagnostics = null;
   let newsLogs = [];
@@ -314,6 +388,7 @@ async function getSystemHealth() {
   let offerDiagnostics = null;
   let offerLogs = [];
   let offerLevelSummary = { L1: 0, L2: 0, L3: 0 };
+  if (on('news') || on('modules')) {
   try {
     const newsLogService = require('./newsLogService');
     newsDiagnostics = await newsLogService.buildNewsSnapshot();
@@ -339,7 +414,9 @@ async function getSystemHealth() {
       message: `News diagnostics unavailable: ${err.message}`,
     });
   }
+  }
 
+  if (on('offer') || on('modules')) {
   try {
     const offerLogService = require('./offerLogService');
     offerDiagnostics = await offerLogService.buildOfferSnapshot();
@@ -365,21 +442,76 @@ async function getSystemHealth() {
       message: `Offer diagnostics unavailable: ${err.message}`,
     });
   }
+  }
+
+  let featureScanLogs = [];
+  let featureScanLevelSummary = { L1: 0, L2: 0, L3: 0 };
+  if (on('scan') || on('modules')) {
+  try {
+    const featureScanLogService = require('./featureScanLogService');
+    featureScanLogs = featureScanLogService.getFeatureScanLogs(60);
+    featureScanLevelSummary = featureScanLogService.getLevelSummary(featureScanLogs);
+    issues.push(...featureScanLogService.featureScanLogsToIssues(featureScanLogs));
+  } catch (err) {
+    issues.push({
+      severity: 'warning',
+      level: 'L2',
+      module: 'r_detector',
+      message: `Scan diagnostics unavailable: ${err.message}`,
+      source: 'feature_scan_log',
+    });
+  }
+  }
+
+  let moduleDiagnostics = [];
+  let moduleDiagnosticLevelSummary = { L1: 0, L2: 0, L3: 0 };
+  let moduleReports = [];
+  if (on('modules')) {
+  try {
+    const moduleDiagnosticLogService = require('./moduleDiagnosticLogService');
+    const moduleDiagnosticsService = require('./moduleDiagnosticsService');
+    moduleDiagnostics = moduleDiagnosticLogService.getModuleDiagnostics(80);
+    moduleDiagnosticLevelSummary = moduleDiagnosticLogService.getLevelSummary(moduleDiagnostics);
+    issues.push(...moduleDiagnosticLogService.moduleDiagnosticsToIssues(moduleDiagnostics));
+
+    let settings = {};
+    try {
+      settings = await require('./settingsService').getSettings();
+    } catch (_) {
+      /* ignore */
+    }
+
+    moduleReports = await moduleDiagnosticsService.buildModuleReports({
+      settings,
+      dbType,
+      poolReady: !!pool,
+      syncModules: sync.modules || [],
+      tableModules,
+      clientErrors,
+      featureScanLogs,
+      moduleDiagnostics,
+      trustScore,
+      newsDiagnostics,
+      offerDiagnostics,
+      newsLogs,
+      offerLogs,
+      issues,
+    });
+    issues.push(...moduleDiagnosticsService.moduleReportsToIssues(moduleReports));
+  } catch (err) {
+    issues.push({
+      severity: 'warning',
+      level: 'L2',
+      module: 'core',
+      message: `Module diagnostics unavailable: ${err.message}`,
+      source: 'module_report',
+    });
+  }
+  }
 
   const normalizedIssues = withIssueLevels(issues);
   const levelSummary = summarizeIssueLevels(normalizedIssues);
   const clientLevelSummary = clientErrorService?.getLevelSummary(clientErrors) || { L1: 0, L2: 0, L3: 0 };
-
-  for (const line of errorLog.lines.slice(0, 10)) {
-    if (/error|fail|exception|crash/i.test(line)) {
-      issues.push({
-        severity: 'warning',
-        module: 'backend',
-        message: line.slice(0, 240),
-        source: 'error.log',
-      });
-    }
-  }
 
   const summary = {
     critical: normalizedIssues.filter((i) => i.severity === 'critical').length,
@@ -388,33 +520,51 @@ async function getSystemHealth() {
     total: normalizedIssues.length,
   };
 
-  return {
+  const payload = {
     success: true,
     checkedAt,
+    partial,
+    scope: options.scopes?.length === 1 ? options.scopes[0] : singleScope,
+    scopesApplied: [...active],
     dbType,
     mysqlConfigured: isMysqlConfigured(),
     poolReady: !!pool,
     buildVersion: syncStatus.getBuildVersion?.() || process.env.BUILD_VERSION || 'local',
-    sync,
-    featurePools,
-    poolConfig,
-    poolStats,
-    poolSummary,
-    tableModules,
-    trustScore,
-    errorLog,
-    clientErrors,
-    clientLevelSummary,
-    newsDiagnostics,
-    newsLogs,
-    newsLevelSummary,
-    offerDiagnostics,
-    offerLogs,
-    offerLevelSummary,
     levelSummary,
     issues: sortIssues(normalizedIssues),
     summary,
   };
+
+  if (on('core') || on('modules')) {
+    Object.assign(payload, {
+      featurePools,
+      poolConfig,
+      poolStats,
+      poolSummary,
+      trustScore,
+    });
+  }
+  if (on('sync') || on('modules')) payload.sync = sync;
+  if (on('tables') || on('modules')) payload.tableModules = tableModules;
+  if (on('backend')) payload.errorLog = errorLog;
+  if (on('client') || on('modules')) {
+    payload.clientErrors = clientErrors;
+    payload.clientLevelSummary = clientLevelSummary;
+  }
+  if (on('news') || on('modules')) {
+    Object.assign(payload, { newsDiagnostics, newsLogs, newsLevelSummary });
+  }
+  if (on('offer') || on('modules')) {
+    Object.assign(payload, { offerDiagnostics, offerLogs, offerLevelSummary });
+  }
+  if (on('scan') || on('modules')) {
+    Object.assign(payload, { featureScanLogs, featureScanLevelSummary });
+  }
+  if (on('modules')) {
+    Object.assign(payload, { moduleDiagnostics, moduleDiagnosticLevelSummary, moduleReports });
+  }
+
+  return payload;
 }
 
 module.exports = { getSystemHealth, MODULE_CHECKS, purgeDiagnosticLogs };

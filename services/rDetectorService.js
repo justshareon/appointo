@@ -570,6 +570,7 @@ const rDetectorService = {
       cameraEnabled: false,
       primaryCameraRuleId: 1,
       enabledCameraRules: { 1: false, 2: false, 3: false, 4: false, 5: false },
+      scanRangeM: 15,
     };
   },
 

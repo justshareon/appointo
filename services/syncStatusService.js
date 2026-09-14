@@ -176,8 +176,8 @@ async function isSyncComplete() {
 /** True when table empty, missing rows, any module not SUCCESS, or backing data missing. */
 async function revalidateEmptyModules() {
     const pool = await getPool();
-    if (!pool) return false;
-    let flagged = false;
+    if (!pool) return 0;
+    let resetCount = 0;
     const checks = [
         {
             key: 'smart_data',
@@ -206,13 +206,13 @@ async function revalidateEmptyModules() {
                     `UPDATE sync_module_state SET status = 'PENDING', last_error = ? WHERE module_key = ?`,
                     [`Auto-reset: ${check.key} backing table empty`, check.key]
                 );
-                flagged = true;
+                resetCount += 1;
             }
         } catch {
             /* table may not exist yet — core_schema will create it */
         }
     }
-    return flagged;
+    return resetCount;
 }
 
 async function needsSync() {
@@ -220,7 +220,7 @@ async function needsSync() {
     if (!pool) return false;
     await init();
     if (await isSyncComplete()) {
-        if (await revalidateEmptyModules()) return true;
+        if ((await revalidateEmptyModules()) > 0) return true;
         return false;
     }
     return true;

@@ -677,6 +677,49 @@ router.post('/client-errors', (req, res) => {
 });
 
 /**
+ * POST /api/admin/feature-scan-logs
+ * Structured R-Detector / SMART scan diagnostics (any authenticated user).
+ */
+router.post('/feature-scan-logs', (req, res) => {
+    try {
+        const { recordFeatureScanLog } = require('../services/featureScanLogService');
+        const entry = recordFeatureScanLog({
+            ...req.body,
+            userId: req.user?.id || req.userId || null,
+            platform: req.body?.platform || req.headers['x-client-platform'] || null,
+        });
+        res.json({ success: true, id: entry.id });
+    } catch (error) {
+        LOG.error('[Admin] feature-scan-logs error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/module-diagnostics — empty UI / API fail reasons (any authenticated user).
+ */
+router.post('/module-diagnostics', (req, res) => {
+    try {
+        const { recordModuleDiagnostic } = require('../services/moduleDiagnosticLogService');
+        const { resolveModuleFromScreen } = require('../services/moduleDiagnosticsService');
+        const module =
+            req.body?.module
+            || resolveModuleFromScreen(req.body?.screen || req.body?.route)
+            || 'unknown';
+        const entry = recordModuleDiagnostic({
+            ...req.body,
+            module,
+            userId: req.user?.id || req.userId || null,
+            platform: req.body?.platform || null,
+        });
+        res.json({ success: true, id: entry.id });
+    } catch (error) {
+        LOG.error('[Admin] module-diagnostics error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/admin/sync/status — sync_module_state + sync_runs for APS dashboard
  */
 router.get('/sync/status', requireSuperAdmin, async (req, res) => {
@@ -768,10 +811,40 @@ router.post('/sync/until-complete', requireSuperAdmin, async (req, res) => {
 router.get('/system-health', requireSuperAdmin, async (req, res) => {
     try {
         const { getSystemHealth } = require('../services/systemHealthService');
-        const health = await getSystemHealth();
+        const scopeRaw = String(req.query.scope || 'all').trim();
+        const scopes =
+            scopeRaw === 'all' || !scopeRaw
+                ? null
+                : scopeRaw.split(',').map((s) => s.trim()).filter(Boolean);
+        const health = await getSystemHealth({ scopes });
         res.json(health);
     } catch (error) {
         LOG.error('[Admin] system-health error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/revalidate-modules
+ * Reset sync_module_state when backing tables are empty but status was SUCCESS.
+ */
+router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
+    try {
+        const syncStatusService = require('../services/syncStatusService');
+        const modulesReset = await syncStatusService.revalidateEmptyModules();
+        let health = null;
+        if (modulesReset > 0) {
+            const { getSystemHealth } = require('../services/systemHealthService');
+            health = await getSystemHealth();
+        }
+        res.json({
+            success: true,
+            modulesReset,
+            flagged: modulesReset > 0,
+            health,
+        });
+    } catch (error) {
+        LOG.error('[Admin] revalidate-modules error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
