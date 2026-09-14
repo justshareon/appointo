@@ -8,6 +8,11 @@ function isOptionalAuthPath(req) {
     return OPTIONAL_AUTH_PATHS.some((p) => path.includes(p));
 }
 
+function isAdminApiPath(req) {
+    const path = `${req.originalUrl || ''} ${req.path || ''}`;
+    return path.includes('/admin/');
+}
+
 /**
  * Authentication middleware
  * Verifies JWT token from Authorization header
@@ -17,7 +22,8 @@ const authenticateToken = (req, res, next) => {
     const token = authHeader && authHeader.split(' ')[1];
     
     if (!token) {
-        if (!isOptionalAuthPath(req)) {
+        const quiet = isOptionalAuthPath(req) || isAdminApiPath(req);
+        if (!quiet) {
             LOG.access('Access denied', 'No Authorization token provided');
         }
         return res.status(401).json({ error: 'Unauthorized' });

@@ -3,7 +3,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { purgeErrorLogOlderThan, parseLineTimestamp } = require('./errorLogRetention');
+const { purgeErrorLogOlderThan, parseLineTimestamp, sortLogLinesNewestFirst } = require('./errorLogRetention');
 
 const LOG_DIR = path.join(__dirname, '..');
 
@@ -34,19 +34,22 @@ function appendAppLog(kind, line) {
 function readAppLogTail(kind, maxLines = 40, ttlMs = DEFAULT_TTL_MS) {
   const logPath = APP_LOG_PATHS[kind] || APP_LOG_PATHS.error;
   purgeErrorLogOlderThan(ttlMs, logPath);
+  const fetchedAt = new Date().toISOString();
   try {
     if (!fs.existsSync(logPath)) {
-      return { path: logPath, kind, lines: [], exists: false, recentFirst: true };
+      return { path: logPath, kind, lines: [], exists: false, recentFirst: true, fetchedAt };
     }
-    const lines = fs
-      .readFileSync(logPath, 'utf8')
-      .split(/\r?\n/)
-      .filter(Boolean)
-      .sort((a, b) => (parseLineTimestamp(b) || 0) - (parseLineTimestamp(a) || 0))
-      .slice(0, maxLines);
-    return { path: logPath, kind, lines, exists: true, recentFirst: true };
+    const raw = fs.readFileSync(logPath, 'utf8').split(/\r?\n/).filter(Boolean);
+    const lines = sortLogLinesNewestFirst(raw).slice(0, maxLines);
+    let mtime = null;
+    try {
+      mtime = fs.statSync(logPath).mtime?.toISOString?.() || null;
+    } catch (_) {
+      /* ignore */
+    }
+    return { path: logPath, kind, lines, exists: true, recentFirst: true, fetchedAt, fileMtime: mtime };
   } catch (err) {
-    return { path: logPath, kind, lines: [], exists: false, error: err.message, recentFirst: true };
+    return { path: logPath, kind, lines: [], exists: false, error: err.message, recentFirst: true, fetchedAt };
   }
 }
 

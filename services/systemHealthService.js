@@ -377,7 +377,7 @@ async function getSystemHealth(options = {}) {
   let debugLog = { lines: [] };
   let uiLog = { lines: [] };
   if (on('backend')) {
-    const tails = readAllAppLogTails(50);
+    const tails = readAllAppLogTails(80);
     errorLog = tails.errorLog;
     infoLog = tails.infoLog;
     debugLog = tails.debugLog;

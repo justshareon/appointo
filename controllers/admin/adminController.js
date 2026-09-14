@@ -316,6 +316,72 @@ class AdminController {
             res.status(500).json({ error: err.message });
         }
     }
+
+    /** POST /api/admin/vendor-auto/scan — OSM nearby shops for town/city */
+    async scanVendorAuto(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const vendorAuto = require('../../services/vendorAutoDiscoverService');
+            const body = req.body || {};
+            const payload = await vendorAuto.scanNearbyVendors({
+                latitude: body.latitude,
+                longitude: body.longitude,
+                city: body.city,
+                town: body.town,
+                state: body.state,
+                locationName: body.locationName,
+                radiusM: body.radiusM,
+            });
+            res.json({ success: true, ...payload, logs: require('../../utils/vendorAutoLog').getVendorAutoLogs({ limit: 30 }) });
+        } catch (err) {
+            LOG.error('Vendor auto scan failed', err.message);
+            res.status(500).json({ success: false, error: err.message });
+        }
+    }
+
+    /** POST /api/admin/vendor-auto/save — persist vendors + products to MySQL */
+    async saveVendorAuto(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const vendorAuto = require('../../services/vendorAutoDiscoverService');
+            const { candidates = [], auto = false } = req.body || {};
+            if (!Array.isArray(candidates) || !candidates.length) {
+                return res.status(400).json({ error: 'candidates array is required' });
+            }
+            const saved = await vendorAuto.saveCandidates(candidates, {
+                auto: !!auto,
+                actorId: req.user?.id || req.user?.email,
+            });
+            res.json({
+                success: true,
+                ...saved,
+                logs: require('../../utils/vendorAutoLog').getVendorAutoLogs({ limit: 40 }),
+            });
+        } catch (err) {
+            LOG.error('Vendor auto save failed', err.message);
+            res.status(500).json({ success: false, error: err.message });
+        }
+    }
+
+    /** GET /api/admin/vendor-auto/logs */
+    async getVendorAutoLogs(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const logs = require('../../utils/vendorAutoLog').getVendorAutoLogs({
+                limit: parseInt(req.query.limit, 10) || 80,
+                since: req.query.since || null,
+            });
+            res.json({ success: true, logs });
+        } catch (err) {
+            res.status(500).json({ success: false, error: err.message });
+        }
+    }
 }
 
 module.exports = new AdminController();

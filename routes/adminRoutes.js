@@ -33,6 +33,9 @@ router.post('/add-vendor', (req, res) => adminController.addVendor(req, res));
 router.get('/vendor-categories', (req, res) => adminController.getVendorCategories(req, res));
 router.post('/vendor-categories', (req, res) => adminController.addVendorCategory(req, res));
 router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendorDashboard(req, res));
+router.post('/vendor-auto/scan', (req, res) => adminController.scanVendorAuto(req, res));
+router.post('/vendor-auto/save', (req, res) => adminController.saveVendorAuto(req, res));
+router.get('/vendor-auto/logs', (req, res) => adminController.getVendorAutoLogs(req, res));
 
 // User & Mapping Management
 router.get('/users-with-mappings', (req, res) => adminController.getUsersWithMappings(req, res));
