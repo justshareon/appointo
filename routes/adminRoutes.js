@@ -685,6 +685,7 @@ router.post('/feature-scan-logs', (req, res) => {
         const { recordFeatureScanLog } = require('../services/featureScanLogService');
         const entry = recordFeatureScanLog({
             ...req.body,
+            logSource: req.body?.logSource || 'ui',
             userId: req.user?.id || req.userId || null,
             platform: req.body?.platform || req.headers['x-client-platform'] || null,
         });
@@ -808,6 +809,34 @@ router.post('/sync/until-complete', requireSuperAdmin, async (req, res) => {
  * GET /api/admin/system-health
  * Cross-module diagnostics for super-admin APS dashboard
  */
+/**
+ * GET /api/admin/module-data
+ * Module-wise MySQL + in-memory samples (super-admin DATA panel). ?module=&limit=20|100
+ */
+router.get('/module-data', requireSuperAdmin, async (req, res) => {
+    try {
+        const {
+            getModuleDataCatalog,
+            getModuleDataSample,
+            clampLimit,
+        } = require('../services/adminModuleDataService');
+        const moduleKey = String(req.query.module || '').trim();
+        const limit = clampLimit(req.query.limit);
+        if (moduleKey) {
+            const payload = await getModuleDataSample(moduleKey, limit);
+            if (!payload.ok) {
+                return res.status(404).json({ success: false, error: payload.error });
+            }
+            return res.json(payload);
+        }
+        const catalog = await getModuleDataCatalog();
+        res.json({ success: true, limitDefault: limit, ...catalog });
+    } catch (error) {
+        LOG.error('[Admin] module-data error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
 router.get('/system-health', requireSuperAdmin, async (req, res) => {
     try {
         const { getSystemHealth } = require('../services/systemHealthService');
@@ -831,17 +860,15 @@ router.get('/system-health', requireSuperAdmin, async (req, res) => {
 router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
     try {
         const syncStatusService = require('../services/syncStatusService');
+        const { getSystemHealth } = require('../services/systemHealthService');
         const modulesReset = await syncStatusService.revalidateEmptyModules();
-        let health = null;
-        if (modulesReset > 0) {
-            const { getSystemHealth } = require('../services/systemHealthService');
-            health = await getSystemHealth();
-        }
+        const health = await getSystemHealth();
         res.json({
             success: true,
             modulesReset,
             flagged: modulesReset > 0,
             health,
+            moduleReports: health?.moduleReports || [],
         });
     } catch (error) {
         LOG.error('[Admin] revalidate-modules error:', error);

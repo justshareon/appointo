@@ -179,18 +179,21 @@ async function revalidateEmptyModules() {
     if (!pool) return 0;
     let resetCount = 0;
     const checks = [
+        { key: 'users', sql: 'SELECT COUNT(*) AS c FROM users' },
+        { key: 'vendors', sql: 'SELECT COUNT(*) AS c FROM vendors' },
+        { key: 'products', sql: 'SELECT COUNT(*) AS c FROM products' },
+        { key: 'orders', sql: 'SELECT COUNT(*) AS c FROM orders' },
+        { key: 'news_cache', sql: 'SELECT COUNT(*) AS c FROM news_cache' },
+        { key: 'r_detector_data', sql: 'SELECT COUNT(*) AS c FROM r_detector_scan_results' },
         {
             key: 'smart_data',
-            sql: `SELECT COUNT(*) AS c FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`,
+            sql: 'SELECT COUNT(*) AS c FROM vendors WHERE features_smart = 1 OR features_smart = TRUE',
         },
-        {
-            key: 'trading_data',
-            sql: 'SELECT COUNT(*) AS c FROM live_stock_data',
-        },
-        {
-            key: 'news_cache',
-            sql: 'SELECT COUNT(*) AS c FROM news_cache',
-        },
+        { key: 'trading_data', sql: 'SELECT COUNT(*) AS c FROM live_stock_data' },
+        { key: 'trust_score_data', sql: 'SELECT COUNT(*) AS c FROM trust_score_projects' },
+        { key: 'cyber_threats', sql: 'SELECT COUNT(*) AS c FROM cyber_threats' },
+        { key: 'suraksha_data', sql: 'SELECT COUNT(*) AS c FROM suraksha_reports' },
+        { key: 'fleet_data', sql: 'SELECT COUNT(*) AS c FROM fleet_trips' },
     ];
     for (const check of checks) {
         try {

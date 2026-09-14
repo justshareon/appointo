@@ -170,13 +170,18 @@ function collectLogsForModule(moduleKey, ctx = {}) {
   const client = clientErrors
     .filter((e) => resolveModuleFromScreen(e.screen || e.route) === moduleKey)
     .slice(0, 15);
-  const scan = featureScanLogs
-    .filter((e) => {
-      if (moduleKey === 'smart') return e.feature === 'smart_scan';
-      if (moduleKey === 'r_detector') return e.feature === 'r_detector';
-      return false;
-    })
+  const scanForModule = (e) => {
+    if (moduleKey === 'smart') return e.feature === 'smart_scan';
+    if (moduleKey === 'r_detector') return e.feature === 'r_detector';
+    return false;
+  };
+  const scanUi = featureScanLogs
+    .filter((e) => scanForModule(e) && String(e.logSource || 'ui') === 'ui')
     .slice(0, 15);
+  const scanBackend = featureScanLogs
+    .filter((e) => scanForModule(e) && String(e.logSource) === 'backend')
+    .slice(0, 15);
+  const scan = [...scanUi, ...scanBackend].slice(0, 20);
   const pipeline =
     moduleKey === 'news'
       ? newsLogs.slice(0, 20)
@@ -188,7 +193,7 @@ function collectLogsForModule(moduleKey, ctx = {}) {
     (i) => i.module === moduleKey || (i.message || '').toLowerCase().includes(moduleKey.replace('_', ' '))
   ).slice(0, 12);
 
-  return { moduleDiagnostic, client, scan, pipeline, relatedIssues };
+  return { moduleDiagnostic, client, scan, scanUi, scanBackend, pipeline, relatedIssues };
 }
 
 function collectSignals(moduleKey, { clientErrors = [], featureScanLogs = [], moduleDiagnostics = [] }) {

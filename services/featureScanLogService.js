@@ -41,13 +41,20 @@ function normalizeFeature(feature) {
   return 'r_detector';
 }
 
+function normalizeLogSource(src) {
+  const s = String(src || 'ui').toLowerCase();
+  return s === 'backend' ? 'backend' : 'ui';
+}
+
 function recordFeatureScanLog(payload = {}) {
   const feature = normalizeFeature(payload.feature);
   const stage = String(payload.stage || 'info').slice(0, 48);
   const level = normalizeLevel({ ...payload, stage });
+  const logSource = normalizeLogSource(payload.logSource);
   const entry = {
     id: `fs_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
     feature,
+    logSource,
     level,
     stage,
     message: String(payload.message || 'Scan event').slice(0, 500),
@@ -59,12 +66,45 @@ function recordFeatureScanLog(payload = {}) {
   return store.append(entry);
 }
 
-function getFeatureScanLogs(limit = 60, feature = null) {
-  const rows = store.getEntries(limit * 2);
-  const filtered = feature
-    ? rows.filter((r) => r.feature === normalizeFeature(feature))
-    : rows;
+function recordBackendFeatureScan(feature, stage, message, meta = null) {
+  return recordFeatureScanLog({
+    feature,
+    stage,
+    message,
+    meta,
+    logSource: 'backend',
+  });
+}
+
+function getFeatureScanLogs(limit = 60, options = null) {
+  const featureFilter =
+    typeof options === 'string' ? options : options?.feature || null;
+  const logSource = typeof options === 'object' ? options?.logSource : null;
+  const rows = store.getEntries(limit * 3);
+  let filtered = rows;
+  if (featureFilter) {
+    filtered = filtered.filter((r) => r.feature === normalizeFeature(featureFilter));
+  }
+  if (logSource) {
+    const want = normalizeLogSource(logSource);
+    filtered = filtered.filter((r) => normalizeLogSource(r.logSource) === want);
+  }
   return filtered.slice(0, limit);
+}
+
+function splitFeatureScanInsights(logs = [], limitPer = 40) {
+  const split = (feature) => ({
+    ui: logs
+      .filter((r) => r.feature === feature && normalizeLogSource(r.logSource) === 'ui')
+      .slice(0, limitPer),
+    backend: logs
+      .filter((r) => r.feature === feature && normalizeLogSource(r.logSource) === 'backend')
+      .slice(0, limitPer),
+  });
+  return {
+    r_detector: split('r_detector'),
+    smart_scan: split('smart_scan'),
+  };
 }
 
 function purgeFeatureScanLogs() {
@@ -97,7 +137,9 @@ function getLevelSummary(logs = []) {
 
 module.exports = {
   recordFeatureScanLog,
+  recordBackendFeatureScan,
   getFeatureScanLogs,
+  splitFeatureScanInsights,
   purgeFeatureScanLogs,
   featureScanLogsToIssues,
   getLevelSummary,

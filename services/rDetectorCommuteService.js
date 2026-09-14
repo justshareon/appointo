@@ -651,7 +651,7 @@ const commuteService = {
     }
   },
 
-  async _routeBriefForSchedule(match, nowMin, opts = {}) {
+  async _routeBriefForSchedule(userId, match, nowMin, opts = {}) {
     const minutesUntil = match.departureMinutes - nowMin;
     const origin = { lat: match.origin.latitude, lng: match.origin.longitude };
     const dest = { lat: match.destination.latitude, lng: match.destination.longitude };
@@ -666,6 +666,26 @@ const commuteService = {
     const hazards = incidentsAlongRoute(origin, dest, incidents);
     const dirLabel = match.direction === 'inbound' ? 'return home' : 'morning commute';
 
+    let todayScans = [];
+    try {
+      todayScans = await rDetectorService.getTodayScanResults(userId);
+    } catch (_) {
+      todayScans = [];
+    }
+    const scansOnRoute = incidentsAlongRoute(
+      origin,
+      dest,
+      (todayScans || []).map((s) => ({
+        id: s.id,
+        latitude: s.latitude,
+        longitude: s.longitude,
+        report_category: s.issue_type,
+        hazard_type: s.issue_type,
+        description: `Your scan · ${s.issue_type || 'bad_road'}`,
+        reported_at: s.created_at,
+      }))
+    );
+
     return {
       schedule: match,
       directionLabel: dirLabel,
@@ -673,6 +693,15 @@ const commuteService = {
       minutesUntilLeave: Math.max(0, minutesUntil),
       alertWindowMinutes: match.alertLeadMinutes || ALERT_LEAD_MINUTES,
       hazardCount: hazards.length,
+      todayScanCount: scansOnRoute.length,
+      todayScans: scansOnRoute.slice(0, 8).map((h) => ({
+        id: h.id,
+        issueType: h.report_category || h.hazard_type,
+        latitude: h.latitude,
+        longitude: h.longitude,
+        reportedAt: h.reported_at,
+      })),
+      scannedAt: new Date().toISOString(),
       hazards: hazards.map((h) => ({
         id: h.id,
         type: h.report_category || h.hazard_type,
@@ -686,7 +715,9 @@ const commuteService = {
       message:
         hazards.length > 0
           ? `${hazards.length} issue${hazards.length > 1 ? 's' : ''} on your ${dirLabel} route — usual departure ${match.departureLabel}.`
-          : `Your ${dirLabel} route looks clear — usual departure around ${match.departureLabel}.`,
+          : scansOnRoute.length > 0
+            ? `Your ${dirLabel} route: ${scansOnRoute.length} bump scan(s) logged today · departure ~${match.departureLabel}.`
+            : `Your ${dirLabel} route looks clear — usual departure around ${match.departureLabel}.`,
       preview: !!opts.preview,
     };
   },
@@ -725,28 +756,52 @@ const commuteService = {
           (a, b) => Math.abs(a.departureMinutes - nowMin) - Math.abs(b.departureMinutes - nowMin)
         )[0];
         if (previewSchedule) {
-          const routeBrief = await this._routeBriefForSchedule(previewSchedule, nowMin, { preview: true });
+          const routeBrief = await this._routeBriefForSchedule(userId, previewSchedule, nowMin, { preview: true });
           return {
             ...inactiveBase,
             ...routeBrief,
             active: false,
             preview: true,
+            autoScanEnabled: prefs?.autoScanEnabled !== false,
             message: routeBrief.message,
           };
         }
       }
-      return inactiveBase;
+      return { ...inactiveBase, autoScanEnabled: prefs?.autoScanEnabled !== false };
     }
 
-    const routeBrief = await this._routeBriefForSchedule(match, nowMin);
+    const autoScan = prefs?.autoScanEnabled !== false;
+    const dirLabel = match.direction === 'inbound' ? 'return home' : 'morning commute';
+
+    if (!autoScan && !opts.forceRefresh) {
+      return {
+        active: true,
+        preferences: prefs,
+        schedules: today,
+        schedule: match,
+        routeScanPending: true,
+        autoScanEnabled: false,
+        departureLabel: match.departureLabel,
+        directionLabel: dirLabel,
+        minutesUntilLeave: Math.max(0, match.departureMinutes - nowMin),
+        alertWindowMinutes: match.alertLeadMinutes || ALERT_LEAD_MINUTES,
+        hazardCount: 0,
+        todayScanCount: 0,
+        message: `Commute window · ${match.departureLabel} ${dirLabel} — tap Scan route to load map results (1 min max).`,
+      };
+    }
+
+    const routeBrief = await this._routeBriefForSchedule(userId, match, nowMin, { preview: false });
     const brief = {
       active: true,
       preferences: prefs,
       schedules: today,
+      routeScanPending: false,
+      autoScanEnabled: autoScan,
       ...routeBrief,
     };
 
-    if (prefs?.autoScanEnabled !== false && !opts.forceRefresh) {
+    if (autoScan && !opts.forceRefresh) {
       await this._maybeNotifyCommuteAlert(userId, match, routeBrief.hazards, brief);
     }
 

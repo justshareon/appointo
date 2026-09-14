@@ -4,6 +4,7 @@ const rDetectorService = require('../services/rDetectorService');
 const commuteService = require('../services/rDetectorCommuteService');
 const { authenticateToken } = require('../middleware/auth');
 const LOG = require('../utils/logger');
+const { recordBackendFeatureScan } = require('../services/featureScanLogService');
 
 let io = null;
 const setIO = (ioInstance) => {
@@ -277,9 +278,14 @@ router.post('/scan-results', authenticateToken, async (req, res) => {
       hazard_id: req.body.hazard_id,
       scan_date: req.body.scan_date,
     });
+    recordBackendFeatureScan('r_detector', 'scan_saved', 'Scan result persisted', {
+      userId: req.user?.id,
+      issue_type: req.body.issue_type || 'bad_road',
+    });
     res.json(result);
   } catch (err) {
     LOG.error('[R-Detector] save scan result', err.message);
+    recordBackendFeatureScan('r_detector', 'scan_error', err.message, { route: 'scan-results' });
     res.status(500).json({ error: err.message });
   }
 });
@@ -290,9 +296,13 @@ router.post('/scan-results', authenticateToken, async (req, res) => {
 router.get('/scan-results/today', authenticateToken, async (req, res) => {
   try {
     const rows = await rDetectorService.getTodayScanResults(req.user.id);
+    recordBackendFeatureScan('r_detector', 'history_api', `Today scans: ${Array.isArray(rows) ? rows.length : 0}`, {
+      userId: req.user?.id,
+    });
     res.json(rows);
   } catch (err) {
     LOG.error('[R-Detector] today scan results', err.message);
+    recordBackendFeatureScan('r_detector', 'history_error', err.message, { route: 'scan-results/today' });
     res.status(500).json({ error: err.message });
   }
 });

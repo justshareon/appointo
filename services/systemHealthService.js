@@ -449,7 +449,7 @@ async function getSystemHealth(options = {}) {
   if (on('scan') || on('modules')) {
   try {
     const featureScanLogService = require('./featureScanLogService');
-    featureScanLogs = featureScanLogService.getFeatureScanLogs(60);
+    featureScanLogs = featureScanLogService.getFeatureScanLogs(120);
     featureScanLevelSummary = featureScanLogService.getLevelSummary(featureScanLogs);
     issues.push(...featureScanLogService.featureScanLogsToIssues(featureScanLogs));
   } catch (err) {
@@ -558,7 +558,12 @@ async function getSystemHealth(options = {}) {
     Object.assign(payload, { offerDiagnostics, offerLogs, offerLevelSummary });
   }
   if (on('scan') || on('modules')) {
-    Object.assign(payload, { featureScanLogs, featureScanLevelSummary });
+    const featureScanLogService = require('./featureScanLogService');
+    Object.assign(payload, {
+      featureScanLogs,
+      featureScanLevelSummary,
+      featureScanInsights: featureScanLogService.splitFeatureScanInsights(featureScanLogs, 50),
+    });
   }
   if (on('modules')) {
     Object.assign(payload, { moduleDiagnostics, moduleDiagnosticLevelSummary, moduleReports });

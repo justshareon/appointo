@@ -8,6 +8,7 @@ const { authenticateToken } = require('../middleware/auth');
 const nearby = require('../services/smartService');
 const nearbyMem = require('../services/smartMemoryStore');
 const LOG = require('../utils/logger');
+const { recordBackendFeatureScan } = require('../services/featureScanLogService');
 
 router.use(async (req, res, next) => {
   try {
@@ -44,9 +45,13 @@ router.get('/vendors', authenticateToken, async (req, res) => {
       lat: req.query.lat ? parseFloat(req.query.lat) : null,
       lng: req.query.lng ? parseFloat(req.query.lng) : null,
     });
+    recordBackendFeatureScan('smart_scan', 'vendors_api', `Listed ${vendors.length} SMART vendor(s)`, {
+      city: req.query.city || null,
+    });
     res.json({ success: true, vendors, count: vendors.length });
   } catch (err) {
     LOG.error('[Smart] vendors error:', err.message);
+    recordBackendFeatureScan('smart_scan', 'scan_error', err.message, { route: 'smart/vendors' });
     res.status(500).json({ success: false, error: err.message });
   }
 });
@@ -88,9 +93,15 @@ router.post('/scan', authenticateToken, async (req, res) => {
       scan,
       location,
     });
+    recordBackendFeatureScan('smart_scan', 'scan_saved', 'SMART scan session recorded', {
+      userId: req.user?.id || req.userId,
+      vendorId,
+      sharedWithVendor: !!sharedWithVendor,
+    });
     res.json({ success: true, sessionId: session.id });
   } catch (err) {
     LOG.error('[Smart] scan post error:', err.message);
+    recordBackendFeatureScan('smart_scan', 'scan_error', err.message, { route: 'smart/scan' });
     res.status(500).json({ success: false, error: err.message });
   }
 });
