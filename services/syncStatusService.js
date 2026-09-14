@@ -403,6 +403,12 @@ async function markSkipped(moduleKey, runId) {
 async function markFailed(moduleKey, { error = '', durationMs = 0, version = 0, queriesSynced = 0, runId } = {}) {
     const pool = await getPool();
     if (!pool) return;
+    try {
+        const LOG = require('../utils/logger');
+        LOG.sync(`Module ${moduleKey} failed`, String(error).slice(0, 500));
+    } catch (_) {
+        /* ignore */
+    }
     await pool.query(
         `UPDATE sync_module_state
          SET status = 'FAILED', last_completed_at = NOW(), last_duration_ms = ?,

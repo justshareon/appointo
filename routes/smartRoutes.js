@@ -38,6 +38,31 @@ router.use(async (req, res, next) => {
 
 router.use(nearbyMem.middleware());
 
+function denyUnlessVendor(req, res, vendorId) {
+  if (!nearby.vendorAccessAllowed(req, vendorId)) {
+    res.status(403).json({ success: false, error: 'Not allowed for this vendor' });
+    return false;
+  }
+  return true;
+}
+
+router.get('/vendor/me', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const vendorIds = nearby.resolveVendorIdsForUser(userId);
+    const vendors = nearby.getSmartVendors?.(100) || [];
+    const primaryVendorId = vendorIds[0] || req.user?.vendor_id || null;
+    res.json({
+      success: true,
+      vendorIds,
+      primaryVendorId,
+      vendors: vendors.filter((v) => vendorIds.includes(String(v.id))),
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/vendors', authenticateToken, async (req, res) => {
   try {
     const vendors = await nearby.listNearbyVendors({
@@ -106,9 +131,22 @@ router.post('/scan', authenticateToken, async (req, res) => {
   }
 });
 
+router.get('/vendor/:vendorId/dashboard', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const dashboard = nearby.buildVendorDashboard(vendorId);
+    res.json({ success: true, dashboard });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/vendor/:vendorId/sessions', authenticateToken, async (req, res) => {
   try {
-    const sessions = nearby.getVendorSessions(req.params.vendorId, parseInt(req.query.limit, 10) || 30);
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const sessions = nearby.getVendorSessions(vendorId, parseInt(req.query.limit, 10) || 30);
     res.json({ success: true, sessions, count: sessions.length });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -133,6 +171,7 @@ router.post('/device/control', authenticateToken, async (req, res) => {
     }
     const entry = nearby.recordDeviceControl({
       userId: req.user?.id || req.userId,
+      vendorId: req.body?.vendorId || null,
       deviceId,
       action,
       deviceName,
@@ -186,7 +225,9 @@ router.post('/voice/stream', authenticateToken, async (req, res) => {
 
 router.get('/vendor/:vendorId/voice-stream', authenticateToken, async (req, res) => {
   try {
-    const lines = nearby.getVendorVoiceStream(req.params.vendorId, {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const lines = nearby.getVendorVoiceStream(vendorId, {
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 80,
     });
@@ -210,6 +251,7 @@ router.post('/gate/connect', authenticateToken, async (req, res) => {
     }
     const session = nearby.recordGateConnection({
       userId,
+      userDisplayName: req.body?.userDisplayName || req.user?.name || null,
       vendorId,
       channel,
       networkLabel,
@@ -268,8 +310,10 @@ router.get('/gate/status', authenticateToken, async (req, res) => {
 
 router.get('/vendor/:vendorId/gate-sessions', authenticateToken, async (req, res) => {
   try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
     const activeOnly = req.query.active === '1' || req.query.active === 'true';
-    const sessions = nearby.getVendorGateSessions(req.params.vendorId, {
+    const sessions = nearby.getVendorGateSessions(vendorId, {
       activeOnly,
       limit: parseInt(req.query.limit, 10) || 40,
     });

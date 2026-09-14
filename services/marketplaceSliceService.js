@@ -744,6 +744,108 @@ async function getSlice(opts = {}) {
 
 
 
-module.exports = { getSlice, sliceKey };
+const BUNDLE_SCOPES = ['local', 'town', 'city', 'state', 'All'];
+
+function fillScopeBucket(scopeMap, scopeKey, rawDeals, rawVendors, rawProducts, filters) {
+  scopeMap[scopeKey] = {
+    deals: filterRows(rawDeals, { ...filters, scope: scopeKey === 'All' ? 'All' : scopeKey }),
+    vendors: filterRows(rawVendors, { ...filters, scope: scopeKey === 'All' ? 'All' : scopeKey }),
+    products: filterRows(rawProducts, { ...filters, scope: scopeKey === 'All' ? 'All' : scopeKey }),
+  };
+}
+
+function pickMergedFromScopeMap(scopeMap, requestedScope, safeLimit) {
+  const order =
+    requestedScope && requestedScope !== 'All'
+      ? [requestedScope, 'local', 'town', 'city', 'state', 'All']
+      : ['local', 'town', 'city', 'state', 'All'];
+  const seen = new Set();
+  const merged = { deals: [], vendors: [], products: [] };
+  for (const sc of order) {
+    const bucket = scopeMap[sc];
+    if (!bucket) continue;
+    ['deals', 'vendors', 'products'].forEach((kind) => {
+      (bucket[kind] || []).forEach((row) => {
+        const key = `${kind}:${row.id || row.shop_name || row.title}`;
+        if (seen.has(key)) return;
+        seen.add(key);
+        merged[kind].push(row);
+      });
+    });
+    if (countSlice(merged) >= safeLimit) break;
+  }
+  merged.deals = sortTodayRecentFirst(merged.deals, safeLimit, ['updated_at', 'created_at', 'date']);
+  merged.vendors = merged.vendors.slice(0, safeLimit);
+  merged.products = merged.products.slice(0, safeLimit);
+  return merged;
+}
+
+/**
+ * One HTTP call — bucket deals/vendors/products by local/town/city/state for a single language.
+ */
+async function getBundle(opts = {}) {
+  const safeLimit = clampLimit(opts.limit, { def: 24, max: 40 });
+  const {
+    scope = 'All',
+    category = 'all',
+    type = 'all',
+    sources = 'deals,vendors',
+    city = '',
+    town = '',
+    locality = '',
+    state = '',
+    language = 'hi',
+    refresh = false,
+  } = opts;
+
+  const key = `bundle:${sliceKey({ scope, category, type, sources, city, town, locality, state, language })}`;
+  if (!refresh) {
+    const hit = sliceMem.get(key);
+    if (hit && Date.now() - hit.ts < SLICE_TTL_MS) {
+      return { ...hit.data, cached: true };
+    }
+  }
+
+  const ctx = { city, town, locality, state, language };
+  const srcList = String(sources || 'deals,vendors')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  let rawDeals = srcList.includes('deals') ? await fetchDeals(safeLimit * 4) : [];
+  const rawVendors = srcList.includes('vendors') ? await fetchVendors() : [];
+  const rawProducts = srcList.includes('products') ? await fetchProducts(safeLimit * 2) : [];
+
+  rawDeals = withinRecentDays(rawDeals, 21, ['updated_at', 'created_at', 'date', 'validity_to']);
+  if (!rawDeals.length && srcList.includes('deals')) {
+    rawDeals = await fetchDeals(safeLimit * 4);
+  }
+
+  const filters = { category, type, ctx, language };
+  const scopeMap = {};
+  BUNDLE_SCOPES.forEach((sc) => {
+    fillScopeBucket(scopeMap, sc, rawDeals, rawVendors, rawProducts, filters);
+  });
+
+  const merged = pickMergedFromScopeMap(scopeMap, scope, safeLimit);
+  const result = {
+    ...merged,
+    scope,
+    category,
+    type,
+    scopeMap,
+    resolvedLanguage: language,
+    sources: srcList,
+    city: city || null,
+    town: town || null,
+    locality: locality || null,
+    state: state || null,
+  };
+
+  sliceMem.set(key, { data: result, ts: Date.now() });
+  return { ...result, cached: false };
+}
+
+module.exports = { getSlice, getBundle, sliceKey };
 
 

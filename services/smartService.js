@@ -4,6 +4,7 @@
 const memStore = require('./smartMemoryStore');
 const LOG = require('../utils/logger');
 const { sortLatestFirst } = require('../utils/sortLatest');
+const db = require('../database');
 
 const DEFAULT_POLICY = {
   wifiScan: true,
@@ -125,10 +126,22 @@ function recordScanSession(payload = {}) {
   return entry;
 }
 
+function activeGateUserIdsForVendor(vendorId) {
+  const key = String(vendorId);
+  return new Set(
+    (mem().smartNearbyGateSessions || [])
+      .filter((r) => r.vendorId === key && !r.disconnectedAt && r.inRange && r.userId)
+      .map((r) => r.userId)
+  );
+}
+
 function getVendorSessions(vendorId, limit = 50) {
   const key = String(vendorId);
+  const activeUsers = activeGateUserIdsForVendor(key);
   return sortLatestFirst(
-    (mem().smartNearbyScanSessions || []).filter((s) => s.vendorId === key && s.sharedWithVendor)
+    (mem().smartNearbyScanSessions || []).filter(
+      (s) => s.vendorId === key && (s.sharedWithVendor || activeUsers.has(s.userId))
+    )
   ).slice(0, limit);
 }
 
@@ -143,6 +156,7 @@ function recordDeviceControl(payload = {}) {
   const entry = {
     id: `cdc_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     userId: payload.userId || null,
+    vendorId: payload.vendorId ? String(payload.vendorId) : null,
     deviceId: payload.deviceId ? String(payload.deviceId) : null,
     action: payload.action || 'toggle',
     deviceName: payload.deviceName || '',
@@ -210,6 +224,7 @@ function recordGateConnection(payload = {}) {
   const entry = {
     id: `sgate_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     userId: payload.userId || null,
+    userDisplayName: payload.userDisplayName || payload.userName || null,
     vendorId: payload.vendorId ? String(payload.vendorId) : null,
     channel: payload.channel || 'wifi',
     networkLabel: payload.networkLabel || '',
@@ -275,7 +290,161 @@ function getVendorGateSessions(vendorId, { activeOnly = false, limit = 40 } = {}
   return sortLatestFirst(rows, { dateFields: ['connectedAt', 'lastHeartbeatAt'] }).slice(0, limit);
 }
 
+function resolveUserBrief(userId) {
+  if (!userId) {
+    return { id: null, name: 'Unknown user', email: '', mobile: '', location_name: '' };
+  }
+  const users = db.inMemoryDb?.users || [];
+  const u = users.find((x) => String(x.id) === String(userId));
+  if (u) {
+    return {
+      id: u.id,
+      name: u.name || u.email || u.id,
+      email: u.email || '',
+      mobile: u.mobile || '',
+      location_name: u.location_name || '',
+    };
+  }
+  return {
+    id: userId,
+    name: `User ${String(userId).slice(-6)}`,
+    email: '',
+    mobile: '',
+    location_name: '',
+  };
+}
+
+function resolveVendorIdsForUser(userId) {
+  const uid = String(userId || '');
+  if (!uid) return [];
+  const vendors = getSmartVendors(100);
+  const ids = new Set();
+  vendors.forEach((v) => {
+    if (String(v.owner_id) === uid) ids.add(String(v.id));
+  });
+  (db.inMemoryDb?.user_vendor_mappings || []).forEach((m) => {
+    if (String(m.user_id) === uid && vendors.some((v) => String(v.id) === String(m.vendor_id))) {
+      ids.add(String(m.vendor_id));
+    }
+  });
+  return [...ids];
+}
+
+function vendorAccessAllowed(req, vendorId) {
+  const role = String(req.user?.role || '').toLowerCase();
+  if (role === 'super_admin' || role === 'admin') return true;
+  const userId = req.user?.id || req.userId;
+  const allowed = resolveVendorIdsForUser(userId);
+  if (allowed.some((id) => String(id) === String(vendorId))) return true;
+  if (role === 'vendor' && req.user?.vendor_id && String(req.user.vendor_id) === String(vendorId)) {
+    return true;
+  }
+  return false;
+}
+
+function linkedUserIdsForVendor(vendorId) {
+  const key = String(vendorId);
+  const ids = activeGateUserIdsForVendor(key);
+  (mem().smartNearbyGateSessions || [])
+    .filter((r) => r.vendorId === key && r.userId)
+    .forEach((r) => ids.add(r.userId));
+  (mem().smartNearbyScanSessions || [])
+    .filter((s) => s.vendorId === key && s.userId && (s.sharedWithVendor || ids.has(s.userId)))
+    .forEach((s) => ids.add(s.userId));
+  (mem().smartNearbyVoiceStreams || [])
+    .filter((v) => v.vendorId === key && v.userId)
+    .forEach((v) => ids.add(v.userId));
+  return ids;
+}
+
+function getVendorDeviceControls(vendorId, { userIds = null, limit = 60 } = {}) {
+  const key = String(vendorId);
+  const idSet = userIds ? new Set(userIds.filter(Boolean)) : linkedUserIdsForVendor(key);
+  if (!idSet.size) {
+    return sortLatestFirst(
+      (mem().smartNearbyDeviceControls || []).filter((c) => c.vendorId === key)
+    ).slice(0, limit);
+  }
+  return sortLatestFirst(
+    (mem().smartNearbyDeviceControls || []).filter(
+      (c) => idSet.has(c.userId) && (!c.vendorId || c.vendorId === key)
+    )
+  ).slice(0, limit);
+}
+
+function buildVendorDashboard(vendorId) {
+  const key = String(vendorId);
+  const activeGates = getVendorGateSessions(key, { activeOnly: true, limit: 100 });
+  const recentGates = getVendorGateSessions(key, { limit: 60 });
+  const scans = getVendorSessions(key, 80);
+  const voiceLines = getVendorVoiceStream(key, { limit: 200 });
+  const deviceControls = getVendorDeviceControls(key, { limit: 80 });
+
+  const userMap = new Map();
+  const touch = (userId) => {
+    const id = userId || 'unknown';
+    if (!userMap.has(id)) {
+      userMap.set(id, {
+        userId: id,
+        user: resolveUserBrief(userId),
+        activeGate: null,
+        gateHistory: [],
+        scans: [],
+        voiceLines: [],
+        deviceControls: [],
+      });
+    }
+    return userMap.get(id);
+  };
+
+  recentGates.forEach((g) => {
+    const row = touch(g.userId);
+    row.gateHistory.push(g);
+    if (!g.disconnectedAt && g.inRange) row.activeGate = g;
+  });
+  scans.forEach((s) => touch(s.userId).scans.push(s));
+  voiceLines.forEach((v) => touch(v.userId).voiceLines.push(v));
+  deviceControls.forEach((c) => touch(c.userId).deviceControls.push(c));
+
+  const users = [...userMap.values()].sort((a, b) => {
+    const aLive = a.activeGate ? 1 : 0;
+    const bLive = b.activeGate ? 1 : 0;
+    if (bLive !== aLive) return bLive - aLive;
+    const aT = a.activeGate?.lastHeartbeatAt || a.gateHistory[0]?.connectedAt || '';
+    const bT = b.activeGate?.lastHeartbeatAt || b.gateHistory[0]?.connectedAt || '';
+    return String(bT).localeCompare(String(aT));
+  });
+
+  users.forEach((u) => {
+    const gateName = u.activeGate?.userDisplayName || u.gateHistory.find((g) => g.userDisplayName)?.userDisplayName;
+    if (gateName && (!u.user?.name || String(u.user.name).startsWith('User '))) {
+      u.user = { ...u.user, name: gateName };
+    }
+    u.gateHistory = sortLatestFirst(u.gateHistory, { dateFields: ['connectedAt', 'lastHeartbeatAt'] });
+    u.scans = sortLatestFirst(u.scans, { dateFields: ['createdAt'] });
+    u.voiceLines = sortLatestFirst(u.voiceLines, { dateFields: ['at'] });
+    u.deviceControls = sortLatestFirst(u.deviceControls, { dateFields: ['createdAt'] });
+  });
+
+  return {
+    vendorId: key,
+    stats: {
+      connectedNow: activeGates.length,
+      totalUsers: users.length,
+      sharedScans: scans.length,
+      voiceLines: voiceLines.length,
+    },
+    activeGates,
+    users,
+    recentGates,
+    scans,
+    voiceLines,
+    deviceControls,
+  };
+}
+
 module.exports = {
+  getSmartVendors,
   listNearbyVendors,
   getVendorPolicy,
   setVendorPolicy,
@@ -294,5 +463,10 @@ module.exports = {
   endGateConnection,
   getUserActiveGate,
   getVendorGateSessions,
+  resolveUserBrief,
+  resolveVendorIdsForUser,
+  vendorAccessAllowed,
+  getVendorDeviceControls,
+  buildVendorDashboard,
 };
 

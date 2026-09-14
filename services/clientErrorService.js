@@ -39,6 +39,16 @@ function recordClientError(payload = {}) {
   const saved = store.append(entry);
 
   try {
+    const LOG = require('../utils/logger');
+    LOG.ui(
+      `client ${entry.level} ${entry.kind}`,
+      `${entry.screen}: ${entry.message}`.slice(0, 500),
+    );
+  } catch (_) {
+    /* non-blocking */
+  }
+
+  try {
     const { recordModuleDiagnostic } = require('./moduleDiagnosticLogService');
     const { resolveModuleFromScreen } = require('./moduleDiagnosticsService');
     const module =

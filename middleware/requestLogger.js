@@ -35,7 +35,12 @@ const requestLogger = (req, res, next) => {
         const responseSize = data == null
             ? 0
             : (typeof data === 'string' ? data.length : JSON.stringify(data).length);
-        LOG.info(`[HTTP ${failed ? 'ERR' : 'SLOW'}] ${req.method} ${url} ${res.statusCode} ${duration}ms ${responseSize}b mysql=${timing.mysqlCount}`);
+        const httpLine = `${req.method} ${url} ${res.statusCode} ${duration}ms ${responseSize}b mysql=${timing.mysqlCount}`;
+        if (failed) {
+            LOG.error(`[HTTP] ${httpLine}`);
+        } else {
+            LOG.info(`[HTTP SLOW] ${httpLine}`);
+        }
     };
 
     res.send = function(data) {

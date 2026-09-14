@@ -4,7 +4,8 @@
 const LOG = require('../utils/logger');
 const syncStatus = require('./syncStatusService');
 const { isMysqlConfigured } = require('../utils/resolveDbType');
-const { readErrorLogTail, purgeErrorLogOlderThan } = require('../utils/errorLogRetention');
+const { purgeErrorLogOlderThan } = require('../utils/errorLogRetention');
+const { readAllAppLogTails, APP_LOG_PATHS } = require('../utils/appLogFiles');
 
 const MODULE_CHECKS = [
   { key: 'trust_score', label: 'Trust Score', tables: ['trust_score_projects', 'trust_score_builders'] },
@@ -164,6 +165,9 @@ function sortIssues(issues = []) {
 
 function purgeDiagnosticLogs() {
   const errorResult = purgeErrorLogOlderThan();
+  purgeErrorLogOlderThan(undefined, APP_LOG_PATHS.info);
+  purgeErrorLogOlderThan(undefined, APP_LOG_PATHS.debug);
+  purgeErrorLogOlderThan(undefined, APP_LOG_PATHS.ui);
   let newsKept = 0;
   let clientKept = 0;
   try {
@@ -249,8 +253,9 @@ const HEALTH_SCOPES = ['core', 'sync', 'tables', 'news', 'offer', 'scan', 'modul
 function resolveHealthScopes(scopes) {
   if (!scopes || scopes.length === 0) return new Set(HEALTH_SCOPES);
   const s = new Set(scopes);
+  if (s.has('all')) return new Set(HEALTH_SCOPES);
   if (s.has('modules')) {
-    ['sync', 'tables', 'client', 'scan', 'news', 'offer'].forEach((x) => s.add(x));
+    ['sync', 'tables', 'client'].forEach((x) => s.add(x));
   }
   return s;
 }
@@ -368,8 +373,15 @@ async function getSystemHealth(options = {}) {
   }
 
   let errorLog = { lines: [] };
+  let infoLog = { lines: [] };
+  let debugLog = { lines: [] };
+  let uiLog = { lines: [] };
   if (on('backend')) {
-    errorLog = readErrorLogTail(50);
+    const tails = readAllAppLogTails(50);
+    errorLog = tails.errorLog;
+    infoLog = tails.infoLog;
+    debugLog = tails.debugLog;
+    uiLog = tails.uiLog;
     for (const line of errorLog.lines.slice(0, 10)) {
       if (/error|fail|exception|crash/i.test(line)) {
         issues.push({
@@ -388,7 +400,7 @@ async function getSystemHealth(options = {}) {
   let offerDiagnostics = null;
   let offerLogs = [];
   let offerLevelSummary = { L1: 0, L2: 0, L3: 0 };
-  if (on('news') || on('modules')) {
+  if (on('news')) {
   try {
     const newsLogService = require('./newsLogService');
     newsDiagnostics = await newsLogService.buildNewsSnapshot();
@@ -416,7 +428,7 @@ async function getSystemHealth(options = {}) {
   }
   }
 
-  if (on('offer') || on('modules')) {
+  if (on('offer')) {
   try {
     const offerLogService = require('./offerLogService');
     offerDiagnostics = await offerLogService.buildOfferSnapshot();
@@ -446,7 +458,7 @@ async function getSystemHealth(options = {}) {
 
   let featureScanLogs = [];
   let featureScanLevelSummary = { L1: 0, L2: 0, L3: 0 };
-  if (on('scan') || on('modules')) {
+  if (on('scan')) {
   try {
     const featureScanLogService = require('./featureScanLogService');
     featureScanLogs = featureScanLogService.getFeatureScanLogs(120);
@@ -546,18 +558,20 @@ async function getSystemHealth(options = {}) {
   }
   if (on('sync') || on('modules')) payload.sync = sync;
   if (on('tables') || on('modules')) payload.tableModules = tableModules;
-  if (on('backend')) payload.errorLog = errorLog;
+  if (on('backend')) {
+    Object.assign(payload, { errorLog, infoLog, debugLog, uiLog });
+  }
   if (on('client') || on('modules')) {
     payload.clientErrors = clientErrors;
     payload.clientLevelSummary = clientLevelSummary;
   }
-  if (on('news') || on('modules')) {
+  if (on('news')) {
     Object.assign(payload, { newsDiagnostics, newsLogs, newsLevelSummary });
   }
-  if (on('offer') || on('modules')) {
+  if (on('offer')) {
     Object.assign(payload, { offerDiagnostics, offerLogs, offerLevelSummary });
   }
-  if (on('scan') || on('modules')) {
+  if (on('scan')) {
     const featureScanLogService = require('./featureScanLogService');
     Object.assign(payload, {
       featureScanLogs,
