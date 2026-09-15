@@ -370,6 +370,35 @@ router.post('/vendor/:vendorId/connect-invite', authenticateToken, async (req, r
   }
 });
 
+router.get('/vendor/:vendorId/connect-link', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const forceNew = req.query.renew === '1' || req.query.renew === 'true';
+    const link = nearby.getOrCreateVendorConnectLink(vendorId, {
+      message: req.query.message,
+      forceNew,
+    });
+    res.json({ success: true, link });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/connect/join', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const body = req.body || {};
+    const result = nearby.joinVendorConnectLink(body.code || body.linkCode, userId, {
+      userDisplayName: body.userDisplayName || req.user?.name || null,
+      vendorId: body.vendorId || null,
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 router.get('/connect-invites/pending', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.userId;

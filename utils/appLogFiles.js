@@ -62,6 +62,19 @@ function readAllAppLogTails(maxLines = 40) {
   };
 }
 
+function truncateAllAppLogs() {
+  const cleared = {};
+  for (const [kind, logPath] of Object.entries(APP_LOG_PATHS)) {
+    try {
+      fs.writeFileSync(logPath, '', 'utf8');
+      cleared[kind] = true;
+    } catch (err) {
+      cleared[kind] = err.message || false;
+    }
+  }
+  return cleared;
+}
+
 module.exports = {
   APP_LOG_PATHS,
   DEFAULT_TTL_MS,
@@ -69,4 +82,5 @@ module.exports = {
   appendAppLog,
   readAppLogTail,
   readAllAppLogTails,
+  truncateAllAppLogs,
 };

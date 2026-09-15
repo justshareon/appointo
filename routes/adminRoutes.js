@@ -955,6 +955,61 @@ router.put('/aps/db-mode', requireSuperAdmin, async (req, res) => {
 });
 
 /**
+ * POST /api/admin/aps/clear-logs — wipe APS diagnostic logs (not business data)
+ */
+router.post('/aps/clear-logs', requireSuperAdmin, async (req, res) => {
+    try {
+        const { clearAllApsLogs } = require('../services/apsLogClearService');
+        const { getSystemHealth } = require('../services/systemHealthService');
+        const cleared = await clearAllApsLogs();
+        const health = await getSystemHealth();
+        res.json({ success: true, cleared, health });
+    } catch (error) {
+        LOG.error('[Admin] aps/clear-logs error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/aps/validate-production — in-memory release smoke checks (super-admin)
+ */
+router.post('/aps/validate-production', requireSuperAdmin, async (req, res) => {
+    try {
+        const { runProductionInMemoryValidation } = require('../services/productionInMemoryValidateService');
+        const result = await runProductionInMemoryValidation();
+        res.json({ success: result.success, ...result });
+    } catch (error) {
+        LOG.error('[Admin] aps/validate-production error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/** GET /api/admin/aps/diagnostic-logs — latest module + backend log tails */
+router.get('/aps/diagnostic-logs', requireSuperAdmin, async (req, res) => {
+    try {
+        const { getLatestDiagnosticLogs } = require('../services/apsDiagnosticLogsService');
+        const limit = parseInt(req.query.limit, 10) || 25;
+        const logs = await getLatestDiagnosticLogs({ limit });
+        res.json({ success: true, ...logs });
+    } catch (error) {
+        LOG.error('[Admin] aps/diagnostic-logs GET:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/** POST /api/admin/aps/regenerate-logs — run probes and refresh diagnostic buffers */
+router.post('/aps/regenerate-logs', requireSuperAdmin, async (req, res) => {
+    try {
+        const { regenerateDiagnosticLogs } = require('../services/apsDiagnosticLogsService');
+        const result = await regenerateDiagnosticLogs();
+        res.json({ success: true, ...result });
+    } catch (error) {
+        LOG.error('[Admin] aps/regenerate-logs error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
  * GET /api/admin/pool-config — per-feature MySQL pool limits (super-admin)
  */
 router.get('/pool-config', requireSuperAdmin, async (req, res) => {

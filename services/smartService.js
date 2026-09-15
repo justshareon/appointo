@@ -378,6 +378,8 @@ function getVendorDeviceControls(vendorId, { userIds = null, limit = 60 } = {}) 
 
 const MAX_CONNECT_INVITES = 300;
 const INVITE_TTL_MS = 30 * 60 * 1000;
+const OPEN_CONNECT_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const MAX_CONNECT_LINKS = 80;
 
 function normalizePhone(value) {
   return String(value || '').replace(/\D/g, '').slice(-10);
@@ -525,6 +527,76 @@ function listReachableUsersForVendor(vendorId) {
   return [...ids].map((id) => resolveUserBrief(id));
 }
 
+function newConnectLinkCode() {
+  return `sg${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`.slice(0, 14);
+}
+
+/** Reusable vendor QR / URL — any logged-in customer can join SGATE + SMART devices. */
+function getOrCreateVendorConnectLink(vendorId, { message, forceNew = false } = {}) {
+  const store = mem();
+  if (!Array.isArray(store.smartVendorConnectLinks)) store.smartVendorConnectLinks = [];
+  const key = String(vendorId);
+  const now = Date.now();
+  if (!forceNew) {
+    const existing = store.smartVendorConnectLinks.find(
+      (l) => l.vendorId === key && new Date(l.expiresAt).getTime() > now
+    );
+    if (existing) return existing;
+  }
+  const vendors = getSmartVendors(100);
+  const vendor = vendors.find((v) => String(v.id) === key);
+  const row = {
+    vendorId: key,
+    vendorName: vendor?.shop_name || key,
+    linkCode: newConnectLinkCode(),
+    message:
+      String(message || '').slice(0, 280)
+      || 'Connect on SMART — link WiFi, Bluetooth, IR & control nearby TV/AC with your vendor.',
+    channel: 'wifi',
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(now + OPEN_CONNECT_LINK_TTL_MS).toISOString(),
+  };
+  store.smartVendorConnectLinks.unshift(row);
+  if (store.smartVendorConnectLinks.length > MAX_CONNECT_LINKS) {
+    store.smartVendorConnectLinks.length = MAX_CONNECT_LINKS;
+  }
+  return row;
+}
+
+function joinVendorConnectLink(code, userId, { userDisplayName = null, vendorId = null } = {}) {
+  const store = mem();
+  const codeNorm = String(code || '').trim().toLowerCase();
+  const link = (store.smartVendorConnectLinks || []).find(
+    (l) => String(l.linkCode || '').toLowerCase() === codeNorm
+  );
+  if (!link) throw new Error('Invalid connect link — scan the vendor QR again');
+  if (new Date(link.expiresAt).getTime() < Date.now()) {
+    throw new Error('Connect link expired — ask vendor to refresh QR on their console');
+  }
+  if (vendorId && String(link.vendorId) !== String(vendorId)) {
+    throw new Error('This link is for another shop');
+  }
+
+  const uid = String(userId || '');
+  if (!uid) throw new Error('Sign in to connect');
+
+  const active = getUserActiveGate(uid);
+  if (active && String(active.vendorId) === String(link.vendorId)) {
+    return { session: active, link, alreadyConnected: true };
+  }
+
+  const session = recordGateConnection({
+    userId: uid,
+    userDisplayName: userDisplayName || 'Customer',
+    vendorId: link.vendorId,
+    channel: link.channel || 'wifi',
+    networkLabel: `${link.vendorName} · shared link`,
+    userSide: { role: 'user', status: 'connected', via: 'connect_link' },
+    vendorSide: { role: 'vendor', status: 'connected', gateOpen: true, via: 'connect_link' },
+  });
+  return { session, link, alreadyConnected: false };
+}
+
 function buildVendorDashboard(vendorId) {
   const key = String(vendorId);
   const activeGates = getVendorGateSessions(key, { activeOnly: true, limit: 100 });
@@ -582,8 +654,19 @@ function buildVendorDashboard(vendorId) {
   const connectInvites = listInvitesForVendor(key, { limit: 50 });
   const pendingOutbound = connectInvites.filter((i) => i.status === 'pending');
 
+  const vendorRow = getSmartVendors(100).find((v) => String(v.id) === key);
+  const connectLink = getOrCreateVendorConnectLink(key);
+
   return {
     vendorId: key,
+    vendorName: vendorRow?.shop_name || key,
+    connectLink: {
+      linkCode: connectLink.linkCode,
+      code: connectLink.linkCode,
+      vendorName: connectLink.vendorName,
+      expiresAt: connectLink.expiresAt,
+      message: connectLink.message,
+    },
     stats: {
       connectedNow: activeGates.length,
       totalUsers: users.length,
@@ -634,5 +717,7 @@ module.exports = {
   declineConnectInvite,
   listReachableUsersForVendor,
   findUserByTarget,
+  getOrCreateVendorConnectLink,
+  joinVendorConnectLink,
 };
 

@@ -1,2 +1,6 @@
-[2026-09-15T04:33:44.990Z] [WARN] [Excel File] Symbol column detected as 0 (No. column), adjusting to 1
-[2026-09-15T04:33:45.250Z] [WARN] [Excel File] Skipped 1448 rows with no valid price/change/volume (e.g. NAME, TWENTYFIRST CENTURY MANAGEMENT SRVCS LTD, A2Z INFRA ENGINEERING LTD…)
+[2026-09-15T07:51:13.063Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-15T07:51:13.474Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-15T07:51:26.996Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-15T07:51:30.144Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-15T07:51:35.607Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-15T07:51:38.407Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403

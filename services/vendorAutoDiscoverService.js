@@ -1,9 +1,58 @@
 /**
  * Discover nearby shops/vendors via OpenStreetMap (Overpass) for super-admin Vendor Auto.
  */
+const axios = require('axios');
 const db = require('../database');
 const adminService = require('./adminService');
 const { pushVendorAutoLog } = require('../utils/vendorAutoLog');
+
+/** Fallback when MySQL has no vendor geo rows — super-admin can scan immediately. */
+const PRESET_AREAS = [
+  {
+    id: 'mumbai',
+    label: 'Mumbai',
+    city: 'Mumbai',
+    town: 'Mumbai',
+    locationName: 'Mumbai, Maharashtra',
+    latitude: 19.076,
+    longitude: 72.8777,
+    vendorCount: 0,
+    preset: true,
+  },
+  {
+    id: 'delhi',
+    label: 'Delhi',
+    city: 'Delhi',
+    town: 'New Delhi',
+    locationName: 'New Delhi, Delhi',
+    latitude: 28.6139,
+    longitude: 77.209,
+    vendorCount: 0,
+    preset: true,
+  },
+  {
+    id: 'bengaluru',
+    label: 'Bengaluru',
+    city: 'Bengaluru',
+    town: 'Bengaluru',
+    locationName: 'Bengaluru, Karnataka',
+    latitude: 12.9716,
+    longitude: 77.5946,
+    vendorCount: 0,
+    preset: true,
+  },
+  {
+    id: 'pune',
+    label: 'Pune',
+    city: 'Pune',
+    town: 'Pune',
+    locationName: 'Pune, Maharashtra',
+    latitude: 18.5204,
+    longitude: 73.8567,
+    vendorCount: 0,
+    preset: true,
+  },
+];
 
 const SHOP_CATEGORY = {
   supermarket: 'Grocery',
@@ -219,33 +268,28 @@ out center ${Math.min(limit, 120)};
 `;
 }
 
-async function fetchOverpassOnce(url, query, timeoutMs = 22000) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: OVERPASS_HEADERS,
-      body: `data=${encodeURIComponent(query)}`,
-      signal: controller.signal,
-    });
-    const text = await res.text();
-    if (!res.ok) {
-      throw new Error(`Overpass HTTP ${res.status}${text?.slice(0, 80) ? `: ${text.slice(0, 80)}` : ''}`);
-    }
-    let json;
-    try {
-      json = JSON.parse(text);
-    } catch (_) {
-      throw new Error('Overpass returned non-JSON (server busy — retry)');
-    }
-    if (json.remark && !json.elements?.length) {
-      throw new Error(String(json.remark).slice(0, 120));
-    }
-    return Array.isArray(json?.elements) ? json.elements : [];
-  } finally {
-    clearTimeout(timer);
+async function fetchOverpassOnce(url, query, timeoutMs = 45000) {
+  const res = await axios.post(url, `data=${encodeURIComponent(query)}`, {
+    headers: OVERPASS_HEADERS,
+    timeout: timeoutMs,
+    maxContentLength: 8 * 1024 * 1024,
+    validateStatus: () => true,
+    responseType: 'text',
+  });
+  const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || '');
+  if (res.status < 200 || res.status >= 300) {
+    throw new Error(`Overpass HTTP ${res.status}${text?.slice(0, 80) ? `: ${text.slice(0, 80)}` : ''}`);
   }
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (_) {
+    throw new Error('Overpass returned non-JSON (server busy — retry)');
+  }
+  if (json.remark && !json.elements?.length) {
+    throw new Error(String(json.remark).slice(0, 120));
+  }
+  return Array.isArray(json?.elements) ? json.elements : [];
 }
 
 async function fetchOverpassShops(latitude, longitude, radiusM = 6000) {
@@ -271,7 +315,10 @@ async function fetchOverpassShops(latitude, longitude, radiusM = 6000) {
       }
     }
   }
-  throw new Error(errors[0] || 'OpenStreetMap scan returned no shops — try refresh or another area');
+  const msg = errors[0] || 'OpenStreetMap scan returned no shops — try refresh or another area';
+  const err = new Error(msg);
+  err.overpassErrors = errors;
+  throw err;
 }
 
 async function loadExistingVendorsNear(geo) {
@@ -321,11 +368,13 @@ async function scanNearbyVendors(geo = {}) {
   });
 
   let elements = [];
+  let overpassWarning = null;
   try {
     elements = await fetchOverpassShops(latitude, longitude, geo.radiusM || 6000);
   } catch (err) {
     pushVendorAutoLog('error', `Overpass failed: ${err.message}`);
-    throw err;
+    overpassWarning = err.message;
+    elements = [];
   }
 
   const mapped = [];
@@ -356,6 +405,9 @@ async function scanNearbyVendors(geo = {}) {
       osmElements: mapped.length,
       radiusM: geo.radiusM || 6000,
       source: 'openstreetmap_overpass',
+      warning: overpassWarning,
+      latitude,
+      longitude,
     },
   };
 }
@@ -414,7 +466,13 @@ async function listSystemAreas() {
     }
   });
 
-  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label));
+  const merged = new Map();
+  PRESET_AREAS.forEach((a) => merged.set(a.id, { ...a }));
+  for (const row of byKey.values()) {
+    const existing = merged.get(row.id);
+    merged.set(row.id, existing ? { ...existing, ...row, preset: false } : row);
+  }
+  return Array.from(merged.values()).sort((a, b) => a.label.localeCompare(b.label));
 }
 
 async function saveProductsForVendor(vendorId, products = []) {

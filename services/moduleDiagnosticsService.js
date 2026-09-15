@@ -163,6 +163,7 @@ function collectLogsForModule(moduleKey, ctx = {}) {
     moduleDiagnostics = [],
     newsLogs = [],
     offerLogs = [],
+    tradingExcelLogs = [],
     issues = [],
   } = ctx;
 
@@ -182,12 +183,22 @@ function collectLogsForModule(moduleKey, ctx = {}) {
     .filter((e) => scanForModule(e) && String(e.logSource) === 'backend')
     .slice(0, 15);
   const scan = [...scanUi, ...scanBackend].slice(0, 20);
-  const pipeline =
+  let pipeline =
     moduleKey === 'news'
       ? newsLogs.slice(0, 20)
       : moduleKey === 'offers'
         ? offerLogs.slice(0, 20)
         : [];
+  if (moduleKey === 'trading' && tradingExcelLogs?.length) {
+    pipeline = tradingExcelLogs.slice(0, 20).map((row, idx) => ({
+      id: `trading-excel-${idx}-${row.at}`,
+      level: row.level === 'error' ? 'L1' : row.level === 'warn' ? 'L2' : 'L3',
+      stage: row.step || 'excel',
+      message: row.message,
+      at: row.at,
+      meta: row,
+    }));
+  }
 
   const relatedIssues = issues.filter(
     (i) => i.module === moduleKey || (i.message || '').toLowerCase().includes(moduleKey.replace('_', ' '))
@@ -331,6 +342,7 @@ async function buildModuleReports(ctx = {}) {
     offerDiagnostics = null,
     newsLogs = [],
     offerLogs = [],
+    tradingExcelLogs = [],
     issues = [],
   } = ctx;
 
@@ -398,6 +410,7 @@ async function buildModuleReports(ctx = {}) {
       moduleDiagnostics,
       newsLogs,
       offerLogs,
+      tradingExcelLogs,
       issues,
     });
 

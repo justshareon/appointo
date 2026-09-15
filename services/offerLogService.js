@@ -41,6 +41,10 @@ function purgeOfferLogs() {
   return store.purgeExpired();
 }
 
+function clearOfferLogs() {
+  return store.clearAll();
+}
+
 function countSliceItems(slice = {}) {
   return (slice.deals?.length || 0) + (slice.vendors?.length || 0) + (slice.products?.length || 0);
 }
@@ -198,6 +202,7 @@ module.exports = {
   recordOfferLog,
   getOfferLogs,
   purgeOfferLogs,
+  clearOfferLogs,
   buildOfferSnapshot,
   probeOfferPipeline,
   offerLogsToIssues,

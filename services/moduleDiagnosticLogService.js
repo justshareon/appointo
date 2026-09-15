@@ -48,6 +48,10 @@ function purgeModuleDiagnostics() {
   return store.purgeExpired();
 }
 
+function clearModuleDiagnostics() {
+  return store.clearAll();
+}
+
 function moduleDiagnosticsToIssues(logs = []) {
   return [...logs]
     .filter((l) => l.level === 'L1' || l.level === 'L2')
@@ -76,6 +80,7 @@ module.exports = {
   recordModuleDiagnostic,
   getModuleDiagnostics,
   purgeModuleDiagnostics,
+  clearModuleDiagnostics,
   moduleDiagnosticsToIssues,
   getLevelSummary,
 };

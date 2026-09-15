@@ -105,7 +105,13 @@ function createDiagnosticLogStore({
     return memory.length;
   }
 
-  return { append, getEntries, purgeExpired };
+  function clearAll() {
+    memory.length = 0;
+    rewriteDisk([]);
+    return 0;
+  }
+
+  return { append, getEntries, purgeExpired, clearAll };
 }
 
 module.exports = {

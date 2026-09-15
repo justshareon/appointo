@@ -115,6 +115,10 @@ function purgeFeatureScanLogs() {
   return store.purgeExpired();
 }
 
+function clearFeatureScanLogs() {
+  return store.clearAll();
+}
+
 function featureScanLogsToIssues(logs = []) {
   return [...logs]
     .filter((l) => l.level === 'L1' || l.level === 'L2')
@@ -145,6 +149,7 @@ module.exports = {
   getFeatureScanLogs,
   splitFeatureScanInsights,
   purgeFeatureScanLogs,
+  clearFeatureScanLogs,
   featureScanLogsToIssues,
   getLevelSummary,
 };

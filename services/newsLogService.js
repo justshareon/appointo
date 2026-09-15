@@ -41,6 +41,10 @@ function purgeNewsLogs() {
   return store.purgeExpired();
 }
 
+function clearNewsLogs() {
+  return store.clearAll();
+}
+
 function parseSources(raw) {
   if (!raw) return [];
   if (Array.isArray(raw)) return raw;
@@ -251,6 +255,7 @@ module.exports = {
   recordNewsLog,
   getNewsLogs,
   purgeNewsLogs,
+  clearNewsLogs,
   buildNewsSnapshot,
   probeNewsPipeline,
   newsLogsToIssues,

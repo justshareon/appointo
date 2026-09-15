@@ -32,7 +32,13 @@ function getLogs({ limit = 80, since = null } = {}) {
   return rows.slice(0, limit);
 }
 
+function clearVendorAutoLogs() {
+  entries.length = 0;
+  return 0;
+}
+
 module.exports = {
   pushVendorAutoLog: push,
   getVendorAutoLogs: getLogs,
+  clearVendorAutoLogs,
 };

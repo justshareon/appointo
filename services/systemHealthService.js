@@ -248,14 +248,14 @@ async function getTrustScoreHealth(pool, issues) {
   }
 }
 
-const HEALTH_SCOPES = ['core', 'sync', 'tables', 'news', 'offer', 'scan', 'modules', 'client', 'backend'];
+const HEALTH_SCOPES = ['core', 'sync', 'tables', 'news', 'offer', 'scan', 'trading', 'modules', 'client', 'backend'];
 
 function resolveHealthScopes(scopes) {
   if (!scopes || scopes.length === 0) return new Set(HEALTH_SCOPES);
   const s = new Set(scopes);
   if (s.has('all')) return new Set(HEALTH_SCOPES);
   if (s.has('modules')) {
-    ['sync', 'tables', 'client'].forEach((x) => s.add(x));
+    ['sync', 'tables', 'client', 'news', 'offer', 'scan', 'trading'].forEach((x) => s.add(x));
   }
   return s;
 }
@@ -464,6 +464,22 @@ async function getSystemHealth(options = {}) {
   }
   }
 
+  let tradingExcelLogs = [];
+  if (on('trading')) {
+    try {
+      const tradingExcelLog = require('../utils/tradingExcelLog');
+      tradingExcelLogs = tradingExcelLog.getRecent(50);
+    } catch (err) {
+      issues.push({
+        severity: 'warning',
+        level: 'L2',
+        module: 'trading',
+        message: `Trading Excel log unavailable: ${err.message}`,
+        source: 'trading_excel_log',
+      });
+    }
+  }
+
   let featureScanLogs = [];
   let featureScanLevelSummary = { L1: 0, L2: 0, L3: 0 };
   if (on('scan')) {
@@ -515,6 +531,7 @@ async function getSystemHealth(options = {}) {
       offerDiagnostics,
       newsLogs,
       offerLogs,
+      tradingExcelLogs,
       issues,
     });
     issues.push(...moduleDiagnosticsService.moduleReportsToIssues(moduleReports));
@@ -596,6 +613,9 @@ async function getSystemHealth(options = {}) {
       featureScanInsights: featureScanLogService.splitFeatureScanInsights(featureScanLogs, 50),
     });
   }
+  if (on('trading')) {
+    Object.assign(payload, { tradingExcelLogs });
+  }
   if (on('modules')) {
     Object.assign(payload, { moduleDiagnostics, moduleDiagnosticLevelSummary, moduleReports });
   }
@@ -603,4 +623,4 @@ async function getSystemHealth(options = {}) {
   return payload;
 }
 
-module.exports = { getSystemHealth, MODULE_CHECKS, purgeDiagnosticLogs };
+module.exports = { getSystemHealth, MODULE_CHECKS, purgeDiagnosticLogs, HEALTH_SCOPES };

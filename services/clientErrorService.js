@@ -82,6 +82,10 @@ function purgeClientErrors() {
   return store.purgeExpired();
 }
 
+function clearClientErrors() {
+  return store.clearAll();
+}
+
 function levelToSeverity(level) {
   if (level === 'L1') return 'critical';
   if (level === 'L2') return 'warning';
@@ -140,6 +144,7 @@ module.exports = {
   recordClientError,
   getClientErrors,
   purgeClientErrors,
+  clearClientErrors,
   clientErrorsToIssues,
   getLevelSummary,
   normalizeLevel,
