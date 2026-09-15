@@ -30,6 +30,10 @@ function normalizeLevel(payload = {}) {
     if (l === 'L1' || l === 'L2' || l === 'L3') return l;
   }
   const stage = String(payload.stage || '').toLowerCase();
+  if (stage === 'history_sync') {
+    const msg = String(payload.message || '').trim();
+    if (/^\d+\s+from\s+api$/i.test(msg)) return 'L3';
+  }
   if (L1_STAGES.has(stage)) return 'L1';
   if (L2_STAGES.has(stage)) return 'L2';
   return 'L3';

@@ -4,7 +4,7 @@
 const express = require('express');
 const router = express.Router();
 const db = require('../database');
-const { authenticateToken } = require('../middleware/auth');
+const { authenticateToken, optionalAuthenticateToken } = require('../middleware/auth');
 const nearby = require('../services/smartService');
 const nearbyMem = require('../services/smartMemoryStore');
 const LOG = require('../utils/logger');
@@ -165,7 +165,7 @@ router.get('/my-sessions', authenticateToken, async (req, res) => {
 
 router.post('/device/control', authenticateToken, async (req, res) => {
   try {
-    const { deviceId, action, deviceName, deviceType, powered } = req.body || {};
+    const { deviceId, action, deviceName, deviceType, powered, payload } = req.body || {};
     if (!deviceId || !action) {
       return res.status(400).json({ success: false, error: 'deviceId and action required' });
     }
@@ -177,6 +177,7 @@ router.post('/device/control', authenticateToken, async (req, res) => {
       deviceName,
       deviceType,
       powered,
+      payload,
     });
     res.json({ success: true, entry });
   } catch (err) {
@@ -185,8 +186,11 @@ router.post('/device/control', authenticateToken, async (req, res) => {
   }
 });
 
-router.post('/session/end', authenticateToken, async (req, res) => {
+router.post('/session/end', optionalAuthenticateToken, async (req, res) => {
   try {
+    if (!req.user?.id) {
+      return res.json({ success: true, disposed: false, skipped: 'no_auth' });
+    }
     const result = nearby.endSession();
     res.json({ success: true, ...result });
   } catch (err) {
@@ -305,6 +309,96 @@ router.get('/gate/status', authenticateToken, async (req, res) => {
     res.json({ success: true, session, connected: !!session });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Vendor → user SGATE connect invite (alert on user app + accept = auto link) */
+router.post('/vendor/:vendorId/connect-invite', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const body = req.body || {};
+    let target = nearby.findUserByTarget(body);
+    if (!target?.id && (body.mobile || body.email)) {
+      try {
+        const pool = typeof db.getPool === 'function' ? db.getPool() : null;
+        if (pool) {
+          const phone = String(body.mobile || '').replace(/\D/g, '').slice(-10);
+          const em = String(body.email || '').trim().toLowerCase();
+          let rows = [];
+          if (phone) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE REPLACE(mobile, " ", "") LIKE ? LIMIT 1',
+              [`%${phone}`]
+            );
+          } else if (em) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE LOWER(email) = ? LIMIT 1',
+              [em]
+            );
+          }
+          if (rows?.[0]) target = rows[0];
+        }
+      } catch (lookupErr) {
+        LOG.warning('[Smart] connect-invite user lookup:', lookupErr.message);
+      }
+    }
+    if (!target?.id) {
+      return res.status(404).json({ success: false, error: 'User not found for that mobile/email' });
+    }
+    const invite = nearby.createConnectInvite(vendorId, {
+      ...body,
+      userId: target.id,
+      targetUserName: target.name || target.email,
+      email: target.email,
+      mobile: target.mobile,
+    });
+    const notificationService = require('../services/notificationService');
+    await notificationService.notify('smart_connect_request', {
+      targetUserId: target.id,
+      userId: target.id,
+      vendorId,
+      vendorName: invite.vendorName,
+      inviteId: invite.id,
+      message: invite.message,
+      title: `${invite.vendorName} — connect on SGATE`,
+    });
+    res.json({ success: true, invite });
+  } catch (err) {
+    LOG.error('[Smart] connect-invite error:', err.message);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/connect-invites/pending', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const invites = nearby.listPendingInvitesForUser(userId);
+    res.json({ success: true, invites, count: invites.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/connect-invites/:inviteId/accept', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const result = nearby.acceptConnectInvite(req.params.inviteId, userId, {
+      userDisplayName: req.body?.userDisplayName || req.user?.name || null,
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/connect-invites/:inviteId/decline', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const invite = nearby.declineConnectInvite(req.params.inviteId, userId);
+    res.json({ success: true, invite });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

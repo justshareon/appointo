@@ -108,6 +108,13 @@ const buildMessage = (eventKey, payload) => {
         subject: 'Product Updated',
         text: `Product updated by vendor user ${payload.userId}. Product ID: ${payload.productId || 'N/A'}.`
       };
+    case 'smart_connect_request':
+      return {
+        subject: payload.title || 'SMART vendor wants to connect',
+        text:
+          payload.message
+          || `${payload.vendorName || 'A vendor'} invited you to connect on SGATE — tap Accept in SMART to link mic and scans.`,
+      };
     case 'subscription_updated':
       return {
         subject: 'Subscription Updated',

@@ -244,6 +244,41 @@ class StockDataService {
         return true;
     }
 
+    /** stock_data_history must match live_stock_data columns used by Excel archive. */
+    async ensureHistoryStockColumns(connOrPool) {
+        const runner = connOrPool?.query ? connOrPool : db.getPool();
+        if (!runner?.query) return false;
+
+        const query = runner.query.bind(runner);
+        const columnDefs = [
+            ['pe_ratio', 'DECIMAL(10, 2) NULL AFTER market_cap'],
+            ['week_52_low', 'DECIMAL(10, 2) NULL AFTER pe_ratio'],
+            ['week_52_high', 'DECIMAL(10, 2) NULL AFTER week_52_low'],
+            ['additional_data', 'JSON NULL AFTER week_52_high'],
+            ['data_type', "ENUM('gainers', 'decliners', 'actives', 'data') DEFAULT 'data' AFTER week_52_high"],
+        ];
+
+        for (const [col, def] of columnDefs) {
+            try {
+                const [rows] = await query(
+                    `SELECT 1 AS ok FROM information_schema.COLUMNS
+                     WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'stock_data_history' AND COLUMN_NAME = ?
+                     LIMIT 1`,
+                    [col]
+                );
+                if (!rows?.length) {
+                    await query(`ALTER TABLE stock_data_history ADD COLUMN ${col} ${def}`);
+                    LOG.info(`[Stock Data] Added stock_data_history.${col}`);
+                }
+            } catch (err) {
+                if (!String(err.message || '').includes('Duplicate column')) {
+                    LOG.warning(`[Stock Data] History column ${col}:`, err.message);
+                }
+            }
+        }
+        return true;
+    }
+
     /** Keys already saved this calendar date + hour (symbol|data_type). */
     async getUploadHourKeys(connOrPool) {
         const runner = connOrPool?.query ? connOrPool : db.getPool();
@@ -281,6 +316,8 @@ class StockDataService {
         const pool = db.getPool();
 
         try {
+            await this.ensureLiveStockColumns(pool);
+            await this.ensureHistoryStockColumns(pool);
             const [countRows] = await pool.query('SELECT COUNT(*) AS n FROM live_stock_data');
             const n = Number(countRows?.[0]?.n || 0);
             if (!n) {

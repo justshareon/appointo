@@ -252,10 +252,14 @@ router.get('/bootstrap', async (req, res) => {
             stockDataService.getLiveStocksPage({ ...pageOpts, dataType: 'data' }),
         ]);
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const tradingExcelMetaService = require('../services/tradingExcelMetaService');
+        const tradingExcelMeta = await tradingExcelMetaService.getTradingExcelMeta();
         res.json({
             success: true,
             source: memoryCount > 0 ? 'memory' : 'empty',
             memoryCount,
+            dataAsOf: tradingExcelMeta.dataAsOf || null,
+            uploadedAt: tradingExcelMeta.uploadedAt || null,
             gainers: gainersPage.data || [],
             losers: losersPage.data || [],
             actives: activesPage.data || [],

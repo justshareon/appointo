@@ -446,6 +446,14 @@ async function getSystemHealth(options = {}) {
         });
       }
     }
+    if ((offerDiagnostics?.dealsCount || 0) > 0) {
+      for (let i = issues.length - 1; i >= 0; i -= 1) {
+        const msg = String(issues[i].message || '');
+        if (issues[i].module === 'offers' && /deals is empty|Table deals has 0 rows/i.test(msg)) {
+          issues.splice(i, 1);
+        }
+      }
+    }
   } catch (err) {
     issues.push({
       severity: 'warning',
@@ -532,6 +540,14 @@ async function getSystemHealth(options = {}) {
     total: normalizedIssues.length,
   };
 
+  let runtimeDb = null;
+  try {
+    const runtimeDbModeService = require('./runtimeDbModeService');
+    runtimeDb = runtimeDbModeService.getStatus();
+  } catch (_) {
+    /* optional */
+  }
+
   const payload = {
     success: true,
     checkedAt,
@@ -539,6 +555,7 @@ async function getSystemHealth(options = {}) {
     scope: options.scopes?.length === 1 ? options.scopes[0] : singleScope,
     scopesApplied: [...active],
     dbType,
+    runtimeDb,
     mysqlConfigured: isMysqlConfigured(),
     poolReady: !!pool,
     buildVersion: syncStatus.getBuildVersion?.() || process.env.BUILD_VERSION || 'local',

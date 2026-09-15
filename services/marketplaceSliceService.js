@@ -490,7 +490,7 @@ async function fetchProducts(limit) {
 
 async function buildSliceBody(opts) {
 
-  const safeLimit = clampLimit(opts.limit, { def: 20, max: 30 });
+  const safeLimit = clampLimit(opts.limit, { def: 40, max: 80 });
 
   const {
 
@@ -590,7 +590,7 @@ async function buildSliceBody(opts) {
 
 async function getSlice(opts = {}) {
 
-  const safeLimit = clampLimit(opts.limit, { def: 20, max: 30 });
+  const safeLimit = clampLimit(opts.limit, { def: 40, max: 80 });
 
   const {
 
@@ -784,7 +784,7 @@ function pickMergedFromScopeMap(scopeMap, requestedScope, safeLimit) {
  * One HTTP call — bucket deals/vendors/products by local/town/city/state for a single language.
  */
 async function getBundle(opts = {}) {
-  const safeLimit = clampLimit(opts.limit, { def: 24, max: 40 });
+  const safeLimit = clampLimit(opts.limit, { def: 48, max: 80 });
   const {
     scope = 'All',
     category = 'all',

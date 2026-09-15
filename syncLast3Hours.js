@@ -10,9 +10,13 @@ const db = require('./database');
 const LOG = require('./utils/logger');
 const featureConnectionManager = require('./database/featureConnectionManager');
 
+/** Default window for drift/cron (CLI with no args). APS toggle/revalidate use 4h via `hours` option. */
 const HOURS = 3;
-const CUTOFF_MS = Date.now() - HOURS * 60 * 60 * 1000;
-const cutoffDate = new Date(CUTOFF_MS);
+/** APS revalidate + db-mode toggle — last N hours memory ↔ MySQL */
+const APS_ACTIVITY_SYNC_HOURS = 4;
+
+let activeCutoffMs = Date.now() - HOURS * 60 * 60 * 1000;
+let cutoffDate = new Date(activeCutoffMs);
 const todayStr = new Date().toISOString().slice(0, 10);
 
 const mem = () => db.inMemoryDb;
@@ -26,7 +30,7 @@ const ts = (value) => {
 const isRecent = (row, fields = ['created_at', 'updated_at', 'joined_at', 'timestamp']) => {
   if (!row) return false;
   for (const f of fields) {
-    if (ts(row[f]) >= CUTOFF_MS) return true;
+    if (ts(row[f]) >= activeCutoffMs) return true;
   }
   // Appointments booked for "today" count as recent activity window
   if (row.date && String(row.date).slice(0, 10) === todayStr) return true;
@@ -560,20 +564,31 @@ async function hydrateFromMysqlRecent(pool) {
   return added;
 }
 
-async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
-  if (hydrateOnly) {
-    LOG.info(`[Hydrate] Pulling last ${HOURS}h from MySQL into memory`);
+async function runSyncLast3Hours({ hydrateOnly = false, hours } = {}) {
+  const windowHours = Math.min(Math.max(parseInt(hours, 10) || HOURS, 1), 168);
+  const savedCutoffMs = activeCutoffMs;
+  const savedCutoffDate = cutoffDate;
+  activeCutoffMs = Date.now() - windowHours * 60 * 60 * 1000;
+  cutoffDate = new Date(activeCutoffMs);
+
+  try {
     const pool = await getPool();
+    if (!pool) {
+      LOG.warning(`[RecentSync] MySQL pool unavailable — skipped (${windowHours}h window)`);
+      return { skipped: true, reason: 'no_pool', hours: windowHours, hydrated: 0 };
+    }
+
+    if (hydrateOnly) {
+      LOG.info(`[Hydrate] Pulling last ${windowHours}h from MySQL into memory`);
+      const hydrated = await hydrateFromMysqlRecent(pool);
+      return { hydrated, hours: windowHours };
+    }
+
+    LOG.info('');
+    LOG.info(`═══ Last ${windowHours}h activity sync (memory ↔ MySQL) ═══`);
+    LOG.info(`Cutoff: ${cutoffDate.toISOString()}`);
+
     const hydrated = await hydrateFromMysqlRecent(pool);
-    return { hydrated };
-  }
-
-  LOG.info('');
-  LOG.info(`═══ Last ${HOURS}h activity sync (memory ↔ MySQL) ═══`);
-  LOG.info(`Cutoff: ${cutoffDate.toISOString()}`);
-
-  const pool = await getPool();
-  const hydrated = await hydrateFromMysqlRecent(pool);
 
   const counts = {
     users: await syncRecentUsers(pool),
@@ -607,25 +622,42 @@ async function runSyncLast3Hours({ hydrateOnly = false } = {}) {
 
   LOG.info('');
   if (written === 0 && hydrated === 0) {
-    LOG.success(`Nothing missed in last ${HOURS}h — left as-is.`);
+    LOG.success(`Nothing missed in last ${windowHours}h — left as-is.`);
   } else {
     LOG.success(`Synced missed activity: ${JSON.stringify(counts)}`);
   }
   LOG.info('═══════════════════════════════════════════');
-  return counts;
+    return { ...counts, hours: windowHours };
+  } finally {
+    activeCutoffMs = savedCutoffMs;
+    cutoffDate = savedCutoffDate;
+  }
 }
 
-async function syncLast3Hours({ exit = false, hydrateOnly = false } = {}) {
-  const counts = await runSyncLast3Hours({ hydrateOnly });
+async function syncLast3Hours({ exit = false, hydrateOnly = false, hours } = {}) {
+  const counts = await runSyncLast3Hours({ hydrateOnly, hours });
   if (exit) process.exit(0);
   return counts;
 }
 
+/** APS Revalidate — align memory ↔ MySQL for recent activity (default 4h). */
+async function revalidateRecentActivity({ hours = APS_ACTIVITY_SYNC_HOURS } = {}) {
+  return runSyncLast3Hours({ hours });
+}
+
 if (require.main === module) {
-  syncLast3Hours({ exit: true }).catch((err) => {
-    LOG.error('3h sync failed:', err.message || err);
+  const cliHours = parseInt(process.argv[2], 10);
+  const hours = Number.isFinite(cliHours) && cliHours > 0 ? cliHours : undefined;
+  syncLast3Hours({ exit: true, hours }).catch((err) => {
+    LOG.error('Recent activity sync failed:', err.message || err);
     process.exit(1);
   });
 }
 
-module.exports = { syncLast3Hours, runSyncLast3Hours };
+module.exports = {
+  syncLast3Hours,
+  runSyncLast3Hours,
+  revalidateRecentActivity,
+  APS_ACTIVITY_SYNC_HOURS,
+  HOURS,
+};

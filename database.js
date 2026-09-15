@@ -21,7 +21,7 @@ const getPool = () => featureConnectionManager.getPool();
 const ensureWritePool = async () => {
     let pool = getPool();
     if (pool) return pool;
-    if (String(process.env.DB_TYPE || DB_TYPE || '').toLowerCase() !== 'mysql') return null;
+    if (getRuntimeDbType() !== 'mysql') return null;
     try {
         pool = await featureConnectionManager.acquireForSync('core');
         return pool || getPool();
@@ -87,8 +87,7 @@ const LOG = {
     warning: (msg) => { if(LOG_CONFIG.ENABLED) console.log(`[DB WARN] ${new Date().toLocaleTimeString()} | ${msg}`) }
 };
 
-const { resolveDbType } = require('./utils/resolveDbType');
-const DB_TYPE = resolveDbType();
+const { getRuntimeDbType } = require('./utils/runtimeDbType');
 
 // Helper for dynamic seed dates
 const now = new Date();
@@ -916,7 +915,7 @@ const dbContext = require('./database/dbContext');
 dbContext.getPool = getPool;
 dbContext.inMemoryDb = inMemoryDb;
 dbContext.LOG = LOG;
-dbContext.DB_TYPE = DB_TYPE;
+require('./utils/runtimeDbType').attachDbContextGetter();
 dbContext.toMysqlDateTime = toMysqlDateTime;
 dbContext.ensureWritePool = ensureWritePool;
 dbContext.normalizeProductRow = normalizeProductRow;
@@ -1607,7 +1606,7 @@ const ensureFleetTables = async () => {
 };
 
 const db = {
-    getType: () => DB_TYPE,
+    getType: () => getRuntimeDbType(),
     ...featureApi(require('./database/features/appointments')),
     ...featureApi(require('./database/features/queue')),
     ...featureApi(require('./database/features/shopping')),
@@ -1730,7 +1729,7 @@ const db = {
         };
 
         try {
-            if (DB_TYPE === 'mysql') {
+            if (getRuntimeDbType() === 'mysql') {
                 const pool = await ensureWritePool();
                 if (pool) {
                     await writeMysql(pool);
@@ -1824,7 +1823,7 @@ const db = {
     deleteUser: async (userId) => {
         inMemoryDb.user_vendor_mappings = (inMemoryDb.user_vendor_mappings || []).filter(m => m.user_id !== userId);
         inMemoryDb.users = inMemoryDb.users.filter(u => u.id !== userId);
-        if (DB_TYPE === 'mysql') {
+        if (getRuntimeDbType() === 'mysql') {
             try {
                 if (getPool()) {
                     await getPool().query('DELETE FROM user_vendor_mappings WHERE user_id = ?', [userId]);
@@ -1839,7 +1838,7 @@ const db = {
 
     getUserVendorMappings: async (userId = null) => {
         // Source of truth is in-memory. MySQL is used only when DB_TYPE=mysql.
-        if (DB_TYPE === 'mysql') {
+        if (getRuntimeDbType() === 'mysql') {
             try {
                 if (getPool()) {
                     await ensureUserVendorMappingTable();
@@ -1879,7 +1878,7 @@ const db = {
         inMemoryDb.user_vendor_mappings = inMemoryDb.user_vendor_mappings || [];
         inMemoryDb.user_vendor_mappings.push(mapping);
 
-        if (DB_TYPE === 'mysql') {
+        if (getRuntimeDbType() === 'mysql') {
             try {
                 if (getPool()) {
                     await ensureUserVendorMappingTable();
@@ -1904,7 +1903,7 @@ const db = {
         inMemoryDb.user_vendor_mappings = (inMemoryDb.user_vendor_mappings || []).filter(
             m => !(m.user_id === userId && m.vendor_id === vendorId)
         );
-        if (DB_TYPE === 'mysql') {
+        if (getRuntimeDbType() === 'mysql') {
             try {
                 if (getPool()) {
                     await ensureUserVendorMappingTable();
@@ -2390,7 +2389,7 @@ const db = {
             ? String(feature).toLowerCase()
             : '';
         try {
-            if (DB_TYPE === 'mysql' && getPool()) {
+            if (getRuntimeDbType() === 'mysql' && getPool()) {
                 // Determine today's date in YYYY-MM-DD format for MySQL comparison
                 const now = new Date();
                 const year = now.getFullYear();
@@ -2798,7 +2797,7 @@ const db = {
         const params = [category.id, category.name, category.created_at];
 
         try {
-            if (DB_TYPE === 'mysql' && getPool()) {
+            if (getRuntimeDbType() === 'mysql' && getPool()) {
                 await getPool().query(sql, params);
             } else {
                 const { mirrorQuery } = require('./database/mysqlMirror');
@@ -3030,7 +3029,7 @@ const db = {
     // --- SYSTEM SETTINGS ---
     getSettings: async () => {
         // Use in-memory settings unless MySQL mode is explicitly enabled
-        if (DB_TYPE !== 'mysql') {
+        if (getRuntimeDbType() !== 'mysql') {
             const { ensureFeatureSettings } = require('./utils/defaultFeatureSettings');
             inMemoryDb.settings = ensureFeatureSettings(inMemoryDb.settings || {});
             return inMemoryDb.settings;
@@ -3834,7 +3833,7 @@ for (const key in db) {
                     return await db[key](...args);
                 } finally {
                     const duration = Date.now() - start;
-                    const usedMysql = DB_TYPE === 'mysql' && !!getPool();
+                    const usedMysql = getRuntimeDbType() === 'mysql' && !!getPool();
                     const source = usedMysql ? 'MYSQL' : 'INMEMORY';
                     logDbAccess(source, key, duration);
                 }

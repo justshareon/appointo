@@ -15,6 +15,7 @@ const excelLauncherService = require('../services/excelLauncherService');
 const stockDataService = require('../services/stockDataService');
 const featureEngineeringService = require('../services/featureEngineeringService');
 const tradingExcelLog = require('../utils/tradingExcelLog');
+const tradingExcelMetaService = require('../services/tradingExcelMetaService');
 const LOG = require('../utils/logger');
 const { withOperationRetry } = require('../utils/operationRetry');
 require('../loadEnv');
@@ -54,6 +55,7 @@ class ExcelFileSyncJob {
         this.initialized = false;
         this.app = null;
         this.pendingPreview = null;
+        this.pendingDashboardDate = null;
         this.refreshEnvConfig();
 
         LOG.info('[Excel File Sync] Constructor called');
@@ -561,6 +563,12 @@ class ExcelFileSyncJob {
         }
     }
 
+    captureDashboardMeta(sheetsData) {
+        const iso = sheetsData?.meta?.dashboardMarketDate || null;
+        if (iso) this.pendingDashboardDate = iso;
+        return iso;
+    }
+
     flattenSheetsData(sheetsData) {
         if (!sheetsData) return [];
         return [
@@ -605,6 +613,7 @@ class ExcelFileSyncJob {
             total: cleanedData?.length || 0,
             counts,
             sample: (cleanedData || []).slice(0, 5),
+            dashboardMarketDate: this.pendingDashboardDate || null,
         };
     }
 
@@ -631,6 +640,7 @@ class ExcelFileSyncJob {
                 () => excelFileService.readAllSheetsByType(filePath),
                 { label: 'excel preview read', maxAttempts: 3 }
             );
+            this.captureDashboardMeta(sheetsData);
             const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
             if (!cleaned.length) {
                 throw tradingExcelLog.attachError(
@@ -686,6 +696,7 @@ class ExcelFileSyncJob {
                 restartExcel,
                 waitMs,
             });
+            this.captureDashboardMeta(sheetsData);
             tradingExcelLog.push('info', 'preview_clean', 'Cleaning and mapping rows');
             const cleaned = this.cleanStockRows(this.flattenSheetsData(sheetsData));
             if (!cleaned.length) {
@@ -722,9 +733,10 @@ class ExcelFileSyncJob {
 
     /**
      * Persist cleaned rows to in-memory + MySQL.
-     * Admin merge: no truncate, skip same date+hour duplicates, partial row saves (no full rollback).
+     * replaceLive (admin upload): archive live → history, truncate, insert fresh rows.
+     * mergeMode (legacy): skip same date+hour duplicates without truncating live.
      */
-    async persistCleanedData(cleanedData, { fromSync = false } = {}) {
+    async persistCleanedData(cleanedData, { fromSync = false, replaceLive = false } = {}) {
         if (this.isRunning && !fromSync) {
             throw tradingExcelLog.attachError(new Error('Sync already in progress'), 'busy', {});
         }
@@ -738,12 +750,14 @@ class ExcelFileSyncJob {
         }
 
         const pool = require('../database').getPool();
-        const mergeMode = !fromSync;
+        const mergeMode = !fromSync && !replaceLive;
 
         tradingExcelLog.push('info', 'persist_start', `Saving ${rows.length} rows`, {
             storage: pool ? 'mysql' : 'memory_only',
             fromSync,
+            replaceLive,
             mergeMode,
+            dashboardDate: this.pendingDashboardDate || null,
         });
 
         if (!pool) {
@@ -753,8 +767,19 @@ class ExcelFileSyncJob {
             this.lastSyncTime = new Date();
             this.lastSyncStatus = 'success';
             this.pendingPreview = null;
+            await tradingExcelMetaService.saveTradingExcelMeta({
+                dataAsOf: this.pendingDashboardDate,
+                uploadedAt: new Date().toISOString(),
+            });
             tradingExcelLog.push('info', 'persist_memory', `Saved ${inserted} rows to in-memory only`);
-            return { inserted, storage: 'memory', skippedDuplicates: 0, failed: 0, partial: false };
+            return {
+                inserted,
+                storage: 'memory',
+                skippedDuplicates: 0,
+                failed: 0,
+                partial: false,
+                dataAsOf: this.pendingDashboardDate,
+            };
         }
 
         await stockDataService.initializeTables();
@@ -783,6 +808,11 @@ class ExcelFileSyncJob {
             this.lastSyncStatus = stats.failed > 0 ? 'partial' : 'success';
             this.lastSyncError = stats.failed > 0 ? `${stats.failed} row(s) failed` : null;
             this.pendingPreview = null;
+
+            const meta = await tradingExcelMetaService.saveTradingExcelMeta({
+                dataAsOf: this.pendingDashboardDate,
+                uploadedAt: new Date().toISOString(),
+            });
 
             try {
                 await featureEngineeringService.generateFeaturesForML();
@@ -814,6 +844,8 @@ class ExcelFileSyncJob {
                 mysqlCount,
                 partial: stats.failed > 0,
                 errors: stats.errors,
+                dataAsOf: meta?.dataAsOf || this.pendingDashboardDate || null,
+                uploadedAt: meta?.uploadedAt || null,
             };
         } catch (error) {
             if (!mergeMode) {
@@ -884,6 +916,7 @@ class ExcelFileSyncJob {
                 { label: 'excel readStockData', maxAttempts: 3 }
             );
 
+            this.captureDashboardMeta(sheetsData);
             const cleanedData = this.cleanStockRows(this.flattenSheetsData(sheetsData));
 
             if (cleanedData.length === 0) {
@@ -913,6 +946,8 @@ class ExcelFileSyncJob {
 
     async archiveWithConnection(connection) {
         try {
+            await stockDataService.ensureLiveStockColumns(connection);
+            await stockDataService.ensureHistoryStockColumns(connection);
             const [liveData] = await connection.query('SELECT * FROM live_stock_data');
             if (liveData.length === 0) return 0;
 

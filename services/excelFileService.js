@@ -362,7 +362,8 @@ class ExcelFileService {
                 gainers: [],
                 decliners: [],
                 actives: [],
-                data: []
+                data: [],
+                meta: { dashboardMarketDate: null },
             };
         }
 
@@ -388,7 +389,8 @@ class ExcelFileService {
                     gainers: [],
                     decliners: [],
                     actives: [],
-                    data: []
+                    data: [],
+                    meta: { dashboardMarketDate: null },
                 };
             }
         } finally {
@@ -397,11 +399,17 @@ class ExcelFileService {
             }
         }
 
+        const { extractDashboardMarketDate } = require('../utils/tradingExcelDashboardDate');
+        const dashboardDate = extractDashboardMarketDate(workbook);
+
         const result = {
             gainers: [],
             decliners: [],
             actives: [],
-            data: []
+            data: [],
+            meta: {
+                dashboardMarketDate: dashboardDate ? dashboardDate.toISOString() : null,
+            },
         };
 
         // Map sheet names to data types
@@ -438,13 +446,15 @@ class ExcelFileService {
         for (const sheetName of workbook.SheetNames) {
             const lowerName = sheetName.toLowerCase().trim();
             
-            // Skip info/readme sheets
-            if (lowerName.includes('info') || 
+            // Skip info/readme/layout sheets (DASHBOARD holds indices + snapshot date, not stock rows)
+            if (lowerName.includes('info') ||
                 lowerName.includes('readme') ||
                 lowerName.includes('instruction') ||
                 lowerName.includes('help') ||
-                lowerName.includes('about')) {
-                LOG.info(`[Excel File] Skipping info sheet: "${sheetName}"`);
+                lowerName.includes('about') ||
+                lowerName === 'dashboard' ||
+                lowerName.includes('dashboard')) {
+                LOG.info(`[Excel File] Skipping non-data sheet: "${sheetName}"`);
                 continue;
             }
 

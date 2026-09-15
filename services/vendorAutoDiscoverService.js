@@ -146,11 +146,21 @@ function findDuplicate(existingList, candidate) {
   return existingList.find((v) => vendorMatchesCandidate(candidate, v)) || null;
 }
 
+function displayNameFromTags(tags = {}, element = {}) {
+  const direct = (tags.name || tags.brand || tags.operator || '').trim();
+  if (direct) return direct.slice(0, 120);
+  const kind = tags.shop || tags.amenity || tags.office || tags.craft || '';
+  if (!kind) return null;
+  const addr = [tags['addr:street'], tags['addr:housenumber']].filter(Boolean).join(' ');
+  const suffix = addr ? ` · ${addr}` : '';
+  return `${String(kind).replace(/_/g, ' ')}${suffix}`.slice(0, 120);
+}
+
 function mapElement(element, index, geo) {
   const tags = element.tags || {};
   const lat = element.lat ?? element.center?.lat;
   const lng = element.lon ?? element.center?.lon;
-  const shopName = (tags.name || tags.brand || tags.operator || '').trim();
+  const shopName = displayNameFromTags(tags, element);
   if (!shopName) return null;
 
   const category = mapCategory(tags);
@@ -177,25 +187,91 @@ function mapElement(element, index, geo) {
   };
 }
 
+const OVERPASS_ENDPOINTS = [
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://lz4.overpass-api.de/api/interpreter',
+  'https://overpass-api.de/api/interpreter',
+];
+
+const OVERPASS_HEADERS = {
+  'Content-Type': 'application/x-www-form-urlencoded',
+  Accept: 'application/json',
+  'User-Agent': 'QRQueueVendorAuto/1.0 (+https://github.com; super-admin OSM shop scan)',
+};
+
+function buildOverpassQuery(latitude, longitude, radiusM, { includeWays = false, limit = 80 } = {}) {
+  const r = Math.min(Math.max(Number(radiusM) || 2500, 400), 8000);
+  const wayBlock = includeWays
+    ? `
+      way["shop"](around:${r},${latitude},${longitude});
+      way["amenity"~"restaurant|cafe|fast_food|pharmacy|marketplace|clinic|bank|hospital|convenience"](around:${r},${latitude},${longitude});
+    `
+    : '';
+  return `
+[out:json][timeout:25];
+(
+  node["shop"](around:${r},${latitude},${longitude});
+  node["amenity"~"restaurant|cafe|fast_food|pharmacy|marketplace|clinic|bank|hospital|convenience"](around:${r},${latitude},${longitude});
+  node["craft"](around:${r},${latitude},${longitude});
+  ${wayBlock}
+);
+out center ${Math.min(limit, 120)};
+`;
+}
+
+async function fetchOverpassOnce(url, query, timeoutMs = 22000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: OVERPASS_HEADERS,
+      body: `data=${encodeURIComponent(query)}`,
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    if (!res.ok) {
+      throw new Error(`Overpass HTTP ${res.status}${text?.slice(0, 80) ? `: ${text.slice(0, 80)}` : ''}`);
+    }
+    let json;
+    try {
+      json = JSON.parse(text);
+    } catch (_) {
+      throw new Error('Overpass returned non-JSON (server busy — retry)');
+    }
+    if (json.remark && !json.elements?.length) {
+      throw new Error(String(json.remark).slice(0, 120));
+    }
+    return Array.isArray(json?.elements) ? json.elements : [];
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function fetchOverpassShops(latitude, longitude, radiusM = 6000) {
-  const query = `
-    [out:json][timeout:25];
-    (
-      node["shop"](around:${radiusM},${latitude},${longitude});
-      way["shop"](around:${radiusM},${latitude},${longitude});
-      node["amenity"~"restaurant|cafe|fast_food|pharmacy|marketplace|clinic|bank|hospital"](around:${radiusM},${latitude},${longitude});
-      way["amenity"~"restaurant|cafe|fast_food|pharmacy|marketplace|clinic|bank|hospital"](around:${radiusM},${latitude},${longitude});
-    );
-    out center 40;
-  `;
-  const res = await fetch('https://overpass-api.de/api/interpreter', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `data=${encodeURIComponent(query)}`,
-  });
-  if (!res.ok) throw new Error(`Overpass HTTP ${res.status}`);
-  const json = await res.json();
-  return Array.isArray(json?.elements) ? json.elements : [];
+  const tiers = [
+    { radiusM: Math.min(radiusM, 2500), includeWays: false, limit: 100 },
+    { radiusM: Math.min(radiusM, 4500), includeWays: true, limit: 80 },
+  ];
+  const errors = [];
+  for (const tier of tiers) {
+    const query = buildOverpassQuery(latitude, longitude, tier.radiusM, tier);
+    for (const url of OVERPASS_ENDPOINTS) {
+      try {
+        const elements = await fetchOverpassOnce(url, query);
+        if (elements.length) {
+          pushVendorAutoLog('info', `OSM Overpass OK — ${elements.length} element(s)`, {
+            endpoint: url.replace('https://', ''),
+            radiusM: tier.radiusM,
+          });
+          return elements;
+        }
+      } catch (err) {
+        errors.push(`${url.split('/')[2]}: ${err.message}`);
+      }
+    }
+  }
+  throw new Error(errors[0] || 'OpenStreetMap scan returned no shops — try refresh or another area');
 }
 
 async function loadExistingVendorsNear(geo) {
@@ -270,15 +346,75 @@ async function scanNearbyVendors(geo = {}) {
   });
 
   return {
-    candidates,
+    candidates: candidates.map(publicCandidateRow),
     meta: {
       town: geo.town || '',
       city: geo.city || '',
       locationName: geo.locationName || '',
       scannedAt: new Date().toISOString(),
       total: candidates.length,
+      osmElements: mapped.length,
+      radiusM: geo.radiusM || 6000,
+      source: 'openstreetmap_overpass',
     },
   };
+}
+
+/** API/client row — shop data only (no product placeholders or OSM tag config). */
+function publicCandidateRow(c) {
+  return {
+    externalId: c.externalId,
+    shop_name: c.shop_name,
+    category: c.category,
+    latitude: c.latitude,
+    longitude: c.longitude,
+    location_name: c.location_name,
+    town: c.town,
+    city: c.city,
+    state: c.state,
+    alreadyInDb: !!c.alreadyInDb,
+    existingVendorId: c.existingVendorId || null,
+    duplicateReason: c.duplicateReason || null,
+    saved: !!c.saved,
+  };
+}
+
+/** Distinct locations from MySQL vendors for super-admin area picker. */
+async function listSystemAreas() {
+  let vendors = [];
+  try {
+    const result = await adminService.getVendors({ page: 1, limit: 5000, sortBy: 'newest', search: '' });
+    vendors = result?.vendors || (Array.isArray(result) ? result : []);
+  } catch (_) {
+    vendors = [];
+  }
+
+  const byKey = new Map();
+  vendors.forEach((v) => {
+    const label = String(v.location_name || v.city || '').trim();
+    if (!label) return;
+    const key = normLocation(label);
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        id: key,
+        label,
+        city: v.city || '',
+        town: v.town || '',
+        locationName: label,
+        latitude: Number(v.latitude) || null,
+        longitude: Number(v.longitude) || null,
+        vendorCount: 0,
+      });
+    }
+    const row = byKey.get(key);
+    row.vendorCount += 1;
+    if (!Number.isFinite(row.latitude) && Number.isFinite(Number(v.latitude))) {
+      row.latitude = Number(v.latitude);
+      row.longitude = Number(v.longitude);
+    }
+  });
+
+  return Array.from(byKey.values()).sort((a, b) => a.label.localeCompare(b.label));
 }
 
 async function saveProductsForVendor(vendorId, products = []) {
@@ -391,4 +527,6 @@ async function saveCandidates(candidates = [], { actorId = null, auto = false } 
 module.exports = {
   scanNearbyVendors,
   saveCandidates,
+  listSystemAreas,
+  publicCandidateRow,
 };

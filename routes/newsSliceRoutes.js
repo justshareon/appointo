@@ -53,7 +53,7 @@ router.get('/news/slice', async (req, res) => {
     const slice = await newsCacheService.getSlice({
       category: req.query.category || 'All',
       scope: req.query.scope || 'All',
-      limit: Math.min(parseInt(req.query.limit, 10) || 15, 20),
+      limit: Math.min(parseInt(req.query.limit, 10) || 40, 80),
       locationCtx,
       settings,
       refresh,

@@ -139,7 +139,7 @@ class NewsCacheService {
         refresh = false,
     } = {}) {
         const settings = settingsOverride || await settingsService.getSettings();
-        const safeLimit = clampLimit(limit, { def: 15, max: 20 });
+        const safeLimit = clampLimit(limit, { def: 40, max: 80 });
         if (!settings.enable_news) {
             recordNewsLog({
                 level: 'L1',
@@ -155,7 +155,7 @@ class NewsCacheService {
             if (hit && Date.now() - hit.ts < SLICE_TTL_MS) return hit.data;
         }
 
-        const fetchLimit = Math.min(Math.max(safeLimit * 2, 24), 40);
+        const fetchLimit = Math.min(Math.max(safeLimit * 2, 80), 160);
         let items = [];
         let attempt = 0;
 
@@ -223,7 +223,7 @@ class NewsCacheService {
             items = await this._applyFilters(items, category, scope, locationCtx, fetchLimit);
         }
 
-        items = withinRecentDays(items, 14, ['date', 'published_at']);
+        items = withinRecentDays(items, 30, ['date', 'published_at']);
         const { sortNewsItems } = require('./newsLocalPriority');
         items = orderItemsByGeoScope(
             sortTodayRecentFirst(sortNewsItems(items, settings), safeLimit, ['date', 'published_at']),

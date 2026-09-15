@@ -162,6 +162,7 @@ function recordDeviceControl(payload = {}) {
     deviceName: payload.deviceName || '',
     deviceType: payload.deviceType || '',
     powered: payload.powered,
+    payload: payload.payload != null ? String(payload.payload).slice(0, 500) : undefined,
     createdAt: new Date().toISOString(),
   };
   store.smartNearbyDeviceControls.unshift(entry);
@@ -345,6 +346,9 @@ function vendorAccessAllowed(req, vendorId) {
 function linkedUserIdsForVendor(vendorId) {
   const key = String(vendorId);
   const ids = activeGateUserIdsForVendor(key);
+  (mem().smartNearbyConnectInvites || [])
+    .filter((i) => i.vendorId === key && i.targetUserId && ['pending', 'accepted'].includes(i.status))
+    .forEach((i) => ids.add(i.targetUserId));
   (mem().smartNearbyGateSessions || [])
     .filter((r) => r.vendorId === key && r.userId)
     .forEach((r) => ids.add(r.userId));
@@ -370,6 +374,155 @@ function getVendorDeviceControls(vendorId, { userIds = null, limit = 60 } = {}) 
       (c) => idSet.has(c.userId) && (!c.vendorId || c.vendorId === key)
     )
   ).slice(0, limit);
+}
+
+const MAX_CONNECT_INVITES = 300;
+const INVITE_TTL_MS = 30 * 60 * 1000;
+
+function normalizePhone(value) {
+  return String(value || '').replace(/\D/g, '').slice(-10);
+}
+
+function findUserByTarget({ userId, mobile, email } = {}) {
+  const users = db.inMemoryDb?.users || [];
+  if (userId) {
+    const hit = users.find((u) => String(u.id) === String(userId));
+    if (hit) return hit;
+  }
+  const phone = normalizePhone(mobile);
+  if (phone) {
+    const hit = users.find((u) => normalizePhone(u.mobile) === phone);
+    if (hit) return hit;
+  }
+  const em = String(email || '').trim().toLowerCase();
+  if (em) {
+    const hit = users.find((u) => String(u.email || '').trim().toLowerCase() === em);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function createConnectInvite(vendorId, payload = {}) {
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyConnectInvites)) store.smartNearbyConnectInvites = [];
+  const key = String(vendorId);
+  let target = findUserByTarget(payload);
+  if (!target?.id && payload.userId) {
+    target = {
+      id: String(payload.userId),
+      name: payload.targetUserName || payload.userDisplayName || String(payload.userId),
+      email: payload.email || '',
+      mobile: payload.mobile || '',
+    };
+  }
+  if (!target?.id) {
+    throw new Error('User not found — enter mobile, email, or user id from your customer list');
+  }
+  const existing = store.smartNearbyConnectInvites.find(
+    (i) =>
+      i.vendorId === key
+      && i.targetUserId === target.id
+      && i.status === 'pending'
+      && new Date(i.expiresAt).getTime() > Date.now()
+  );
+  if (existing) return existing;
+
+  const vendors = getSmartVendors(100);
+  const vendor = vendors.find((v) => String(v.id) === key);
+  const entry = {
+    id: `sginv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    vendorId: key,
+    vendorName: vendor?.shop_name || payload.vendorName || key,
+    targetUserId: target.id,
+    targetUserName: target.name || target.email || target.id,
+    channel: payload.channel || 'wifi',
+    message: String(payload.message || '').slice(0, 280),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+    sessionId: null,
+  };
+  store.smartNearbyConnectInvites.unshift(entry);
+  if (store.smartNearbyConnectInvites.length > MAX_CONNECT_INVITES) {
+    store.smartNearbyConnectInvites.length = MAX_CONNECT_INVITES;
+  }
+  return entry;
+}
+
+function listPendingInvitesForUser(userId) {
+  const uid = String(userId || '');
+  const now = Date.now();
+  return sortLatestFirst(
+    (mem().smartNearbyConnectInvites || []).filter(
+      (i) => i.targetUserId === uid && i.status === 'pending' && new Date(i.expiresAt).getTime() > now
+    ),
+    { dateFields: ['createdAt'] }
+  );
+}
+
+function listInvitesForVendor(vendorId, { limit = 40 } = {}) {
+  const key = String(vendorId);
+  return sortLatestFirst(
+    (mem().smartNearbyConnectInvites || []).filter((i) => i.vendorId === key),
+    { dateFields: ['createdAt'] }
+  ).slice(0, limit);
+}
+
+function acceptConnectInvite(inviteId, userId, { userDisplayName = null } = {}) {
+  const store = mem();
+  const uid = String(userId || '');
+  const idx = (store.smartNearbyConnectInvites || []).findIndex((i) => i.id === inviteId);
+  if (idx < 0) throw new Error('Invite not found');
+  const invite = store.smartNearbyConnectInvites[idx];
+  if (invite.status !== 'pending') throw new Error('Invite is no longer pending');
+  if (String(invite.targetUserId) !== uid) throw new Error('This invite is for another user');
+  if (new Date(invite.expiresAt).getTime() < Date.now()) {
+    invite.status = 'expired';
+    throw new Error('Invite expired — ask vendor to send again');
+  }
+
+  const active = getUserActiveGate(uid);
+  if (active) {
+    invite.status = 'accepted';
+    invite.sessionId = active.id;
+    invite.acceptedAt = new Date().toISOString();
+    store.smartNearbyConnectInvites[idx] = invite;
+    return { invite, session: active, alreadyConnected: true };
+  }
+
+  const session = recordGateConnection({
+    userId: uid,
+    userDisplayName: userDisplayName || invite.targetUserName,
+    vendorId: invite.vendorId,
+    channel: invite.channel || 'wifi',
+    networkLabel: `${invite.vendorName} · vendor invite`,
+    userSide: { role: 'user', status: 'connected', via: 'vendor_invite' },
+    vendorSide: { role: 'vendor', status: 'connected', gateOpen: true, via: 'vendor_invite' },
+  });
+  invite.status = 'accepted';
+  invite.sessionId = session.id;
+  invite.acceptedAt = new Date().toISOString();
+  store.smartNearbyConnectInvites[idx] = invite;
+  return { invite, session, alreadyConnected: false };
+}
+
+function declineConnectInvite(inviteId, userId) {
+  const store = mem();
+  const uid = String(userId || '');
+  const idx = (store.smartNearbyConnectInvites || []).findIndex((i) => i.id === inviteId);
+  if (idx < 0) return null;
+  const invite = store.smartNearbyConnectInvites[idx];
+  if (String(invite.targetUserId) !== uid) throw new Error('Not allowed');
+  invite.status = 'declined';
+  invite.declinedAt = new Date().toISOString();
+  store.smartNearbyConnectInvites[idx] = invite;
+  return invite;
+}
+
+function listReachableUsersForVendor(vendorId) {
+  const key = String(vendorId);
+  const ids = linkedUserIdsForVendor(key);
+  return [...ids].map((id) => resolveUserBrief(id));
 }
 
 function buildVendorDashboard(vendorId) {
@@ -426,6 +579,9 @@ function buildVendorDashboard(vendorId) {
     u.deviceControls = sortLatestFirst(u.deviceControls, { dateFields: ['createdAt'] });
   });
 
+  const connectInvites = listInvitesForVendor(key, { limit: 50 });
+  const pendingOutbound = connectInvites.filter((i) => i.status === 'pending');
+
   return {
     vendorId: key,
     stats: {
@@ -433,6 +589,7 @@ function buildVendorDashboard(vendorId) {
       totalUsers: users.length,
       sharedScans: scans.length,
       voiceLines: voiceLines.length,
+      pendingInvites: pendingOutbound.length,
     },
     activeGates,
     users,
@@ -440,6 +597,8 @@ function buildVendorDashboard(vendorId) {
     scans,
     voiceLines,
     deviceControls,
+    connectInvites,
+    reachableUsers: listReachableUsersForVendor(key),
   };
 }
 
@@ -468,5 +627,12 @@ module.exports = {
   vendorAccessAllowed,
   getVendorDeviceControls,
   buildVendorDashboard,
+  createConnectInvite,
+  listPendingInvitesForUser,
+  listInvitesForVendor,
+  acceptConnectInvite,
+  declineConnectInvite,
+  listReachableUsersForVendor,
+  findUserByTarget,
 };
 

@@ -334,7 +334,7 @@ class AdminController {
                 locationName: body.locationName,
                 radiusM: body.radiusM,
             });
-            res.json({ success: true, ...payload, logs: require('../../utils/vendorAutoLog').getVendorAutoLogs({ limit: 30 }) });
+            res.json({ success: true, ...payload });
         } catch (err) {
             LOG.error('Vendor auto scan failed', err.message);
             res.status(500).json({ success: false, error: err.message });
@@ -363,6 +363,21 @@ class AdminController {
             });
         } catch (err) {
             LOG.error('Vendor auto save failed', err.message);
+            res.status(500).json({ success: false, error: err.message });
+        }
+    }
+
+    /** GET /api/admin/vendor-auto/areas — distinct vendor locations in MySQL */
+    async getVendorAutoAreas(req, res) {
+        try {
+            if (!adminService.isSuperAdmin(req.user)) {
+                return res.status(403).json({ error: 'Forbidden: Super admin access required' });
+            }
+            const vendorAuto = require('../../services/vendorAutoDiscoverService');
+            const areas = await vendorAuto.listSystemAreas();
+            res.json({ success: true, areas, count: areas.length });
+        } catch (err) {
+            LOG.error('Vendor auto areas failed', err.message);
             res.status(500).json({ success: false, error: err.message });
         }
     }

@@ -23,7 +23,53 @@ router.setIO = (io) => {
     ioInstance = io;
 };
 
-// All admin routes require authentication
+/**
+ * Client diagnostics — accept without JWT (device may post before token hydrates).
+ * Still records userId when Authorization is present (optionalAuth below).
+ */
+const { optionalAuthenticateToken } = require('../middleware/auth');
+
+router.post('/feature-scan-logs', optionalAuthenticateToken, (req, res) => {
+    try {
+        const { recordFeatureScanLog } = require('../services/featureScanLogService');
+        const entry = recordFeatureScanLog({
+            ...req.body,
+            logSource: req.body?.logSource || 'ui',
+            userId: req.user?.id || req.userId || null,
+            platform: req.body?.platform || req.headers['x-client-platform'] || null,
+        });
+        res.json({ success: true, id: entry.id });
+    } catch (error) {
+        const LOG = require('../utils/logger');
+        LOG.error('[Admin] feature-scan-logs error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.post('/module-diagnostics', optionalAuthenticateToken, (req, res) => {
+    try {
+        const { recordModuleDiagnostic } = require('../services/moduleDiagnosticLogService');
+        const { resolveModuleFromScreen } = require('../services/moduleDiagnosticsService');
+        const LOG = require('../utils/logger');
+        const module =
+            req.body?.module
+            || resolveModuleFromScreen(req.body?.screen || req.body?.route)
+            || 'unknown';
+        const entry = recordModuleDiagnostic({
+            ...req.body,
+            module,
+            userId: req.user?.id || null,
+            platform: req.body?.platform || req.headers['x-client-platform'] || null,
+        });
+        res.json({ success: true, id: entry.id });
+    } catch (error) {
+        const LOG = require('../utils/logger');
+        LOG.error('[Admin] module-diagnostics error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+// All other admin routes require authentication
 router.use(authenticateToken);
 
 // Vendor Management
@@ -33,6 +79,7 @@ router.post('/add-vendor', (req, res) => adminController.addVendor(req, res));
 router.get('/vendor-categories', (req, res) => adminController.getVendorCategories(req, res));
 router.post('/vendor-categories', (req, res) => adminController.addVendorCategory(req, res));
 router.get('/vendor-dashboard/:vendorId', (req, res) => adminController.getVendorDashboard(req, res));
+router.get('/vendor-auto/areas', (req, res) => adminController.getVendorAutoAreas(req, res));
 router.post('/vendor-auto/scan', (req, res) => adminController.scanVendorAuto(req, res));
 router.post('/vendor-auto/save', (req, res) => adminController.saveVendorAuto(req, res));
 router.get('/vendor-auto/logs', (req, res) => adminController.getVendorAutoLogs(req, res));
@@ -255,9 +302,11 @@ router.delete('/trading-data/clear', async (req, res) => {
 router.get('/trading-data/status', requireSuperAdmin, async (req, res) => {
     try {
         const syncJob = await ensureTradingExcelReady(req);
+        const tradingExcelMetaService = require('../services/tradingExcelMetaService');
         const mysqlCount = await stockDataService.getMysqlLiveCount();
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
         const diagnostics = getTradingExcelDiagnostics(syncJob);
+        const tradingExcelMeta = await tradingExcelMetaService.getTradingExcelMeta();
         tradingExcelLog.push('info', 'status', `mysql=${mysqlCount} memory=${memoryCount} fileExists=${diagnostics.excelFileExists}`);
         res.json({
             success: true,
@@ -265,6 +314,7 @@ router.get('/trading-data/status', requireSuperAdmin, async (req, res) => {
             memoryCount,
             pendingPreview: syncJob?.getPendingPreview?.()?.length || 0,
             sync: syncJob?.getStatus?.() || null,
+            tradingExcelMeta,
             diagnostics,
             logs: tradingExcelLog.getRecent(25),
         });
@@ -387,11 +437,12 @@ router.post('/trading-data/load-and-save', requireSuperAdmin, async (req, res) =
             const upload = tradingExcelUploadService.saveUpload({ fileName, dataBase64 });
             await syncJob.loadPreviewFromFilePath(upload.filePath, { label: 'upload' });
         }
-        const result = await syncJob.persistCleanedData(req.body?.data);
+        const result = await syncJob.persistCleanedData(req.body?.data, { replaceLive: true });
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
+        const asOfLabel = result.dataAsOf ? ` · Excel date ${result.dataAsOf}` : '';
         const loadMsg = result.partial
-            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed`
-            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} in MySQL)`;
+            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed${asOfLabel}`
+            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} live, ${result.archived || 0} archived)${asOfLabel}`;
         res.json({
             success: true,
             partial: !!result.partial,
@@ -422,12 +473,13 @@ router.post('/trading-data/save-excel', requireSuperAdmin, async (req, res) => {
             user: req.user?.email || req.user?.id,
             pendingPreview: syncJob?.getPendingPreview?.()?.length || 0,
         });
-        const result = await syncJob.persistCleanedData(req.body?.data);
+        const result = await syncJob.persistCleanedData(req.body?.data, { replaceLive: true });
         const memoryCount = (stockDataService.getInMemoryDb().live_stock_data || []).length;
         const ms = Date.now() - started;
+        const asOfLabel = result.dataAsOf ? ` · Excel date ${result.dataAsOf}` : '';
         const saveMsg = result.partial
-            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed`
-            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} in MySQL)`;
+            ? `Saved ${result.inserted} rows — ${result.skippedDuplicates || 0} skipped (same hour), ${result.failed} failed${asOfLabel}`
+            : `Saved ${result.inserted} stock rows (${result.mysqlCount ?? memoryCount} live, ${result.archived || 0} archived)${asOfLabel}`;
         tradingExcelLog.push('info', 'save_done', saveMsg, {
             memoryCount,
             archived: result.archived,
@@ -680,50 +732,6 @@ router.post('/client-errors', (req, res) => {
 });
 
 /**
- * POST /api/admin/feature-scan-logs
- * Structured R-Detector / SMART scan diagnostics (any authenticated user).
- */
-router.post('/feature-scan-logs', (req, res) => {
-    try {
-        const { recordFeatureScanLog } = require('../services/featureScanLogService');
-        const entry = recordFeatureScanLog({
-            ...req.body,
-            logSource: req.body?.logSource || 'ui',
-            userId: req.user?.id || req.userId || null,
-            platform: req.body?.platform || req.headers['x-client-platform'] || null,
-        });
-        res.json({ success: true, id: entry.id });
-    } catch (error) {
-        LOG.error('[Admin] feature-scan-logs error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-/**
- * POST /api/admin/module-diagnostics — empty UI / API fail reasons (any authenticated user).
- */
-router.post('/module-diagnostics', (req, res) => {
-    try {
-        const { recordModuleDiagnostic } = require('../services/moduleDiagnosticLogService');
-        const { resolveModuleFromScreen } = require('../services/moduleDiagnosticsService');
-        const module =
-            req.body?.module
-            || resolveModuleFromScreen(req.body?.screen || req.body?.route)
-            || 'unknown';
-        const entry = recordModuleDiagnostic({
-            ...req.body,
-            module,
-            userId: req.user?.id || req.userId || null,
-            platform: req.body?.platform || null,
-        });
-        res.json({ success: true, id: entry.id });
-    } catch (error) {
-        LOG.error('[Admin] module-diagnostics error:', error);
-        res.status(500).json({ success: false, error: error.message });
-    }
-});
-
-/**
  * GET /api/admin/sync/status — sync_module_state + sync_runs for APS dashboard
  */
 router.get('/sync/status', requireSuperAdmin, async (req, res) => {
@@ -863,13 +871,21 @@ router.get('/system-health', requireSuperAdmin, async (req, res) => {
 router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
     try {
         const syncStatusService = require('../services/syncStatusService');
+        const runtimeDbModeService = require('../services/runtimeDbModeService');
         const { getSystemHealth } = require('../services/systemHealthService');
+        const syncHours = Math.min(
+            Math.max(parseInt(req.body?.syncHours, 10) || runtimeDbModeService.DEFAULT_SYNC_HOURS, 1),
+            168
+        );
+        const activitySync = await runtimeDbModeService.revalidateRecentActivity({ hours: syncHours });
         const modulesReset = await syncStatusService.revalidateEmptyModules();
         const health = await getSystemHealth();
         res.json({
             success: true,
             modulesReset,
             flagged: modulesReset > 0,
+            activitySync,
+            syncHours,
             health,
             moduleReports: health?.moduleReports || [],
         });
@@ -905,6 +921,35 @@ router.post('/offer-probe', requireSuperAdmin, async (req, res) => {
         res.json({ success: true, ...result });
     } catch (error) {
         LOG.error('[Admin] offer-probe error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * GET /api/admin/aps/db-mode — active storage mode (APS toggle)
+ */
+router.get('/aps/db-mode', requireSuperAdmin, async (req, res) => {
+    try {
+        const runtimeDbModeService = require('../services/runtimeDbModeService');
+        res.json({ success: true, ...runtimeDbModeService.getStatus() });
+    } catch (error) {
+        LOG.error('[Admin] aps/db-mode GET:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * PUT /api/admin/aps/db-mode — switch mysql ↔ inmemory + sync last N hours (default APS_ACTIVITY_SYNC_HOURS, 4)
+ */
+router.put('/aps/db-mode', requireSuperAdmin, async (req, res) => {
+    try {
+        const runtimeDbModeService = require('../services/runtimeDbModeService');
+        const mode = req.body?.mode;
+        const syncHours = req.body?.syncHours;
+        const result = await runtimeDbModeService.applyRuntimeDbMode(mode, { syncHours });
+        res.json({ success: true, ...result });
+    } catch (error) {
+        LOG.error('[Admin] aps/db-mode PUT:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });

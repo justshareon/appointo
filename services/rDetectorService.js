@@ -53,16 +53,19 @@ function resolveReportCategory(row) {
 }
 
 function mapIncident(row) {
-  if (!row) return null;
-  const city = normalizeCityName(row.city || resolveCityFromCoords(row.latitude, row.longitude).city);
+  if (!row || row.id == null) return null;
+  const lat = Number(row.latitude);
+  const lng = Number(row.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
+  const city = normalizeCityName(row.city || resolveCityFromCoords(lat, lng).city);
   const reportCategory = resolveReportCategory(row);
   return {
     id: row.id,
     hazard_type: row.hazard_type,
     report_category: reportCategory,
     type_label: labelFor(reportCategory),
-    latitude: Number(row.latitude),
-    longitude: Number(row.longitude),
+    latitude: lat,
+    longitude: lng,
     description: row.description || '',
     image_url: row.image_url || '',
     status: row.status || 'reported',
@@ -185,8 +188,34 @@ const rDetectorService = {
 
       if (rows?.length && !mapped.length) {
         LOG.warning('[R-Detector] getIncidents mapped zero rows from mysql', `rows=${rows.length}`);
+        for (const row of rows) {
+          const lat = Number(row.latitude);
+          const lng = Number(row.longitude);
+          if (!Number.isFinite(lat) || !Number.isFinite(lng)) continue;
+          const filled = row.city ? row : await this.backfillCityForRow(pool, row);
+          mapped.push({
+            id: filled.id,
+            hazard_type: filled.hazard_type || 'other',
+            report_category: resolveReportCategory(filled),
+            type_label: labelFor(resolveReportCategory(filled)),
+            latitude: lat,
+            longitude: lng,
+            description: filled.description || '',
+            image_url: filled.image_url || '',
+            status: filled.status || 'reported',
+            points_awarded: filled.points_awarded || 0,
+            reported_at: filled.reported_at,
+            driver_id: filled.driver_id,
+            driver_name: filled.driver_name || 'Reporter',
+            city: normalizeCityName(filled.city || resolveCityFromCoords(lat, lng).city),
+            region: filled.region || '',
+          });
+          if (mapped.length >= safeLimit) break;
+        }
       }
-      if (mapped.length > 0 || rows?.length) return sortLatestFirst(mapped, { dateFields: ['reported_at', 'created_at'] });
+      if (mapped.length > 0) {
+        return sortLatestFirst(mapped, { dateFields: ['reported_at', 'created_at'] });
+      }
 
       return readMemoryIncidents({ cityFilter, typeFilter, limit: safeLimit });
     } catch (e) {
@@ -446,21 +475,35 @@ const rDetectorService = {
 
     if (!pool) {
       const rows = db.inMemoryDb?.r_detector_scan_results || [];
+      const today = rows.filter((r) => String(r.user_id) === String(userId) && String(r.scan_date) === scanDate);
+      if (today.length) {
+        return sortLatestFirst(today, { dateFields: ['created_at'] });
+      }
+      const since = Date.now() - 36 * 60 * 60 * 1000;
       return sortLatestFirst(
-        rows.filter((r) => String(r.user_id) === String(userId) && String(r.scan_date) === scanDate),
+        rows.filter((r) => String(r.user_id) === String(userId) && new Date(r.created_at).getTime() >= since),
         { dateFields: ['created_at'] }
       );
     }
 
     await this.ensureScanResultsTable(pool);
-    const [rows] = await pool.query(
+    let [rows] = await pool.query(
       `SELECT * FROM r_detector_scan_results
        WHERE user_id = ? AND scan_date = ?
        ORDER BY id DESC, created_at DESC
        LIMIT 200`,
       [String(userId), scanDate]
     );
-    return rows;
+    if (!rows?.length) {
+      [rows] = await pool.query(
+        `SELECT * FROM r_detector_scan_results
+         WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 36 HOUR)
+         ORDER BY id DESC, created_at DESC
+         LIMIT 200`,
+        [String(userId)]
+      );
+    }
+    return rows || [];
   },
 
   /** Crowd trust votes — still bad / fixed / upvote */

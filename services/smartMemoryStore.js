@@ -11,6 +11,7 @@ const STORE_KEYS = [
   'smartNearbyPolicies',
   'smartNearbyVoiceStreams',
   'smartNearbyGateSessions',
+  'smartNearbyConnectInvites',
 ];
 
 const IDLE_MS = parseInt(
@@ -50,6 +51,7 @@ function loadSeed() {
   mem.smartNearbyPolicies = [];
   mem.smartNearbyVoiceStreams = [];
   mem.smartNearbyGateSessions = [];
+  mem.smartNearbyConnectInvites = [];
 }
 
 function scheduleDispose() {

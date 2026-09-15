@@ -256,6 +256,12 @@ app.use('/api/sync', syncRouter);
 
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, async () => {
+    try {
+        const runtimeDbModeService = require('./services/runtimeDbModeService');
+        await runtimeDbModeService.loadPersistedMode();
+    } catch (e) {
+        LOG.warning('[RuntimeDB] Startup load skipped:', e.message);
+    }
     const dbMode = db.getType();
     console.log("\n========================================");
     LOG.success(`QR Queue Server Started [Mode: ${dbMode.toUpperCase()}]`);

@@ -22,8 +22,8 @@ const LOG = {
     error: (msg, detail = '') => console.error(`[FeatureDB] ${msg}`, detail),
 };
 
-const { resolveDbType, isMysqlConfigured } = require('../utils/resolveDbType');
-const DB_TYPE = resolveDbType();
+const { isMysqlConfigured } = require('../utils/resolveDbType');
+const { getRuntimeDbType } = require('../utils/runtimeDbType');
 const IDLE_CLOSE_MS = getFeatureIdleMs();
 
 /** @type {Map<string, { pool: any, refCount: number, idleTimer: NodeJS.Timeout | null }>} */
@@ -85,7 +85,7 @@ function shouldUseSsl() {
 }
 
 function isMysqlEnabled() {
-    return resolveDbType() === 'mysql';
+    return getRuntimeDbType() === 'mysql';
 }
 
 function liveEntry(feature) {

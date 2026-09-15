@@ -26,7 +26,7 @@ const authenticateToken = (req, res, next) => {
         if (!quiet) {
             LOG.access('Access denied', 'No Authorization token provided');
         }
-        return res.status(401).json({ error: 'Unauthorized' });
+        return res.status(401).json({ error: 'Unauthorized', message: 'No Authorization token provided' });
     }
 
     jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
@@ -34,11 +34,24 @@ const authenticateToken = (req, res, next) => {
             if (!isOptionalAuthPath(req)) {
                 LOG.access('Token verification failed', `${err.message} (Secret: ${process.env.JWT_SECRET ? 'Env Set' : 'Default/Fallback'})`);
             }
-            return res.status(401).json({ error: 'Invalid or expired token' });
+            return res.status(401).json({ error: 'Invalid or expired token', message: err.message || 'Invalid or expired token' });
         }
         req.user = user;
         next();
     });
 };
 
-module.exports = { authenticateToken };
+/** Attach req.user when Bearer token is valid; never block the request. */
+const optionalAuthenticateToken = (req, res, next) => {
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    if (!token) {
+        return next();
+    }
+    jwt.verify(token, process.env.JWT_SECRET || 'secret', (err, user) => {
+        if (!err && user) req.user = user;
+        next();
+    });
+};
+
+module.exports = { authenticateToken, optionalAuthenticateToken };

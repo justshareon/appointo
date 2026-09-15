@@ -128,12 +128,62 @@ async function verifyFeaturePools() {
   }
 }
 
+async function verifyRuntimeDbAndRecentSync() {
+  console.log('\n[6] APS runtime DB + recent activity sync');
+  try {
+    const { getRuntimeDbType, setRuntimeDbType, getRuntimeOverride } = require('./utils/runtimeDbType');
+    const { resolveDbType, isMysqlConfigured } = require('./utils/resolveDbType');
+    const {
+      runSyncLast3Hours,
+      revalidateRecentActivity,
+      APS_ACTIVITY_SYNC_HOURS,
+    } = require('./syncLast3Hours');
+    const runtimeDbModeService = require('./services/runtimeDbModeService');
+
+    pass('getRuntimeDbType', getRuntimeDbType());
+    if (APS_ACTIVITY_SYNC_HOURS === 4) pass('APS_ACTIVITY_SYNC_HOURS', '4');
+    else fail('APS_ACTIVITY_SYNC_HOURS', String(APS_ACTIVITY_SYNC_HOURS));
+
+    if (typeof runSyncLast3Hours === 'function' && typeof revalidateRecentActivity === 'function') {
+      pass('syncLast3Hours exports', 'run + revalidate');
+    } else {
+      fail('syncLast3Hours exports', 'missing functions');
+    }
+
+    if (typeof runtimeDbModeService.applyRuntimeDbMode === 'function') {
+      pass('runtimeDbModeService', 'apply + revalidate');
+    } else {
+      fail('runtimeDbModeService', 'missing applyRuntimeDbMode');
+    }
+
+    const prev = getRuntimeOverride();
+    setRuntimeDbType('inmemory');
+    if (getRuntimeDbType() === 'inmemory') pass('setRuntimeDbType inmemory', 'ok');
+    else fail('setRuntimeDbType inmemory', getRuntimeDbType());
+    if (isMysqlConfigured()) {
+      setRuntimeDbType('mysql');
+      if (getRuntimeDbType() === 'mysql') pass('setRuntimeDbType mysql', 'ok');
+      else fail('setRuntimeDbType mysql', getRuntimeDbType());
+    }
+    if (prev === 'mysql' || prev === 'inmemory') setRuntimeDbType(prev);
+    else if (resolveDbType() === 'mysql' && isMysqlConfigured()) setRuntimeDbType('mysql');
+    else setRuntimeDbType('inmemory');
+
+    const { extractDashboardMarketDate } = require('./utils/tradingExcelDashboardDate');
+    if (typeof extractDashboardMarketDate === 'function') pass('trading Excel dashboard date', 'parser ready');
+    else fail('trading Excel dashboard date', 'missing');
+  } catch (e) {
+    fail('runtime DB stack', e.message);
+  }
+}
+
 async function verifyMysqlSettingsTable(pool) {
-  if (process.env.DB_TYPE !== 'mysql') {
-    console.log('\n[6] MySQL system_settings — skipped (DB_TYPE=inmemory)');
+  const { isMysqlConfigured } = require('./utils/resolveDbType');
+  if (!isMysqlConfigured()) {
+    console.log('\n[7] MySQL system_settings — skipped (MySQL not configured)');
     return;
   }
-  console.log('\n[6] MySQL system_settings table');
+  console.log('\n[7] MySQL system_settings table');
   try {
     if (!pool) {
       fail('MySQL pool', 'could not acquire sync pool');
@@ -156,10 +206,11 @@ async function verifyMysqlSettingsTable(pool) {
 
 (async () => {
   console.log('=== Verify recent MySQL + in-memory features ===');
-  console.log(`DB_TYPE=${process.env.DB_TYPE || 'inmemory'}`);
+  console.log(`DB_TYPE env=${process.env.DB_TYPE || '(unset)'} runtime=${db.getType?.() || '?'}`);
 
   let mysqlPool = null;
-  if (process.env.DB_TYPE === 'mysql') {
+  const { isMysqlConfigured } = require('./utils/resolveDbType');
+  if (isMysqlConfigured()) {
     try {
       const fcm = require('./database/featureConnectionManager');
       mysqlPool = await fcm.acquireForSync('core');
@@ -171,6 +222,7 @@ async function verifyMysqlSettingsTable(pool) {
   await verifyModuleUrls();
   await verifyTrustApiTable();
   await verifyFeaturePools();
+  await verifyRuntimeDbAndRecentSync();
   await verifyMysqlSettingsTable(mysqlPool);
 
   console.log('\n=== Summary ===');

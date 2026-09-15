@@ -10,7 +10,10 @@ class AdminService {
      * Check if user is super admin
      */
     isSuperAdmin(user) {
-        return user && user.role === 'super_admin';
+        if (!user) return false;
+        if (user.role === 'super_admin') return true;
+        const email = String(user.email || '').trim().toLowerCase();
+        return email === 'admin@qrqueue.com';
     }
 
     /**

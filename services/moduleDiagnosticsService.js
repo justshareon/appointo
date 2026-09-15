@@ -234,6 +234,7 @@ function buildReasonsAndHints({
   mysqlConfigured,
   poolReady,
   dbType,
+  runtimeDb,
   syncRows,
   tableBlock,
   tableSum,
@@ -247,14 +248,17 @@ function buildReasonsAndHints({
     fixHints.push(`Super Admin → Features & Subscriptions → enable “${mod.label}” (${mod.featureFlag}).`);
   }
 
-  if (mysqlConfigured && !poolReady) {
+  const apsInMemoryByChoice = runtimeDb?.override === 'inmemory';
+
+  if (mysqlConfigured && !poolReady && !apsInMemoryByChoice) {
     reasons.push('MySQL is configured but pool is not ready — API may return empty or memory fallback.');
     fixHints.push('Check APS MySQL pools section and .env DB credentials; restart backend.');
   }
-
-  if (dbType === 'inmemory' && mysqlConfigured) {
+  if (dbType === 'inmemory' && mysqlConfigured && !apsInMemoryByChoice) {
     reasons.push('Server reports in-memory DB while MySQL is configured — data may not persist.');
-    fixHints.push('Fix MySQL connection; run Sync now on APS.');
+    fixHints.push('APS → toggle MySQL, or run Revalidate / Sync now.');
+  } else if (apsInMemoryByChoice) {
+    fixHints.push('APS in-memory mode is ON — toggle MySQL on APS when you want persisted reads.');
   }
 
   for (const s of syncRows) {
@@ -315,6 +319,7 @@ async function buildModuleReports(ctx = {}) {
 
   const {
     dbType = 'inmemory',
+    runtimeDb = null,
     poolReady = false,
     syncModules = [],
     tableModules = [],
@@ -349,19 +354,38 @@ async function buildModuleReports(ctx = {}) {
       offerDiagnostics.issues.slice(0, 3).forEach((i) => extraIssues.push(i.message));
     }
 
+    let effectiveTableSum = tableSum;
+    if (mod.key === 'offers' && (offerDiagnostics?.dealsCount || 0) > 0 && tableSum.total === 0) {
+      effectiveTableSum = {
+        total: (offerDiagnostics.dealsCount || 0) + (offerDiagnostics.vendorsCount || 0),
+        hasError: tableSum.hasError,
+      };
+    }
+
     const { reasons, fixHints } = buildReasonsAndHints({
       mod,
       featureEnabled,
       mysqlConfigured,
       poolReady: ctx.poolReady,
       dbType,
+      runtimeDb,
       syncRows,
-      tableBlock,
-      tableSum,
+      tableBlock:
+        mod.key === 'offers' && (offerDiagnostics?.dealsCount || 0) > 0
+          ? {
+              ...tableBlock,
+              tables: (tableBlock?.tables || []).map((t) =>
+                t.table === 'deals' && t.count === 0
+                  ? { ...t, count: offerDiagnostics.dealsCount, note: 'from offer snapshot' }
+                  : t
+              ),
+            }
+          : tableBlock,
+      tableSum: effectiveTableSum,
       extraIssues,
     });
 
-    const uiStatus = deriveUiStatus({ featureEnabled, reasons, tableSum, syncRows });
+    const uiStatus = deriveUiStatus({ featureEnabled, reasons, tableSum: effectiveTableSum, syncRows });
     const recentSignals = collectSignals(mod.key, {
       clientErrors,
       featureScanLogs,
