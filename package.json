@@ -16,6 +16,7 @@
     "validate:production": "node validateProductionInMemory.js",
     "sync:status": "node checkSyncStatus.js",
     "sync:3h": "node syncLast3Hours.js",
+    "sync:1h": "node syncLast3Hours.js 1",
     "sync:onboard": "node onboardSync.js",
     "sync:rdetector-commute": "node ensureRDetectorCommute.js",
     "sync:rdetector-scans": "node ensureRDetectorScanResults.js",

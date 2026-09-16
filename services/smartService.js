@@ -244,7 +244,7 @@ function recordGateConnection(payload = {}) {
   return entry;
 }
 
-function updateGateHeartbeat(sessionId, { inRange = true, match = null } = {}) {
+function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen, vendorListening } = {}) {
   const store = mem();
   const rows = store.smartNearbyGateSessions || [];
   const idx = rows.findIndex((r) => r.id === sessionId && !r.disconnectedAt);
@@ -253,6 +253,20 @@ function updateGateHeartbeat(sessionId, { inRange = true, match = null } = {}) {
   row.lastHeartbeatAt = new Date().toISOString();
   row.inRange = !!inRange;
   if (match?.label) row.networkLabel = match.label;
+  if (gateOpen != null) {
+    row.vendorSide = {
+      ...row.vendorSide,
+      gateOpen: !!gateOpen,
+      status: gateOpen ? 'connected' : 'idle',
+    };
+  }
+  if (vendorListening != null) {
+    row.vendorSide = {
+      ...row.vendorSide,
+      vendorListening: !!vendorListening,
+      vendorListeningAt: vendorListening ? new Date().toISOString() : row.vendorSide?.vendorListeningAt || null,
+    };
+  }
   if (!inRange) {
     row.disconnectedAt = new Date().toISOString();
     row.disconnectReason = 'out_of_range';
@@ -282,6 +296,28 @@ function getUserActiveGate(userId) {
   return (mem().smartNearbyGateSessions || []).find(
     (r) => r.userId === userId && !r.disconnectedAt && r.inRange
   ) || null;
+}
+
+/** Vendor console — mark all active SGATE sessions as listen mode for connected customers. */
+function setVendorVoiceListen(vendorId, listening = false) {
+  const key = String(vendorId || '');
+  if (!key) return { updated: 0 };
+  const rows = mem().smartNearbyGateSessions || [];
+  let updated = 0;
+  rows.forEach((r, i) => {
+    if (r.vendorId !== key || r.disconnectedAt) return;
+    rows[i] = {
+      ...r,
+      vendorSide: {
+        ...r.vendorSide,
+        vendorListening: !!listening,
+        vendorListeningAt: listening ? new Date().toISOString() : r.vendorSide?.vendorListeningAt || null,
+      },
+      lastHeartbeatAt: new Date().toISOString(),
+    };
+    updated += 1;
+  });
+  return { updated, listening: !!listening };
 }
 
 function getVendorGateSessions(vendorId, { activeOnly = false, limit = 40 } = {}) {
@@ -702,6 +738,7 @@ module.exports = {
   seedBeacons,
   recordGateConnection,
   updateGateHeartbeat,
+  setVendorVoiceListen,
   endGateConnection,
   getUserActiveGate,
   getVendorGateSessions,

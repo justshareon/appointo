@@ -272,11 +272,11 @@ router.post('/gate/connect', authenticateToken, async (req, res) => {
 
 router.post('/gate/heartbeat', authenticateToken, async (req, res) => {
   try {
-    const { sessionId, inRange, match } = req.body || {};
+    const { sessionId, inRange, match, gateOpen, vendorListening } = req.body || {};
     if (!sessionId) {
       return res.status(400).json({ success: false, error: 'sessionId required' });
     }
-    const session = nearby.updateGateHeartbeat(sessionId, { inRange, match });
+    const session = nearby.updateGateHeartbeat(sessionId, { inRange, match, gateOpen, vendorListening });
     if (!session) {
       return res.status(404).json({ success: false, error: 'Gate session not found' });
     }
@@ -307,6 +307,26 @@ router.get('/gate/status', authenticateToken, async (req, res) => {
     const userId = req.user?.id || req.userId;
     const session = nearby.getUserActiveGate(userId);
     res.json({ success: true, session, connected: !!session });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/vendor/:vendorId/voice-listen', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const listening =
+      req.body?.listening != null
+        ? !!req.body.listening
+        : req.body?.active != null
+          ? !!req.body.active
+          : true;
+    const result = nearby.setVendorVoiceListen(vendorId, listening);
+    recordBackendFeatureScan('smart_scan', 'voice_listen', `Vendor listen=${listening} sessions=${result.updated}`, {
+      vendorId,
+    });
+    res.json({ success: true, ...result });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

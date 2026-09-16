@@ -113,5 +113,62 @@ try {
 if (labelFor('icy_road') !== 'Icy / black ice') fail('labelFor icy_road');
 else ok('labelFor works');
 
-console.log(failures ? `\n❌ ${failures} failure(s)\n` : '\n✅ All checks passed\n');
-process.exit(failures ? 1 : 0);
+// 8. Road scan vs CSCAN split (static + source checks — RN bundles are not require()'d in Node)
+console.log('\nRoad Scan / CSCAN modules');
+const roadScanView = path.join(__dirname, '..', 'screens', 'rdetector', 'RDetectorScanView.js');
+const cscanView = path.join(__dirname, '..', 'screens', 'rdetector', 'RDetectorCScanView.js');
+const cscanShell = path.join(__dirname, '..', 'screens', 'RDetectorCScan.js');
+const rulesPanel = path.join(__dirname, '..', 'components', 'RoadScanRulesPanel.js');
+for (const [label, p] of [
+  ['RDetectorScanView', roadScanView],
+  ['RDetectorCScanView', cscanView],
+  ['RDetectorCScan shell', cscanShell],
+  ['RoadScanRulesPanel', rulesPanel],
+]) {
+  if (!fs.existsSync(p)) fail(`Missing ${label}`, p);
+  else ok(`${label} present`);
+}
+const scanSrc = fs.readFileSync(roadScanView, 'utf8');
+if (scanSrc.includes('disableCameraScan: true')) ok('Road scan disables in-tab camera pipeline');
+else fail('Road scan should pass disableCameraScan: true');
+if (!scanSrc.includes('RoadScanCameraCapture')) ok('Road scan UI has no camera preview component');
+else fail('Remove RoadScanCameraCapture from Road Scan view');
+if (scanSrc.includes('mode="sensor"')) ok('Road scan rules panel is sensor-only');
+else fail('Road scan should use RoadScanRulesPanel mode="sensor"');
+const cscanSrc = fs.readFileSync(cscanView, 'utf8');
+if (cscanSrc.includes('cameraOnlyMode: true')) ok('CSCAN uses camera-only reporter mode');
+else fail('CSCAN should set cameraOnlyMode: true');
+const bumpSrc = fs.readFileSync(path.join(__dirname, '..', 'utils', 'roadScanBumpReport.js'), 'utf8');
+if (!bumpSrc.includes('!camFail')) ok('Bump start report no longer blocks on camera rules');
+else fail('roadScanBumpReport should not require camera for bump start');
+
+// 9. In-memory R-Detector tables + optional MySQL sync smoke
+console.log('\nIn-memory / MySQL sync smoke');
+(async () => {
+  try {
+    const db = require('./database');
+    if (typeof db.ensureRDetectorTables === 'function') {
+      await db.ensureRDetectorTables();
+      ok('ensureRDetectorTables');
+    }
+    const mem = db.inMemoryDb;
+    if (mem) {
+      if (!Array.isArray(mem.r_detector_scan_results)) mem.r_detector_scan_results = [];
+      if (!Array.isArray(mem.r_detector_activity_pings)) mem.r_detector_activity_pings = [];
+      ok('In-memory r_detector_scan_results + activity_pings arrays');
+    }
+    const { syncRDetectorData } = require('./syncAllToMysql');
+    if (typeof syncRDetectorData === 'function') {
+      const n = await syncRDetectorData({ onProgress: () => {} });
+      ok(`syncRDetectorData (${n ?? 0} rows touched)`);
+    }
+  } catch (e) {
+    fail('MySQL sync smoke', e.message);
+  }
+
+  console.log(failures ? `\n❌ ${failures} failure(s)\n` : '\n✅ All checks passed (types + road/CSCAN + sync)\n');
+  process.exit(failures ? 1 : 0);
+})().catch((e) => {
+  fail('async validation', e.message);
+  process.exit(1);
+});
