@@ -158,11 +158,28 @@ router.get('/commute/pre-departure', authenticateToken, async (req, res) => {
  */
 router.get('/commute/preferences', authenticateToken, async (req, res) => {
   try {
-    const preferences = await commuteService.getPreferences(req.user.id);
+    const preferences = await Promise.race([
+      commuteService.getPreferences(req.user.id),
+      new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('commute_preferences_timeout')), 12000);
+      }),
+    ]);
     res.json({ success: true, preferences });
   } catch (err) {
-    LOG.error('[R-Detector] commute preferences get', err.message);
-    res.status(500).json({ error: err.message });
+    LOG.warning('[R-Detector] commute preferences get', err.message);
+    res.json({
+      success: true,
+      preferences: {
+        morningDepartureMinutes: 510,
+        eveningDepartureMinutes: 1170,
+        morningEnabled: true,
+        eveningEnabled: true,
+        morningLabel: '8:30 AM',
+        eveningLabel: '7:30 PM',
+        autoScanEnabled: true,
+        _fallback: true,
+      },
+    });
   }
 });
 

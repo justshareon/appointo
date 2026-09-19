@@ -63,7 +63,10 @@ function median(nums) {
   return arr.length % 2 ? arr[mid] : Math.round((arr[mid - 1] + arr[mid]) / 2);
 }
 
+let commuteTablesReady = false;
+
 async function ensureCommuteTables() {
+  if (commuteTablesReady) return;
   let pool = getPool();
   if (!pool) {
     try {
@@ -155,6 +158,7 @@ async function ensureCommuteTables() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
+  commuteTablesReady = true;
 }
 
 function defaultPreferences(userId) {
