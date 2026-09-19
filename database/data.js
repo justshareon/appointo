@@ -2954,6 +2954,7 @@ let inMemoryDb = {
     smartNearbyDeviceControls: [],
     smartNearbyPolicies: [],
     smartNearbyVoiceStreams: [],
+    smartCameraLiveFrames: [],
 };
 
 module.exports = inMemoryDb;

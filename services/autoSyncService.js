@@ -75,11 +75,12 @@ async function syncUntilComplete(triggerSource = 'startup') {
             await hydrateOnStartup().catch((err) => {
                 LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
             });
-            if (AUTO_DRIFT_SYNC) {
-                runDriftSync('startup-complete').catch((err) => {
-                    LOG.warning('[AutoSync] Startup drift sync skipped:', err.message);
-                });
-            }
+                if (AUTO_DRIFT_SYNC) {
+                    const { runReleaseMaintenanceSteps } = require('./syncMaintenanceService');
+                    runReleaseMaintenanceSteps('startup-complete').catch((err) => {
+                        LOG.warning('[AutoSync] Startup maintenance skipped:', err.message);
+                    });
+                }
             return;
         }
 
@@ -105,8 +106,9 @@ async function syncUntilComplete(triggerSource = 'startup') {
                     LOG.warning('[AutoSync] Post-sync hydrate skipped:', err.message);
                 });
                 if (AUTO_DRIFT_SYNC) {
-                    await runDriftSync('bulk-complete').catch((err) => {
-                        LOG.warning('[AutoSync] Post-bulk drift sync skipped:', err.message);
+                    const { runReleaseMaintenanceSteps } = require('./syncMaintenanceService');
+                    await runReleaseMaintenanceSteps('bulk-complete', { skipDrift: true }).catch((err) => {
+                        LOG.warning('[AutoSync] Post-bulk maintenance skipped:', err.message);
                     });
                 }
                 return;
@@ -160,7 +162,9 @@ const startDriftSync = (intervalMinutes = DRIFT_INTERVAL_MINUTES) => {
     if (driftSchedule) return;
     const mins = Math.max(5, intervalMinutes || DRIFT_INTERVAL_MINUTES);
     const cronExpression = `*/${mins} * * * *`;
-    LOG.info(`[AutoSync] Drift sync every ${mins} min (memory ↔ MySQL)`);
+    const { getRecentSyncHours } = require('../syncLast3Hours');
+    const recentH = getRecentSyncHours();
+    LOG.info(`[AutoSync] Drift sync every ${mins} min (memory ↔ MySQL, last ${recentH}h activity)`);
     driftSchedule = cron.schedule(cronExpression, async () => {
         if (!isMysqlConfigured()) return;
         try {

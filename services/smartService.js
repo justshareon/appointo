@@ -3,6 +3,7 @@
  */
 const memStore = require('./smartMemoryStore');
 const LOG = require('../utils/logger');
+const { logSmartGate, getSmartGateTrace } = require('../utils/smartGateLog');
 const { sortLatestFirst } = require('../utils/sortLatest');
 const db = require('../database');
 
@@ -185,12 +186,87 @@ function getStoreStatus() {
 }
 
 const MAX_VOICE_LINES = 400;
+const MAX_CAMERA_FRAMES = 48;
+
+function ensureCameraStore() {
+  const store = mem();
+  if (!Array.isArray(store.smartCameraLiveFrames)) store.smartCameraLiveFrames = [];
+  return store.smartCameraLiveFrames;
+}
+
+function ensureGateSessionForStream({ userId, vendorId, sessionId, userDisplayName, via = 'stream' }) {
+  const uid = userId ? String(userId) : null;
+  const vid = vendorId ? String(vendorId) : null;
+  if (!uid || !vid) return null;
+  const existing = (mem().smartNearbyGateSessions || []).find(
+    (r) => r.userId === uid && String(r.vendorId) === vid && !r.disconnectedAt && r.inRange
+  );
+  if (existing) {
+    existing.lastHeartbeatAt = new Date().toISOString();
+    if (sessionId && !existing.id) existing.id = sessionId;
+    return existing;
+  }
+  const session = recordGateConnection({
+    userId: uid,
+    userDisplayName: userDisplayName || `Customer ${uid.slice(-6)}`,
+    vendorId: vid,
+    channel: 'wifi',
+    networkLabel: via === 'camera' ? 'Live · camera' : 'Live · mic',
+    userSide: { role: 'user', status: 'connected', via },
+    vendorSide: { role: 'vendor', status: 'connected', via },
+  });
+  logSmartGate('gate_session_from_stream', {
+    vendorId: vid,
+    userId: uid,
+    sessionId: session.id,
+    via,
+  });
+  return session;
+}
+
+function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64, width, height, savedLocally }) {
+  const key = String(vendorId || '');
+  if (!key || !imageBase64) return null;
+  if (userId) {
+    ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'camera' });
+  }
+  const raw = String(imageBase64);
+  const frame = raw.length > 420000 ? raw.slice(0, 420000) : raw;
+  const entry = {
+    id: `scf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    vendorId: key,
+    userId: userId || null,
+    sessionId: sessionId || null,
+    imageBase64: frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`,
+    width: width || null,
+    height: height || null,
+    savedLocally: !!savedLocally,
+    at: new Date().toISOString(),
+  };
+  const list = ensureCameraStore();
+  list.unshift(entry);
+  if (list.length > MAX_CAMERA_FRAMES) list.length = MAX_CAMERA_FRAMES;
+  return entry;
+}
+
+function getVendorCameraLive(vendorId, { since = null, limit = 12 } = {}) {
+  const key = String(vendorId);
+  let rows = ensureCameraStore().filter((r) => String(r.vendorId) === key);
+  if (since) {
+    const t = new Date(since).getTime();
+    rows = rows.filter((r) => new Date(r.at).getTime() > t);
+  }
+  return sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+}
 
 function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = false }) {
   const store = mem();
   const key = String(vendorId || 'unknown');
   const line = String(text || '').trim();
   if (!line) return null;
+  if (userId && key !== 'unknown') {
+    ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'mic' });
+  }
   const entry = {
     id: `svt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     vendorId: key,
@@ -241,6 +317,14 @@ function recordGateConnection(payload = {}) {
   if (store.smartNearbyGateSessions.length > MAX_GATE_SESSIONS) {
     store.smartNearbyGateSessions.length = MAX_GATE_SESSIONS;
   }
+  logSmartGate('gate_session_created', {
+    vendorId: entry.vendorId,
+    sessionId: entry.id,
+    userId: entry.userId,
+    channel: entry.channel,
+    networkLabel: entry.networkLabel,
+    message: `SGATE session ${entry.id} for shop ${entry.vendorId}`,
+  });
   return entry;
 }
 
@@ -272,6 +356,11 @@ function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen
     row.disconnectReason = 'out_of_range';
     row.userSide = { ...row.userSide, status: 'disconnected' };
     row.vendorSide = { ...row.vendorSide, status: 'idle', gateOpen: false };
+    logSmartGate('gate_session_out_of_range', {
+      vendorId: row.vendorId,
+      sessionId: row.id,
+      userId: row.userId,
+    });
   }
   rows[idx] = row;
   return row;
@@ -289,6 +378,12 @@ function endGateConnection(sessionId, reason = 'manual') {
   row.userSide = { ...row.userSide, status: 'disconnected' };
   row.vendorSide = { ...row.vendorSide, status: 'idle', gateOpen: false };
   rows[idx] = row;
+  logSmartGate('gate_session_ended', {
+    vendorId: row.vendorId,
+    sessionId: row.id,
+    userId: row.userId,
+    reason,
+  });
   return row;
 }
 
@@ -305,7 +400,7 @@ function setVendorVoiceListen(vendorId, listening = false) {
   const rows = mem().smartNearbyGateSessions || [];
   let updated = 0;
   rows.forEach((r, i) => {
-    if (r.vendorId !== key || r.disconnectedAt) return;
+    if (String(r.vendorId) !== key || r.disconnectedAt) return;
     rows[i] = {
       ...r,
       vendorSide: {
@@ -667,6 +762,17 @@ function buildVendorDashboard(vendorId) {
   voiceLines.forEach((v) => touch(v.userId).voiceLines.push(v));
   deviceControls.forEach((c) => touch(c.userId).deviceControls.push(c));
 
+  const cameraFrames = getVendorCameraLive(key, { limit: 80 });
+  const cameraByUser = new Map();
+  cameraFrames.forEach((f) => {
+    if (!f.userId) return;
+    if (!cameraByUser.has(f.userId)) cameraByUser.set(f.userId, f);
+    touch(f.userId);
+  });
+
+  const RECENT_MS = 5 * 60 * 1000;
+  const isRecent = (iso) => iso && Date.now() - new Date(iso).getTime() < RECENT_MS;
+
   const users = [...userMap.values()].sort((a, b) => {
     const aLive = a.activeGate ? 1 : 0;
     const bLive = b.activeGate ? 1 : 0;
@@ -681,6 +787,24 @@ function buildVendorDashboard(vendorId) {
     if (gateName && (!u.user?.name || String(u.user.name).startsWith('User '))) {
       u.user = { ...u.user, name: gateName };
     }
+    const lastVoice = u.voiceLines[0]?.at;
+    const cam = cameraByUser.get(u.userId);
+    u.micRecent = isRecent(lastVoice);
+    u.cameraRecent = isRecent(cam?.at);
+    u.lastCameraFrame = cam || null;
+    if (!u.activeGate && (u.micRecent || u.cameraRecent)) {
+      u.activeGate = {
+        channel: 'wifi',
+        networkLabel: u.cameraRecent && u.micRecent ? 'Mic + camera live' : u.cameraRecent ? 'Camera live' : 'Mic live',
+        lastHeartbeatAt: cam?.at || lastVoice,
+        streamOnly: true,
+      };
+    }
+    if (u.micRecent && u.cameraRecent) u.pipelineStatus = 'mic_and_camera';
+    else if (u.micRecent) u.pipelineStatus = 'mic_live';
+    else if (u.cameraRecent) u.pipelineStatus = 'camera_live';
+    else if (u.activeGate && !u.activeGate.streamOnly) u.pipelineStatus = 'sgate_live';
+    else u.pipelineStatus = 'idle';
     u.gateHistory = sortLatestFirst(u.gateHistory, { dateFields: ['connectedAt', 'lastHeartbeatAt'] });
     u.scans = sortLatestFirst(u.scans, { dateFields: ['createdAt'] });
     u.voiceLines = sortLatestFirst(u.voiceLines, { dateFields: ['at'] });
@@ -693,6 +817,26 @@ function buildVendorDashboard(vendorId) {
   const vendorRow = getSmartVendors(100).find((v) => String(v.id) === key);
   const connectLink = getOrCreateVendorConnectLink(key);
 
+  const allActive = (mem().smartNearbyGateSessions || []).filter((r) => !r.disconnectedAt && r.inRange);
+  const activeOnOtherShops = allActive.filter((r) => String(r.vendorId) !== key);
+  const memStatus = memStore.status();
+
+  if (activeGates.length === 0 && allActive.length > 0) {
+    logSmartGate('vendor_dashboard_id_mismatch', {
+      vendorId: key,
+      message: `${allActive.length} live SGATE on other shop id(s) — vendor console may be on wrong shop id`,
+      otherVendorIds: [...new Set(activeOnOtherShops.map((r) => r.vendorId))].slice(0, 8),
+    });
+  }
+
+  logSmartGate('vendor_dashboard_built', {
+    vendorId: key,
+    connectedNow: activeGates.length,
+    totalUsers: users.length,
+    allActiveGates: allActive.length,
+    memActive: memStatus.active,
+  });
+
   return {
     vendorId: key,
     vendorName: vendorRow?.shop_name || key,
@@ -704,10 +848,14 @@ function buildVendorDashboard(vendorId) {
       message: connectLink.message,
     },
     stats: {
-      connectedNow: activeGates.length,
+      connectedNow: users.filter(
+        (u) => (u.activeGate && !u.activeGate.disconnectedAt) || u.micRecent || u.cameraRecent
+      ).length,
+      sgateSessions: activeGates.length,
       totalUsers: users.length,
       sharedScans: scans.length,
       voiceLines: voiceLines.length,
+      cameraFrames: cameraFrames.length,
       pendingInvites: pendingOutbound.length,
     },
     activeGates,
@@ -715,9 +863,28 @@ function buildVendorDashboard(vendorId) {
     recentGates,
     scans,
     voiceLines,
+    cameraLive: getVendorCameraLive(key, { limit: 1 })[0] || null,
     deviceControls,
     connectInvites,
     reachableUsers: listReachableUsersForVendor(key),
+    diagnostics: {
+      queriedVendorId: key,
+      vendorFoundInCatalog: !!vendorRow,
+      memStoreActive: memStatus.active,
+      gateSessionsInMemory: memStatus.counts?.gateSessions ?? (mem().smartNearbyGateSessions || []).length,
+      activeOnThisShop: activeGates.map((g) => ({
+        sessionId: g.id,
+        userId: g.userId,
+        channel: g.channel,
+        lastHeartbeatAt: g.lastHeartbeatAt,
+      })),
+      activeOnOtherShops: activeOnOtherShops.map((g) => ({
+        vendorId: g.vendorId,
+        sessionId: g.id,
+        userId: g.userId,
+      })),
+      recentTrace: getSmartGateTrace(25),
+    },
   };
 }
 
@@ -735,6 +902,8 @@ module.exports = {
   getStoreStatus,
   appendVoiceTranscript,
   getVendorVoiceStream,
+  appendCameraLiveFrame,
+  getVendorCameraLive,
   seedBeacons,
   recordGateConnection,
   updateGateHeartbeat,

@@ -1,17 +1,25 @@
 /**
- * Sync last 3 hours of activity: in-memory ↔ MySQL.
+ * Sync recent activity (default 2h): in-memory ↔ MySQL.
  * Only upserts rows that look recent and are missing / stale.
  * If nothing missed → no-op (leave as-is).
  *
- * Usage: node syncLast3Hours.js
+ * Window: SYNC_RECENT_HOURS env (default 2), or CLI: node syncLast3Hours.js [hours]
  */
 require('./loadEnv');
 const db = require('./database');
 const LOG = require('./utils/logger');
 const featureConnectionManager = require('./database/featureConnectionManager');
 
+function getRecentSyncHours() {
+  const fromEnv = parseInt(process.env.SYNC_RECENT_HOURS, 10);
+  if (Number.isFinite(fromEnv) && fromEnv > 0) {
+    return Math.min(fromEnv, 168);
+  }
+  return 2;
+}
+
 /** Default window for drift/cron (CLI with no args). APS toggle/revalidate use 4h via `hours` option. */
-const HOURS = 3;
+const HOURS = getRecentSyncHours();
 /** APS revalidate + db-mode toggle — last N hours memory ↔ MySQL */
 const APS_ACTIVITY_SYNC_HOURS = 4;
 
@@ -658,6 +666,7 @@ module.exports = {
   syncLast3Hours,
   runSyncLast3Hours,
   revalidateRecentActivity,
+  getRecentSyncHours,
   APS_ACTIVITY_SYNC_HOURS,
   HOURS,
 };

@@ -28,7 +28,11 @@ async function runDriftSync(triggerSource = 'auto') {
   lastDriftAt = now;
 
   try {
-    LOG.info(`[DriftSync] Starting memory ↔ MySQL alignment (${triggerSource})`);
+    const { getRecentSyncHours } = require('../syncLast3Hours');
+    const recentHours = getRecentSyncHours();
+    LOG.info(
+      `[DriftSync] Starting memory ↔ MySQL alignment (${triggerSource}, last ${recentHours}h activity)`
+    );
 
     const result = await withOperationRetry(async () => {
       const db = require('../database');
@@ -44,7 +48,7 @@ async function runDriftSync(triggerSource = 'auto') {
       const mappingResult = await syncUserVendorMappings();
 
       const { syncLast3Hours } = require('../syncLast3Hours');
-      const recent = await syncLast3Hours({ exit: false });
+      const recent = await syncLast3Hours({ exit: false, hours: recentHours });
 
       const { hydrateOnStartup } = require('./dbHydrateService');
       const hydrate = await hydrateOnStartup();

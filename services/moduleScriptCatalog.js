@@ -43,7 +43,7 @@ function scanBackendScripts() {
     const names = fs.readdirSync(BACKEND_ROOT);
     for (const name of names) {
       if (!/\.js$/i.test(name)) continue;
-      if (!/^(patch-|validate|sync|ensure)/i.test(name)) continue;
+      if (!/^(patch-|validate|sync|ensure|onboard)/i.test(name)) continue;
       files.push({
         file: name,
         path: `backend/${name}`,
@@ -69,7 +69,7 @@ function getScriptsForModule(moduleKey) {
     globalSyncSteps: SYNC_MODULES.length,
     items: matched,
     note:
-      'Sync steps run via APS “Sync now” (tracked in sync_module_state). Patch/validate scripts are manual — not executed by the APK.',
+      'Sync steps run via APS “Sync now” (sync_module_state). After a successful bulk sync, release maintenance runs ensure R-Detector scripts + drift (SYNC_RECENT_HOURS, default 2h). Patch/validate scripts stay manual.',
   };
 }
 

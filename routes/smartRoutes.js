@@ -8,6 +8,7 @@ const { authenticateToken, optionalAuthenticateToken } = require('../middleware/
 const nearby = require('../services/smartService');
 const nearbyMem = require('../services/smartMemoryStore');
 const LOG = require('../utils/logger');
+const { logSmartGate } = require('../utils/smartGateLog');
 const { recordBackendFeatureScan } = require('../services/featureScanLogService');
 
 router.use(async (req, res, next) => {
@@ -223,6 +224,42 @@ router.post('/voice/stream', authenticateToken, async (req, res) => {
     res.json({ success: true, entry });
   } catch (err) {
     LOG.error('[Smart] voice stream error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/camera/frame', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId, sessionId, imageBase64, width, height, savedLocally } = req.body || {};
+    if (!vendorId || !imageBase64) {
+      return res.status(400).json({ success: false, error: 'vendorId and imageBase64 required' });
+    }
+    const entry = nearby.appendCameraLiveFrame({
+      vendorId,
+      sessionId,
+      imageBase64,
+      width,
+      height,
+      savedLocally,
+      userId: req.user?.id || req.userId,
+    });
+    res.json({ success: true, entry: entry ? { id: entry.id, at: entry.at } : null });
+  } catch (err) {
+    LOG.error('[Smart] camera frame error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const frames = nearby.getVendorCameraLive(vendorId, {
+      since: req.query.since || null,
+      limit: parseInt(req.query.limit, 10) || 12,
+    });
+    res.json({ success: true, frames, latest: frames[0] || null });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });

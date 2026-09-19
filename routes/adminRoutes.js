@@ -751,6 +751,8 @@ router.get('/sync/status', requireSuperAdmin, async (req, res) => {
             summary: moduleState.summary,
             modules: moduleState.modules,
             latestRun,
+            driftSync: require('../services/syncMaintenanceService').getDriftSyncEnv(),
+            lastMaintenance: require('../services/syncMaintenanceService').getLastMaintenanceResult(),
         });
     } catch (error) {
         LOG.error('[Admin] sync/status error:', error);
@@ -809,9 +811,32 @@ router.post('/sync/until-complete', requireSuperAdmin, async (req, res) => {
         syncUntilComplete('super-admin-dashboard').catch((err) => {
             LOG.error('[Admin] sync/until-complete error:', err.message);
         });
-        res.json({ status: 'started', message: 'Sync will run until all modules complete' });
+        const { getDriftSyncEnv } = require('../services/syncMaintenanceService');
+        res.json({
+            status: 'started',
+            message: 'Sync until all modules SUCCESS, then release maintenance (ensure scripts + 2h drift)',
+            driftSync: getDriftSyncEnv(),
+        });
     } catch (error) {
         LOG.error('[Admin] sync/until-complete error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+/**
+ * POST /api/admin/sync/maintenance — ensure R-Detector + drift (SYNC_RECENT_HOURS, default 2h)
+ */
+router.post('/sync/maintenance', requireSuperAdmin, async (req, res) => {
+    try {
+        const { runReleaseMaintenanceSteps, getDriftSyncEnv } = require('../services/syncMaintenanceService');
+        const result = await runReleaseMaintenanceSteps('super-admin');
+        res.json({
+            status: result.ok ? 'success' : 'partial',
+            ...result,
+            driftSync: getDriftSyncEnv(),
+        });
+    } catch (error) {
+        LOG.error('[Admin] sync/maintenance error:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });
@@ -874,7 +899,7 @@ router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
         const runtimeDbModeService = require('../services/runtimeDbModeService');
         const { getSystemHealth } = require('../services/systemHealthService');
         const syncHours = Math.min(
-            Math.max(parseInt(req.body?.syncHours, 10) || runtimeDbModeService.DEFAULT_SYNC_HOURS, 1),
+            Math.max(parseInt(req.body?.syncHours, 10) || require('../syncLast3Hours').getRecentSyncHours(), 1),
             168
         );
         const activitySync = await runtimeDbModeService.revalidateRecentActivity({ hours: syncHours });

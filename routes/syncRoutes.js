@@ -187,37 +187,47 @@ const setupSyncRoutes = (router) => {
         return syncProducts();
     }));
 
-    router.post('/3h', async (req, res) => {
+    const runRecentSync = (defaultHours) => async (req, res) => {
         if (getCombinedSyncing()) {
             return res.status(409).json({
                 status: 'in_progress',
                 message: 'Sync already in progress',
             });
         }
+        const { syncLast3Hours, getRecentSyncHours } = require('../syncLast3Hours');
+        const raw = req.body?.hours ?? req.query?.hours ?? defaultHours;
+        const hours = raw != null ? parseInt(raw, 10) : getRecentSyncHours();
+        const windowHours = Number.isFinite(hours) && hours > 0 ? hours : getRecentSyncHours();
+
         lastSyncTime = new Date();
         try {
-            const { syncLast3Hours } = require('../syncLast3Hours');
-            const counts = await syncLast3Hours({ exit: false });
+            const counts = await syncLast3Hours({ exit: false, hours: windowHours });
             lastSyncStatus = {
                 status: 'success',
-                mode: 'last_3h',
+                mode: 'last_recent',
+                hours: counts?.hours ?? windowHours,
                 counts,
                 completedAt: new Date(),
                 startedAt: lastSyncTime,
             };
             res.json(lastSyncStatus);
         } catch (err) {
-            LOG.error('[Sync API] 3h sync failed:', err);
+            LOG.error(`[Sync API] recent sync (${windowHours}h) failed:`, err);
             lastSyncStatus = {
                 status: 'error',
-                mode: 'last_3h',
+                mode: 'last_recent',
+                hours: windowHours,
                 error: err.message,
                 completedAt: new Date(),
                 startedAt: lastSyncTime,
             };
             res.status(500).json(lastSyncStatus);
         }
-    });
+    };
+
+    router.post('/3h', runRecentSync(3));
+    router.post('/2h', runRecentSync(2));
+    router.post('/recent', runRecentSync(undefined));
 
     router.post('/drift', async (req, res) => {
         try {

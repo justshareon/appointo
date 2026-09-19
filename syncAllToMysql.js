@@ -1732,9 +1732,32 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
         LOG.success(`✓ Time taken: ${duration}s`);
         LOG.info('═══════════════════════════════════════════════════════════════');
         LOG.info('');
+
+        let maintenance = null;
+        if (allOk) {
+            try {
+                const { isMysqlConfigured } = require('./utils/resolveDbType');
+                if (isMysqlConfigured()) {
+                    const { runReleaseMaintenanceSteps } = require('./services/syncMaintenanceService');
+                    maintenance = await runReleaseMaintenanceSteps(`bulk:${triggerSource}`);
+                }
+            } catch (err) {
+                LOG.warning('[Sync] Post-sync maintenance skipped:', err.message);
+            }
+        }
         
         if (exit) process.exit(allOk ? 0 : 1);
-        return { success: allOk, totalSynced, duration, runId, resume, failedOnly, modules: state.modules, summary: state.summary };
+        return {
+            success: allOk,
+            totalSynced,
+            duration,
+            runId,
+            resume,
+            failedOnly,
+            modules: state.modules,
+            summary: state.summary,
+            maintenance,
+        };
     } catch (err) {
         const state = await syncStatus.getModuleState().catch(() => ({ summary: { totalQueriesSynced: 0 } }));
         await syncStatus.completeRun(runId, {
