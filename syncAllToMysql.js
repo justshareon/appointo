@@ -1664,7 +1664,7 @@ const syncAllToMysql = async ({ exit = false, triggerSource = 'manual', forceFul
                 if (exit) process.exit(0);
                 return { success: true, skipped: true, totalSynced: 0, duration: 0, runId: null, resume: false };
             }
-            ({ runId, resume, moduleKeys: keys } = await syncStatus.startRunFailedOnly(triggerSource));
+            ({ runId, resume } = await syncStatus.startRunFailedOnly(triggerSource));
             retryKeys = new Set(keys);
             LOG.info(`[Sync] Failed-only retry (${keys.length} module(s)): ${keys.join(', ')}`);
         } else {

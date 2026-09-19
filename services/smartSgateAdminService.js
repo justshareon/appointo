@@ -2,6 +2,7 @@
  * Super-admin: view/update backend/.env only (never repo-root .env) + MySQL settings.
  */
 const fs = require('fs');
+const path = require('path');
 const LOG = require('../utils/logger');
 const settingsService = require('./settingsService');
 const {

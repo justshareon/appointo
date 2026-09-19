@@ -112,6 +112,12 @@ async function runSmartSgateValidation({ cleanup = true } = {}) {
     }
   }
 
+  if (cleanup && cleanupSessionIds.length) {
+    for (const sid of cleanupSessionIds) {
+      nearby.endGateConnection(sid, 'validate_cleanup');
+    }
+  }
+
   const passed = checks.filter((c) => c.ok).length;
   return {
     success: failed === 0,

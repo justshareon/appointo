@@ -1296,8 +1296,28 @@ const ensureCyberUsersAndVendor = async () => {
  */
 const ensureSmartUsersAndVendor = async () => {
     const pool = (await ensureWritePool()) || getPool();
+    const demoSeed = process.env.SMART_DEMO_SEED === 'true';
+
+    const refreshSmartVendorsFromMysql = async (mysqlPool) => {
+        if (!mysqlPool) return;
+        try {
+            const [mysqlSmart] = await mysqlPool.query(
+                `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE`
+            );
+            if (!inMemoryDb.smartNearbyVendors) inMemoryDb.smartNearbyVendors = [];
+            (mysqlSmart || []).forEach((v) => {
+                const idx = inMemoryDb.smartNearbyVendors.findIndex((x) => String(x.id) === String(v.id));
+                const row = { ...v, features_smart: true };
+                if (idx >= 0) inMemoryDb.smartNearbyVendors[idx] = row;
+                else inMemoryDb.smartNearbyVendors.push(row);
+            });
+        } catch (_) {
+            /* optional */
+        }
+    };
+
     if (!pool) {
-        if (inMemoryDb.users) {
+        if (demoSeed && inMemoryDb.users) {
             const smartUsers = [
                 { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },
                 { id: 'usr_smartvendor1', name: 'Smart Vendor 1', email: 'smartvendor1@test.com', mobile: '8000000022', role: 'vendor', location_name: 'Mumbai' },
@@ -1312,6 +1332,11 @@ const ensureSmartUsersAndVendor = async () => {
     try {
         await ensureVendorFeatureColumns();
         await ensureUserVendorMappingTable();
+
+        if (!demoSeed) {
+            await refreshSmartVendorsFromMysql(pool);
+            return;
+        }
 
         const smartUsers = [
             { id: 'usr_smart1', name: 'Smart User 1', email: 'smart1@test.com', mobile: '8000000021', role: 'user', location_name: 'Mumbai' },

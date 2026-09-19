@@ -92,7 +92,9 @@ router.get('/vendor/:vendorId/policy', authenticateToken, async (req, res) => {
 
 router.post('/vendor/:vendorId/policy', authenticateToken, async (req, res) => {
   try {
-    const policy = nearby.setVendorPolicy(req.params.vendorId, req.body || {});
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const policy = nearby.setVendorPolicy(vendorId, req.body || {});
     res.json({ success: true, policy });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -230,7 +232,18 @@ router.post('/voice/stream', authenticateToken, async (req, res) => {
 
 router.post('/camera/frame', authenticateToken, async (req, res) => {
   try {
-    const { vendorId, sessionId, imageBase64, width, height, savedLocally } = req.body || {};
+    const {
+      vendorId,
+      sessionId,
+      imageBase64,
+      width,
+      height,
+      savedLocally,
+      eventCapture,
+      liveOnly,
+      eventRule,
+      eventLabel,
+    } = req.body || {};
     if (!vendorId || !imageBase64) {
       return res.status(400).json({ success: false, error: 'vendorId and imageBase64 required' });
     }
@@ -241,6 +254,10 @@ router.post('/camera/frame', authenticateToken, async (req, res) => {
       width,
       height,
       savedLocally,
+      eventCapture: eventCapture === true || eventCapture === 'true',
+      liveOnly: liveOnly === true || liveOnly === 'true',
+      eventRule: eventRule || null,
+      eventLabel: eventLabel || null,
       userId: req.user?.id || req.userId,
     });
     res.json({
@@ -259,11 +276,19 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
   try {
     const { vendorId } = req.params;
     if (!denyUnlessVendor(req, res, vendorId)) return;
+    const eventsOnly = req.query.eventsOnly === '1' || req.query.eventsOnly === 'true';
     const frames = await nearby.getVendorCameraLive(vendorId, {
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 12,
+      eventsOnly,
     });
-    res.json({ success: true, frames, latest: frames[0] || null });
+    const policy = nearby.getVendorPolicy(vendorId);
+    res.json({
+      success: true,
+      frames,
+      latest: frames[0] || null,
+      policy: { cameraAiEnabled: policy.cameraAiEnabled === true },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }

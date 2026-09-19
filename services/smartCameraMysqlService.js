@@ -42,7 +42,11 @@ function rowToEntry(row) {
     vendorId: row.vendor_id,
     userId: row.user_id,
     sessionId: row.session_id,
-    imageBase64: row.image_base64,
+    imageBase64: row.image_base64?.startsWith('data:')
+      ? row.image_base64
+      : row.image_base64
+        ? `data:image/jpeg;base64,${row.image_base64}`
+        : '',
     width: row.width,
     height: row.height,
     savedLocally: !!row.saved_locally,

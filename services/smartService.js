@@ -25,6 +25,8 @@ const DEFAULT_POLICY = {
   micAmbientCheck: true,
   autoPromptOnVisit: false,
   dataRetentionDays: 1,
+  /** false = live preview only (no Recent/event saves); true = record camera on motion/events only */
+  cameraAiEnabled: false,
 };
 
 const MYSQL_LIVE_PURGE_INTERVAL_MS = 60 * 60 * 1000;
@@ -221,6 +223,39 @@ function activeGateUserIdsForVendor(vendorId) {
   );
 }
 
+const SYNTHETIC_SMART_USER_IDS = new Set(['usr_smart1', 'usr_smartvendor1']);
+
+function isSyntheticSmartUserId(userId) {
+  const s = String(userId || '');
+  if (!s) return true;
+  if (SYNTHETIC_SMART_USER_IDS.has(s)) return true;
+  return /^u_(sgate_val|validate)_/i.test(s) || /^scf_val_/i.test(s);
+}
+
+const LIVE_CUSTOMER_RECENT_MS = 5 * 60 * 1000;
+
+function isRecentLiveAt(iso) {
+  if (!iso) return false;
+  const t = new Date(iso).getTime();
+  return Number.isFinite(t) && Date.now() - t < LIVE_CUSTOMER_RECENT_MS;
+}
+
+/** Real customers at the shop right now (SGATE in range or mic/camera in last 5m). */
+function liveCustomerUserIdsForVendor(vendorId) {
+  const key = String(vendorId);
+  const ids = activeGateUserIdsForVendor(key);
+  (mem().smartNearbyVoiceStreams || []).forEach((v) => {
+    if (String(v.vendorId) === key && v.userId && isRecentLiveAt(v.at)) ids.add(v.userId);
+  });
+  (mem().smartCameraLiveFrames || []).forEach((f) => {
+    if (String(f.vendorId) === key && f.userId && isRecentLiveAt(f.at || f.createdAt)) ids.add(f.userId);
+  });
+  for (const uid of [...ids]) {
+    if (isSyntheticSmartUserId(uid)) ids.delete(uid);
+  }
+  return ids;
+}
+
 function getVendorSessions(vendorId, limit = 50) {
   const key = String(vendorId);
   const activeUsers = activeGateUserIdsForVendor(key);
@@ -309,28 +344,78 @@ function ensureGateSessionForStream({ userId, vendorId, sessionId, userDisplayNa
   return session;
 }
 
-async function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64, width, height, savedLocally }) {
+function normalizeCameraDataUri(imageBase64) {
+  const raw = String(imageBase64 || '');
+  if (!raw) return '';
+  const frame = raw.length > 420000 ? raw.slice(0, 420000) : raw;
+  return frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`;
+}
+
+function setVendorLivePreview(vendorId, entry) {
+  const store = mem();
+  if (!store.smartCameraLivePreview) store.smartCameraLivePreview = {};
+  store.smartCameraLivePreview[String(vendorId)] = entry;
+}
+
+function getVendorLivePreview(vendorId) {
+  return mem().smartCameraLivePreview?.[String(vendorId)] || null;
+}
+
+async function appendCameraLiveFrame({
+  vendorId,
+  userId,
+  sessionId,
+  imageBase64,
+  width,
+  height,
+  savedLocally,
+  eventCapture = false,
+  liveOnly = false,
+  eventRule = null,
+  eventLabel = null,
+}) {
   const key = String(vendorId || '');
   if (!key || !imageBase64) return null;
   if (userId) {
     ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'camera' });
   }
-  const raw = String(imageBase64);
-  const frame = raw.length > 420000 ? raw.slice(0, 420000) : raw;
+  const policy = getVendorPolicy(key);
+  const aiOn = policy.cameraAiEnabled === true;
+  const isEvent = !!eventCapture;
+  const isLive = !!liveOnly || !isEvent;
+
+  if (aiOn && !isEvent) {
+    return null;
+  }
+  if (!aiOn && isEvent) {
+    return null;
+  }
+
   const entry = {
     id: `scf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     vendorId: key,
     userId: userId || null,
     sessionId: sessionId || null,
-    imageBase64: frame.startsWith('data:') ? frame : `data:image/jpeg;base64,${frame}`,
+    imageBase64: normalizeCameraDataUri(imageBase64),
     width: width || null,
     height: height || null,
     savedLocally: !!savedLocally,
+    eventCapture: aiOn && isEvent,
+    liveOnly: !aiOn && isLive,
+    eventRule: aiOn && isEvent ? String(eventRule || '').slice(0, 64) || null : null,
+    eventLabel: aiOn && isEvent ? String(eventLabel || '').slice(0, 160) || null : null,
     at: new Date().toISOString(),
   };
+
+  if (!aiOn) {
+    setVendorLivePreview(key, entry);
+    return entry;
+  }
+
   const list = ensureCameraStore();
   list.unshift(entry);
   if (list.length > MAX_CAMERA_FRAMES) list.length = MAX_CAMERA_FRAMES;
+  setVendorLivePreview(key, entry);
   purgeExpiredLiveStreams({ mysql: false });
   if (smartCameraPersistMysql()) {
     try {
@@ -361,24 +446,53 @@ async function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64,
   return entry;
 }
 
-async function getVendorCameraLive(vendorId, { since = null, limit = 12 } = {}) {
+async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsOnly = false } = {}) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
-  let rows = ensureCameraStore().filter((r) => String(r.vendorId) === key);
+  let rows = ensureCameraStore().filter(
+    (r) => String(r.vendorId) === key && (r.eventCapture || r.eventRule)
+  );
   if (since) {
     const t = new Date(since).getTime();
     rows = rows.filter((r) => new Date(r.at).getTime() > t);
   }
-  const memoryRows = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
-  if (!smartCameraPersistMysql()) {
-    return memoryRows;
+  let memoryRows = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  if (smartCameraPersistMysql()) {
+    const mysqlRows = await smartCameraMysql.listVendorFrames(key, { since, limit });
+    const byId = new Map();
+    [...mysqlRows, ...memoryRows].forEach((r) => {
+      if (r?.id) byId.set(r.id, r);
+    });
+    memoryRows = sortLatestFirst([...byId.values()], { dateFields: ['at'] }).slice(0, limit);
   }
-  const mysqlRows = await smartCameraMysql.listVendorFrames(key, { since, limit });
-  const byId = new Map();
-  [...mysqlRows, ...memoryRows].forEach((r) => {
-    if (r?.id) byId.set(r.id, r);
+  if (eventsOnly) {
+    return memoryRows.map((r) => ({
+      ...r,
+      imageBase64: normalizeCameraDataUri(r.imageBase64),
+    }));
+  }
+  const preview = getVendorLivePreview(key);
+  const latest = preview || memoryRows[0] || null;
+  const events = memoryRows;
+  const out = [];
+  if (latest) out.push({ ...latest, imageBase64: normalizeCameraDataUri(latest.imageBase64) });
+  events.forEach((e) => {
+    if (!out.some((x) => x.id === e.id)) {
+      out.push({ ...e, imageBase64: normalizeCameraDataUri(e.imageBase64) });
+    }
   });
-  return sortLatestFirst([...byId.values()], { dateFields: ['at'] }).slice(0, limit);
+  return out.slice(0, limit);
+}
+
+function voiceUserLabel(userId, sessionId) {
+  const uid = userId ? String(userId) : '';
+  if (!uid) return null;
+  const gate = (mem().smartNearbyGateSessions || []).find(
+    (g) => g.userId === uid && (!sessionId || g.id === sessionId)
+  );
+  if (gate?.userDisplayName) return gate.userDisplayName;
+  const brief = resolveUserBrief(uid);
+  return brief?.name || brief?.email || uid;
 }
 
 function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = false }) {
@@ -386,21 +500,76 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
   const key = String(vendorId || 'unknown');
   const line = String(text || '').trim();
   if (!line) return null;
-  if (userId && key !== 'unknown') {
-    ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'mic' });
+  const uid = userId ? String(userId) : null;
+  const sid = sessionId ? String(sessionId) : null;
+  const streams = store.smartNearbyVoiceStreams || (store.smartNearbyVoiceStreams = []);
+  const nowIso = new Date().toISOString();
+  const userLabel = voiceUserLabel(uid, sid);
+
+  if (uid && key !== 'unknown') {
+    ensureGateSessionForStream({ userId: uid, vendorId: key, sessionId: sid, via: 'mic' });
   }
+
+  const isSystem = /^Microphone (ON|OFF)/i.test(line) || /^Mic live/i.test(line) || line.startsWith('🎤');
+  const isFinal = !!final || isSystem;
+
+  if (isSystem && uid) {
+    const dup = streams.find(
+      (r) =>
+        r.vendorId === key
+        && r.userId === uid
+        && r.text === line
+        && Date.now() - new Date(r.at || 0).getTime() < 120000
+    );
+    if (dup) return dup;
+  }
+
+  if (!isFinal && uid) {
+    const idx = streams.findIndex(
+      (r) => r.vendorId === key && r.userId === uid && r.sessionId === sid && !r.final
+    );
+    if (idx >= 0) {
+      const row = streams[idx];
+      if (row.text === line) return row;
+      row.text = line;
+      row.at = nowIso;
+      row.userLabel = userLabel || row.userLabel;
+      return row;
+    }
+  }
+
+  if (isFinal && uid) {
+    for (let i = 0; i < streams.length; i += 1) {
+      const r = streams[i];
+      if (r.vendorId === key && r.userId === uid && r.sessionId === sid && !r.final) {
+        streams.splice(i, 1);
+        break;
+      }
+    }
+    const dupFinal = streams.find(
+      (r) =>
+        r.vendorId === key
+        && r.userId === uid
+        && r.final
+        && r.text === line
+        && Date.now() - new Date(r.at || 0).getTime() < 4000
+    );
+    if (dupFinal) return dupFinal;
+  }
+
   const entry = {
     id: `svt_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
     vendorId: key,
-    userId: userId || null,
-    sessionId: sessionId || null,
+    userId: uid,
+    sessionId: sid,
+    userLabel,
     text: line,
-    final: !!final,
-    at: new Date().toISOString(),
+    final: isFinal,
+    at: nowIso,
   };
-  store.smartNearbyVoiceStreams.unshift(entry);
-  if (store.smartNearbyVoiceStreams.length > MAX_VOICE_LINES) {
-    store.smartNearbyVoiceStreams.length = MAX_VOICE_LINES;
+  streams.unshift(entry);
+  if (streams.length > MAX_VOICE_LINES) {
+    streams.length = MAX_VOICE_LINES;
   }
   purgeExpiredLiveStreams({ mysql: false });
   return entry;
@@ -629,21 +798,7 @@ function vendorAccessAllowed(req, vendorId) {
 }
 
 function linkedUserIdsForVendor(vendorId) {
-  const key = String(vendorId);
-  const ids = activeGateUserIdsForVendor(key);
-  (mem().smartNearbyConnectInvites || [])
-    .filter((i) => i.vendorId === key && i.targetUserId && ['pending', 'accepted'].includes(i.status))
-    .forEach((i) => ids.add(i.targetUserId));
-  (mem().smartNearbyGateSessions || [])
-    .filter((r) => r.vendorId === key && r.userId)
-    .forEach((r) => ids.add(r.userId));
-  (mem().smartNearbyScanSessions || [])
-    .filter((s) => s.vendorId === key && s.userId && (s.sharedWithVendor || ids.has(s.userId)))
-    .forEach((s) => ids.add(s.userId));
-  (mem().smartNearbyVoiceStreams || [])
-    .filter((v) => v.vendorId === key && v.userId)
-    .forEach((v) => ids.add(v.userId));
-  return ids;
+  return liveCustomerUserIdsForVendor(vendorId);
 }
 
 function getVendorDeviceControls(vendorId, { userIds = null, limit = 60 } = {}) {
@@ -807,9 +962,7 @@ function declineConnectInvite(inviteId, userId) {
 }
 
 function listReachableUsersForVendor(vendorId) {
-  const key = String(vendorId);
-  const ids = linkedUserIdsForVendor(key);
-  return [...ids].map((id) => resolveUserBrief(id));
+  return [...liveCustomerUserIdsForVendor(vendorId)].map((id) => resolveUserBrief(id));
 }
 
 function newConnectLinkCode() {
@@ -976,6 +1129,16 @@ async function buildVendorDashboard(vendorId) {
     u.deviceControls = sortLatestFirst(u.deviceControls, { dateFields: ['createdAt'] });
   });
 
+  const liveCustomers = users.filter(
+    (u) =>
+      !isSyntheticSmartUserId(u.userId)
+      && (
+        (u.activeGate && !u.activeGate.disconnectedAt && u.activeGate.inRange)
+        || u.micRecent
+        || u.cameraRecent
+      )
+  );
+
   const connectInvites = listInvitesForVendor(key, { limit: 50 });
   const pendingOutbound = connectInvites.filter((i) => i.status === 'pending');
 
@@ -1013,18 +1176,16 @@ async function buildVendorDashboard(vendorId) {
       message: connectLink.message,
     },
     stats: {
-      connectedNow: users.filter(
-        (u) => (u.activeGate && !u.activeGate.disconnectedAt) || u.micRecent || u.cameraRecent
-      ).length,
+      connectedNow: liveCustomers.length,
       sgateSessions: activeGates.length,
-      totalUsers: users.length,
+      totalUsers: liveCustomers.length,
       sharedScans: scans.length,
       voiceLines: voiceLines.length,
       cameraFrames: cameraFrames.length,
       pendingInvites: pendingOutbound.length,
     },
     activeGates,
-    users,
+    users: liveCustomers,
     recentGates,
     scans,
     voiceLines,
