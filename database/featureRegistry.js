@@ -181,9 +181,16 @@ const FEATURES = {
     smart: {
         id: 'smart',
         label: 'SMART',
-        mysql: false,
+        mysql: true,
         lazy: true,
-        memory: mem(['smartNearbyVendors', 'smartNearbyScanSessions', 'smartNearbyDeviceControls', 'smartNearbyPolicies', 'smartNearbyVoiceStreams']),
+        memory: mem([
+            'smartNearbyVendors',
+            'smartNearbyScanSessions',
+            'smartNearbyDeviceControls',
+            'smartNearbyPolicies',
+            'smartNearbyVoiceStreams',
+            'smartCameraLiveFrames',
+        ]),
     },
 };
 

@@ -14,6 +14,7 @@
     "sync:all": "node syncAllToMysql.js",
     "verify:recent": "node verifyRecentSync.js",
     "validate:production": "node validateProductionInMemory.js",
+    "validate:smart-sgate": "node validateSmartSgate.js",
     "sync:status": "node checkSyncStatus.js",
     "sync:3h": "node syncLast3Hours.js 3",
     "sync:2h": "node syncLast3Hours.js 2",

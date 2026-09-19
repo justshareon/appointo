@@ -136,7 +136,7 @@ router.get('/vendor/:vendorId/dashboard', authenticateToken, async (req, res) =>
   try {
     const { vendorId } = req.params;
     if (!denyUnlessVendor(req, res, vendorId)) return;
-    const dashboard = nearby.buildVendorDashboard(vendorId);
+    const dashboard = await nearby.buildVendorDashboard(vendorId);
     res.json({ success: true, dashboard });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -234,7 +234,7 @@ router.post('/camera/frame', authenticateToken, async (req, res) => {
     if (!vendorId || !imageBase64) {
       return res.status(400).json({ success: false, error: 'vendorId and imageBase64 required' });
     }
-    const entry = nearby.appendCameraLiveFrame({
+    const entry = await nearby.appendCameraLiveFrame({
       vendorId,
       sessionId,
       imageBase64,
@@ -243,7 +243,12 @@ router.post('/camera/frame', authenticateToken, async (req, res) => {
       savedLocally,
       userId: req.user?.id || req.userId,
     });
-    res.json({ success: true, entry: entry ? { id: entry.id, at: entry.at } : null });
+    res.json({
+      success: true,
+      entry: entry
+        ? { id: entry.id, at: entry.at, mysqlPersisted: entry.mysqlPersisted === true }
+        : null,
+    });
   } catch (err) {
     LOG.error('[Smart] camera frame error:', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -254,7 +259,7 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
   try {
     const { vendorId } = req.params;
     if (!denyUnlessVendor(req, res, vendorId)) return;
-    const frames = nearby.getVendorCameraLive(vendorId, {
+    const frames = await nearby.getVendorCameraLive(vendorId, {
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 12,
     });
@@ -288,12 +293,16 @@ router.post('/gate/connect', authenticateToken, async (req, res) => {
     const userId = req.user?.id || req.userId;
     const existing = nearby.getUserActiveGate(userId);
     if (existing) {
+      if (!existing.vendorName && existing.vendorId) {
+        existing.vendorName = nearby.resolveVendorDisplayName(existing.vendorId);
+      }
       return res.status(409).json({ success: false, error: 'Already connected on SGATE', session: existing });
     }
     const session = nearby.recordGateConnection({
       userId,
       userDisplayName: req.body?.userDisplayName || req.user?.name || null,
       vendorId,
+      vendorName: req.body?.vendorName || null,
       channel,
       networkLabel,
       userSide,
@@ -343,6 +352,9 @@ router.get('/gate/status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.userId;
     const session = nearby.getUserActiveGate(userId);
+    if (session && !session.vendorName && session.vendorId) {
+      session.vendorName = nearby.resolveVendorDisplayName(session.vendorId);
+    }
     res.json({ success: true, session, connected: !!session });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });

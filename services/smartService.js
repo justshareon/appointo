@@ -1,11 +1,21 @@
 /**
- * SMART module — nearby scan, device control (in-memory only).
+ * SMART module — mic text in memory; camera frames in memory + MySQL when DB_TYPE=mysql.
+ * Retention days: super_admin setting smart_live_retention_days (default 1).
  */
 const memStore = require('./smartMemoryStore');
 const LOG = require('../utils/logger');
 const { logSmartGate, getSmartGateTrace } = require('../utils/smartGateLog');
 const { sortLatestFirst } = require('../utils/sortLatest');
 const db = require('../database');
+const smartCameraMysql = require('./smartCameraMysqlService');
+const { getSmartLiveRetentionDaysSync } = require('./smartLiveSettingsService');
+
+/** Camera live feed persisted to MySQL when mysql mode (set SMART_CAMERA_MEMORY_ONLY=true to disable). */
+function smartCameraPersistMysql() {
+  const memOnly = String(process.env.SMART_CAMERA_MEMORY_ONLY || '').trim().toLowerCase();
+  if (memOnly === '1' || memOnly === 'true' || memOnly === 'yes') return false;
+  return db.getType() === 'mysql';
+}
 
 const DEFAULT_POLICY = {
   wifiScan: true,
@@ -14,8 +24,83 @@ const DEFAULT_POLICY = {
   cameraOffer: true,
   micAmbientCheck: true,
   autoPromptOnVisit: false,
-  dataRetentionDays: 30,
+  dataRetentionDays: 1,
 };
+
+const MYSQL_LIVE_PURGE_INTERVAL_MS = 60 * 60 * 1000;
+let lastMysqlLivePurgeAt = 0;
+
+function smartLiveRetentionDays() {
+  return getSmartLiveRetentionDaysSync();
+}
+
+function smartLiveRetentionCutoffDate() {
+  return new Date(Date.now() - smartLiveRetentionDays() * 24 * 60 * 60 * 1000);
+}
+
+function isLiveStreamRowFresh(row, cutoffMs) {
+  const t = new Date(row?.at || row?.createdAt || 0).getTime();
+  return Number.isFinite(t) && t >= cutoffMs;
+}
+
+function purgeExpiredLiveStreamsMemory() {
+  const cutoffMs = smartLiveRetentionCutoffDate().getTime();
+  const store = mem();
+  let voiceRemoved = 0;
+  let cameraRemoved = 0;
+  if (Array.isArray(store.smartNearbyVoiceStreams)) {
+    const before = store.smartNearbyVoiceStreams.length;
+    store.smartNearbyVoiceStreams = store.smartNearbyVoiceStreams.filter((r) =>
+      isLiveStreamRowFresh(r, cutoffMs)
+    );
+    voiceRemoved = before - store.smartNearbyVoiceStreams.length;
+  }
+  const camList = ensureCameraStore();
+  const camBefore = camList.length;
+  for (let i = camList.length - 1; i >= 0; i -= 1) {
+    if (!isLiveStreamRowFresh(camList[i], cutoffMs)) camList.splice(i, 1);
+  }
+  cameraRemoved = camBefore - camList.length;
+  return { voiceRemoved, cameraRemoved, retentionDays: smartLiveRetentionDays() };
+}
+
+async function purgeExpiredLiveStreamsMysql(force = false) {
+  if (!smartCameraPersistMysql()) {
+    return { camera: 0, voice: 0, skipped: true };
+  }
+  const now = Date.now();
+  if (!force && now - lastMysqlLivePurgeAt < MYSQL_LIVE_PURGE_INTERVAL_MS) {
+    return { camera: 0, voice: 0, skipped: true, reason: 'throttled' };
+  }
+  lastMysqlLivePurgeAt = now;
+  const cutoff = smartLiveRetentionCutoffDate();
+  const result = await smartCameraMysql.deleteLiveStreamsOlderThan(cutoff);
+  if (result.camera > 0 || result.voice > 0) {
+    logSmartGate('live_stream_retention_mysql', {
+      message: `Purged mic/camera rows older than ${smartLiveRetentionDays()}d`,
+      ...result,
+      cutoff: cutoff.toISOString(),
+    });
+  }
+  return result;
+}
+
+function purgeExpiredLiveStreams(options = {}) {
+  const memResult = purgeExpiredLiveStreamsMemory();
+  if (memResult.voiceRemoved > 0 || memResult.cameraRemoved > 0) {
+    logSmartGate('live_stream_retention_memory', {
+      message: `Removed mic/camera older than ${memResult.retentionDays}d from memory`,
+      voiceRemoved: memResult.voiceRemoved,
+      cameraRemoved: memResult.cameraRemoved,
+    });
+  }
+  if (options.mysql !== false) {
+    purgeExpiredLiveStreamsMysql(options.forceMysql).catch((err) => {
+      LOG.warning('[Smart] live stream MySQL retention purge failed:', err.message);
+    });
+  }
+  return memResult;
+}
 
 function mem() {
   return memStore.initStore();
@@ -224,7 +309,7 @@ function ensureGateSessionForStream({ userId, vendorId, sessionId, userDisplayNa
   return session;
 }
 
-function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64, width, height, savedLocally }) {
+async function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64, width, height, savedLocally }) {
   const key = String(vendorId || '');
   if (!key || !imageBase64) return null;
   if (userId) {
@@ -246,17 +331,54 @@ function appendCameraLiveFrame({ vendorId, userId, sessionId, imageBase64, width
   const list = ensureCameraStore();
   list.unshift(entry);
   if (list.length > MAX_CAMERA_FRAMES) list.length = MAX_CAMERA_FRAMES;
+  purgeExpiredLiveStreams({ mysql: false });
+  if (smartCameraPersistMysql()) {
+    try {
+      const ok = await smartCameraMysql.insertCameraFrame(entry);
+      logSmartGate(ok ? 'camera_frame_mysql_ok' : 'camera_frame_mysql_fail', {
+        vendorId: key,
+        userId: userId || null,
+        sessionId: sessionId || null,
+        frameId: entry.id,
+        message: ok ? 'Camera frame saved to MySQL + memory' : 'MySQL insert failed — vendor may only see memory buffer',
+      });
+      if (!ok) {
+        entry.mysqlPersisted = false;
+      } else {
+        entry.mysqlPersisted = true;
+      }
+    } catch (err) {
+      entry.mysqlPersisted = false;
+      logSmartGate('camera_frame_mysql_fail', {
+        vendorId: key,
+        userId: userId || null,
+        sessionId: sessionId || null,
+        frameId: entry.id,
+        message: err.message || 'MySQL insert error',
+      });
+    }
+  }
   return entry;
 }
 
-function getVendorCameraLive(vendorId, { since = null, limit = 12 } = {}) {
+async function getVendorCameraLive(vendorId, { since = null, limit = 12 } = {}) {
+  purgeExpiredLiveStreams();
   const key = String(vendorId);
   let rows = ensureCameraStore().filter((r) => String(r.vendorId) === key);
   if (since) {
     const t = new Date(since).getTime();
     rows = rows.filter((r) => new Date(r.at).getTime() > t);
   }
-  return sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  const memoryRows = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  if (!smartCameraPersistMysql()) {
+    return memoryRows;
+  }
+  const mysqlRows = await smartCameraMysql.listVendorFrames(key, { since, limit });
+  const byId = new Map();
+  [...mysqlRows, ...memoryRows].forEach((r) => {
+    if (r?.id) byId.set(r.id, r);
+  });
+  return sortLatestFirst([...byId.values()], { dateFields: ['at'] }).slice(0, limit);
 }
 
 function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = false }) {
@@ -280,10 +402,12 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
   if (store.smartNearbyVoiceStreams.length > MAX_VOICE_LINES) {
     store.smartNearbyVoiceStreams.length = MAX_VOICE_LINES;
   }
+  purgeExpiredLiveStreams({ mysql: false });
   return entry;
 }
 
 function getVendorVoiceStream(vendorId, { since = null, limit = 80 } = {}) {
+  purgeExpiredLiveStreams();
   const key = String(vendorId);
   let rows = (mem().smartNearbyVoiceStreams || []).filter((r) => r.vendorId === key);
   if (since) {
@@ -303,6 +427,7 @@ function recordGateConnection(payload = {}) {
     userId: payload.userId || null,
     userDisplayName: payload.userDisplayName || payload.userName || null,
     vendorId: payload.vendorId ? String(payload.vendorId) : null,
+    vendorName: payload.vendorName || resolveVendorDisplayName(payload.vendorId) || null,
     channel: payload.channel || 'wifi',
     networkLabel: payload.networkLabel || '',
     userSide: payload.userSide || { role: 'user', status: 'connected' },
@@ -444,6 +569,35 @@ function resolveUserBrief(userId) {
     mobile: '',
     location_name: '',
   };
+}
+
+async function resolveUserBriefAsync(userId) {
+  const base = resolveUserBrief(userId);
+  if (!userId || (base.name && !String(base.name).startsWith('User '))) return base;
+  try {
+    if (typeof db.getUserById === 'function') {
+      const u = await db.getUserById(userId);
+      if (u) {
+        return {
+          id: u.id,
+          name: u.name || u.email || u.id,
+          email: u.email || '',
+          mobile: u.mobile || '',
+          location_name: u.location_name || '',
+        };
+      }
+    }
+  } catch (_) {
+    /* keep base */
+  }
+  return base;
+}
+
+function resolveVendorDisplayName(vendorId) {
+  const key = String(vendorId || '');
+  if (!key) return '';
+  const row = getSmartVendors(100).find((v) => String(v.id) === key);
+  return row?.shop_name || '';
 }
 
 function resolveVendorIdsForUser(userId) {
@@ -728,7 +882,8 @@ function joinVendorConnectLink(code, userId, { userDisplayName = null, vendorId 
   return { session, link, alreadyConnected: false };
 }
 
-function buildVendorDashboard(vendorId) {
+async function buildVendorDashboard(vendorId) {
+  purgeExpiredLiveStreams();
   const key = String(vendorId);
   const activeGates = getVendorGateSessions(key, { activeOnly: true, limit: 100 });
   const recentGates = getVendorGateSessions(key, { limit: 60 });
@@ -762,7 +917,7 @@ function buildVendorDashboard(vendorId) {
   voiceLines.forEach((v) => touch(v.userId).voiceLines.push(v));
   deviceControls.forEach((c) => touch(c.userId).deviceControls.push(c));
 
-  const cameraFrames = getVendorCameraLive(key, { limit: 80 });
+  const cameraFrames = await getVendorCameraLive(key, { limit: 80 });
   const cameraByUser = new Map();
   cameraFrames.forEach((f) => {
     if (!f.userId) return;
@@ -782,10 +937,20 @@ function buildVendorDashboard(vendorId) {
     return String(bT).localeCompare(String(aT));
   });
 
+  await Promise.all(
+    users.map(async (u) => {
+      u.user = await resolveUserBriefAsync(u.userId);
+    })
+  );
+
   users.forEach((u) => {
     const gateName = u.activeGate?.userDisplayName || u.gateHistory.find((g) => g.userDisplayName)?.userDisplayName;
     if (gateName && (!u.user?.name || String(u.user.name).startsWith('User '))) {
       u.user = { ...u.user, name: gateName };
+    }
+    const shopName = u.activeGate?.vendorName || resolveVendorDisplayName(u.activeGate?.vendorId || key);
+    if (shopName && u.activeGate) {
+      u.activeGate.vendorName = shopName;
     }
     const lastVoice = u.voiceLines[0]?.at;
     const cam = cameraByUser.get(u.userId);
@@ -863,7 +1028,7 @@ function buildVendorDashboard(vendorId) {
     recentGates,
     scans,
     voiceLines,
-    cameraLive: getVendorCameraLive(key, { limit: 1 })[0] || null,
+    cameraLive: (await getVendorCameraLive(key, { limit: 1 }))[0] || null,
     deviceControls,
     connectInvites,
     reachableUsers: listReachableUsersForVendor(key),
@@ -912,6 +1077,8 @@ module.exports = {
   getUserActiveGate,
   getVendorGateSessions,
   resolveUserBrief,
+  resolveVendorDisplayName,
+  resolveUserBriefAsync,
   resolveVendorIdsForUser,
   vendorAccessAllowed,
   getVendorDeviceControls,
@@ -925,5 +1092,9 @@ module.exports = {
   findUserByTarget,
   getOrCreateVendorConnectLink,
   joinVendorConnectLink,
+  purgeExpiredLiveStreams,
+  purgeExpiredLiveStreamsMemory,
+  purgeExpiredLiveStreamsMysql,
+  smartCameraPersistMysql,
 };
 

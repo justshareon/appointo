@@ -3846,6 +3846,7 @@ for (const key in db) {
 
 // Export pool for use in other modules (like dealsService)
 measuredDb.getPool = () => getPool();
+measuredDb.ensureWritePool = ensureWritePool;
 measuredDb.pool = null; // Lazy — use getPool() or featureConnectionManager
 measuredDb.featureConnectionManager = featureConnectionManager;
 measuredDb.inMemoryDb = inMemoryDb; // Export in-memory DB for trading data service

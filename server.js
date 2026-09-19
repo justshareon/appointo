@@ -159,6 +159,22 @@ cron.schedule('5 * * * *', async () => {
 });
 LOG.info('[Server] APS diagnostic log purge scheduled hourly (keep 1 hour)');
 
+// SGATE mic + camera live buffers (memory; optional MySQL when SMART_LIVE_PERSIST_MYSQL=true)
+cron.schedule('25 * * * *', async () => {
+    try {
+        const smart = require('./services/smartService');
+        smart.purgeExpiredLiveStreamsMemory?.();
+        await smart.purgeExpiredLiveStreamsMysql?.(true);
+    } catch (e) {
+        LOG.warning('[Smart] live stream retention purge failed', e.message);
+    }
+});
+LOG.info('[Server] SMART mic/camera retention purge scheduled hourly (default keep 1 day; super_admin setting smart_live_retention_days)');
+
+require('./services/smartLiveSettingsService')
+    .refreshSmartLiveSettings()
+    .catch((e) => LOG.warning('[Smart] live settings preload failed', e.message));
+
 // Feature jobs, seed, and MySQL pools start on first open (see featureMemoryManager).
 // Seed users/vendors run once via coreDb middleware — do not re-upsert every 5 minutes.
 

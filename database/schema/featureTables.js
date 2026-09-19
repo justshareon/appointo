@@ -13,8 +13,9 @@ function poolOf(mainDb) {
     if (!mainDb) return null;
     try {
         const fcm = require('../featureConnectionManager');
-        const cached = fcm.getCachedPool('trust_score')
+        const cached = fcm.getCachedPool('smart')
             || fcm.getCachedPool('core')
+            || fcm.getCachedPool('trust_score')
             || (typeof mainDb.getPool === 'function' ? mainDb.getPool() : null);
         if (cached) return cached;
     } catch (_) {
@@ -566,6 +567,35 @@ async function ensureTrade(pool, mainDb) {
     }
 }
 
+async function ensureSmart(pool) {
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS smart_camera_frames (
+            id VARCHAR(64) PRIMARY KEY,
+            vendor_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NULL,
+            session_id VARCHAR(64) NULL,
+            image_base64 MEDIUMTEXT NOT NULL,
+            width INT NULL,
+            height INT NULL,
+            saved_locally TINYINT(1) DEFAULT 0,
+            created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+            INDEX idx_smart_cam_vendor_time (vendor_id, created_at)
+        )
+    `);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS smart_voice_lines (
+            id VARCHAR(64) PRIMARY KEY,
+            vendor_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NULL,
+            session_id VARCHAR(64) NULL,
+            line_text TEXT NOT NULL,
+            is_final TINYINT(1) DEFAULT 1,
+            created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+            INDEX idx_smart_voice_vendor_time (vendor_id, created_at)
+        )
+    `);
+}
+
 async function ensureRDetector(pool) {
     const commuteService = require('../../services/rDetectorCommuteService');
     const rDetectorService = require('../../services/rDetectorService');
@@ -659,6 +689,7 @@ const HANDLERS = {
         if (mainDb?.ensureFleetTables) await mainDb.ensureFleetTables();
     },
     r_detector: ensureRDetector,
+    smart: ensureSmart,
     cyber: async (pool, mainDb) => {
         if (mainDb?.ensureCyberThreatTables) await mainDb.ensureCyberThreatTables();
         await ensureSuraksha(pool);

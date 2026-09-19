@@ -20,6 +20,14 @@ class SettingsService {
      */
     async updateSettings(settings) {
         await db.updateSettings(settings);
+        if (settings && settings.smart_live_retention_days !== undefined) {
+            try {
+                const { applySmartLiveSettingsPatch } = require('./smartLiveSettingsService');
+                applySmartLiveSettingsPatch(settings);
+            } catch (_) {
+                /* ignore */
+            }
+        }
         return { success: true };
     }
 }

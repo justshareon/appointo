@@ -1,8 +1,8 @@
-const path = require('path');
 const dotenv = require('dotenv');
 const { resolveDbType, isMysqlConfigured } = require('./utils/resolveDbType');
+const { BACKEND_ENV_FILE } = require('./utils/envPolicy');
 
-const envPath = path.join(__dirname, '.env');
+const envPath = BACKEND_ENV_FILE;
 const result = dotenv.config({ path: envPath });
 
 if (!process.env.__QR_ENV_LOGGED) {

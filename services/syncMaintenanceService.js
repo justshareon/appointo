@@ -99,6 +99,19 @@ async function runReleaseMaintenanceSteps(triggerSource = 'auto', { skipDrift = 
     );
   }
 
+  try {
+    const { syncSmartSettingsFromEnvAndValidate } = require('./smartSgateAdminService');
+    const validation = await syncSmartSettingsFromEnvAndValidate();
+    push(
+      'validate_smart_sgate',
+      validation.success,
+      validation.message || `${validation.passed}/${validation.total}`,
+      { validation }
+    );
+  } catch (err) {
+    push('validate_smart_sgate', false, err.message);
+  }
+
   const failed = steps.filter((s) => !s.ok).length;
   const result = {
     ok: failed === 0,

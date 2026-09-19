@@ -10,6 +10,7 @@ const STORE_KEYS = [
   'smartNearbyDeviceControls',
   'smartNearbyPolicies',
   'smartNearbyVoiceStreams',
+  'smartCameraLiveFrames',
   'smartNearbyGateSessions',
   'smartNearbyConnectInvites',
 ];
@@ -50,6 +51,7 @@ function loadSeed() {
   mem.smartNearbyDeviceControls = [];
   mem.smartNearbyPolicies = [];
   mem.smartNearbyVoiceStreams = [];
+  mem.smartCameraLiveFrames = [];
   mem.smartNearbyGateSessions = [];
   mem.smartNearbyConnectInvites = [];
 }

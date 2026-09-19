@@ -904,6 +904,13 @@ router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
         );
         const activitySync = await runtimeDbModeService.revalidateRecentActivity({ hours: syncHours });
         const modulesReset = await syncStatusService.revalidateEmptyModules();
+        let smartSgateValidation = null;
+        try {
+            const { syncSmartSettingsFromEnvAndValidate } = require('../services/smartSgateAdminService');
+            smartSgateValidation = await syncSmartSettingsFromEnvAndValidate();
+        } catch (sgErr) {
+            smartSgateValidation = { success: false, error: sgErr.message };
+        }
         const health = await getSystemHealth();
         res.json({
             success: true,
@@ -911,6 +918,7 @@ router.post('/revalidate-modules', requireSuperAdmin, async (req, res) => {
             flagged: modulesReset > 0,
             activitySync,
             syncHours,
+            smartSgateValidation,
             health,
             moduleReports: health?.moduleReports || [],
         });
@@ -1005,6 +1013,42 @@ router.post('/aps/validate-production', requireSuperAdmin, async (req, res) => {
         res.json({ success: result.success, ...result });
     } catch (error) {
         LOG.error('[Admin] aps/validate-production error:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.get('/smart-sgate/config', requireSuperAdmin, async (req, res) => {
+    try {
+        const admin = require('../services/smartSgateAdminService');
+        const config = await admin.getSmartSgateAdminConfig();
+        const envFile = admin.readEnvFileLines();
+        res.json({ success: true, config, envFile });
+    } catch (error) {
+        LOG.error('[Admin] smart-sgate/config GET:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.put('/smart-sgate/config', requireSuperAdmin, async (req, res) => {
+    try {
+        const admin = require('../services/smartSgateAdminService');
+        const applied = await admin.applySmartSgateAdminConfig(req.body || {});
+        const { runSmartSgateValidation } = require('../services/smartSgateValidateService');
+        const validation = await runSmartSgateValidation({ cleanup: true });
+        res.json({ success: true, ...applied, validation });
+    } catch (error) {
+        LOG.error('[Admin] smart-sgate/config PUT:', error);
+        res.status(500).json({ success: false, error: error.message });
+    }
+});
+
+router.post('/smart-sgate/validate', requireSuperAdmin, async (req, res) => {
+    try {
+        const { syncSmartSettingsFromEnvAndValidate } = require('../services/smartSgateAdminService');
+        const validation = await syncSmartSettingsFromEnvAndValidate();
+        res.json({ success: validation.success, ...validation });
+    } catch (error) {
+        LOG.error('[Admin] smart-sgate/validate POST:', error);
         res.status(500).json({ success: false, error: error.message });
     }
 });

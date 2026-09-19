@@ -38,6 +38,7 @@ function ensureFeatureSettings(settings = {}) {
   fill('news_default_lat', '28.6139');
   fill('news_default_lng', '77.2090');
   fill('db_pool_min_limit', 3);
+  fill('smart_live_retention_days', 1);
   fill('db_pool_default_limit', 5);
   fill('db_pool_idle_close_minutes', 10);
   if (!s.db_pool_feature_limits || typeof s.db_pool_feature_limits !== 'object') {
