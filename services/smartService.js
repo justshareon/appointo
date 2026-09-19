@@ -449,6 +449,7 @@ async function appendCameraLiveFrame({
     eventRule: null,
     eventLabel: null,
     at: new Date().toISOString(),
+    deliveredToVendor: false,
   };
 
   if (!aiOn) {
@@ -483,7 +484,7 @@ async function appendCameraLiveFrame({
   return entry;
 }
 
-async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsOnly = false } = {}) {
+async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsOnly = false, markDelivered = false } = {}) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
   let rows = ensureCameraStore().filter(
@@ -511,12 +512,21 @@ async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsO
         imageBase64: normalizeCameraDataUri(r.imageBase64),
       }));
   }
+  const store = mem();
   const preview = getVendorLivePreview(key);
-  const usableMemory = memoryRows.filter((r) => isAcceptableCameraPayload(r.imageBase64));
-  const latest =
-    (preview && isAcceptableCameraPayload(preview.imageBase64) ? preview : null)
-    || usableMemory[0]
-    || null;
+  const previewOk =
+    preview && isAcceptableCameraPayload(preview.imageBase64) ? preview : null;
+  const previewPick =
+    markDelivered
+      ? previewOk && previewOk.deliveredToVendor === false
+        ? previewOk
+        : null
+      : previewOk;
+  let usableMemory = memoryRows.filter((r) => isAcceptableCameraPayload(r.imageBase64));
+  if (markDelivered) {
+    usableMemory = usableMemory.filter((r) => r.deliveredToVendor === false);
+  }
+  const latest = previewPick || usableMemory[0] || null;
   const out = [];
   if (latest) {
     out.push({ ...latest, imageBase64: normalizeCameraDataUri(latest.imageBase64) });
@@ -526,7 +536,20 @@ async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsO
       out.push({ ...e, imageBase64: normalizeCameraDataUri(e.imageBase64) });
     }
   });
-  return out.slice(0, limit);
+  const sliced = out.slice(0, limit);
+  if (markDelivered) {
+    sliced.forEach((frame) => {
+      if (previewPick && frame.id === previewPick.id) {
+        previewPick.deliveredToVendor = true;
+        if (store.smartCameraLivePreview?.[key]) {
+          store.smartCameraLivePreview[key].deliveredToVendor = true;
+        }
+      }
+      const inList = ensureCameraStore().find((r) => r.id === frame.id);
+      if (inList) inList.deliveredToVendor = true;
+    });
+  }
+  return sliced;
 }
 
 function voiceUserLabel(userId, sessionId) {
@@ -611,6 +634,7 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
     text: line,
     final: isFinal,
     at: nowIso,
+    deliveredToVendor: false,
   };
   streams.unshift(entry);
   if (streams.length > MAX_VOICE_LINES) {
@@ -620,15 +644,28 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
   return entry;
 }
 
-function getVendorVoiceStream(vendorId, { since = null, limit = 80 } = {}) {
+function getVendorVoiceStream(vendorId, { since = null, limit = 80, markDelivered = false } = {}) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
-  let rows = (mem().smartNearbyVoiceStreams || []).filter((r) => r.vendorId === key);
+  const streams = mem().smartNearbyVoiceStreams || [];
+  let rows = streams.filter((r) => r.vendorId === key);
+  if (markDelivered) {
+    rows = rows.filter((r) => r.deliveredToVendor === false);
+  }
   if (since) {
     const t = new Date(since).getTime();
-    rows = rows.filter((r) => new Date(r.at).getTime() > t);
+    if (!Number.isNaN(t)) {
+      rows = rows.filter((r) => new Date(r.at).getTime() > t);
+    }
   }
-  return sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  const out = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  if (markDelivered) {
+    out.forEach((row) => {
+      const hit = streams.find((s) => s.id === row.id);
+      if (hit) hit.deliveredToVendor = true;
+    });
+  }
+  return out;
 }
 
 const MAX_GATE_SESSIONS = 200;

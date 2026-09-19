@@ -281,6 +281,7 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 12,
       eventsOnly,
+      markDelivered: true,
     });
     const policy = nearby.getVendorPolicy(vendorId);
     res.json({
@@ -288,6 +289,7 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
       frames,
       latest: frames[0] || null,
       policy: { cameraAiEnabled: policy.cameraAiEnabled === true },
+      bufferMs: 30000,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -301,8 +303,14 @@ router.get('/vendor/:vendorId/voice-stream', authenticateToken, async (req, res)
     const lines = nearby.getVendorVoiceStream(vendorId, {
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 80,
+      markDelivered: true,
     });
-    res.json({ success: true, lines, count: lines.length });
+    res.json({
+      success: true,
+      lines,
+      count: lines.length,
+      bufferMs: 30000,
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
