@@ -36,11 +36,13 @@ async function runSmartSgateValidation({ cleanup = true } = {}) {
   record(!!session?.vendorName, 'gate_vendorName', session?.vendorName || 'missing');
   const cleanupSessionIds = [session?.id].filter(Boolean);
 
+  const sampleJpeg =
+    'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hjc5OTgy/2wBDAQkJCQwLDBgNDRgyIRwhMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIy/wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAr/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/8QAFQEBAQAAAAAAAAAAAAAAAAAAAAX/xAAUEQEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIRAxEAPwCdABmX/9k=';
   const frame = await nearby.appendCameraLiveFrame({
     vendorId: 'v_smart1',
     userId: session.userId,
     sessionId: session.id,
-    imageBase64: 'data:image/jpeg;base64,/9j/4AAQ',
+    imageBase64: sampleJpeg,
     width: 64,
     height: 64,
   });
@@ -49,6 +51,33 @@ async function runSmartSgateValidation({ cleanup = true } = {}) {
 
   const live = await nearby.getVendorCameraLive('v_smart1', { limit: 5 });
   record(live.some((r) => r.id === frame?.id), 'camera_live_poll', `${live.length} frame(s)`);
+
+  nearby.setVendorPolicy('v_smart1', { cameraAiEnabled: true });
+  const aiPreview = await nearby.appendCameraLiveFrame({
+    vendorId: 'v_smart1',
+    userId: session.userId,
+    sessionId: session.id,
+    imageBase64: sampleJpeg,
+    liveOnly: true,
+  });
+  record(!!aiPreview?.id, 'camera_ai_preview', aiPreview?.id || 'rejected');
+  const aiEvent = await nearby.appendCameraLiveFrame({
+    vendorId: 'v_smart1',
+    userId: session.userId,
+    sessionId: session.id,
+    imageBase64: sampleJpeg,
+    eventCapture: true,
+    eventRule: 'motion_delta',
+    eventLabel: 'Movement above normal baseline',
+  });
+  record(!!aiEvent?.eventCapture, 'camera_ai_event', aiEvent?.id || 'rejected');
+  const eventsOnly = await nearby.getVendorCameraLive('v_smart1', { limit: 10, eventsOnly: true });
+  record(
+    eventsOnly.some((r) => r.id === aiEvent?.id) && !eventsOnly.some((r) => r.id === aiPreview?.id),
+    'camera_ai_events_only',
+    `${eventsOnly.length} event row(s)`
+  );
+  nearby.setVendorPolicy('v_smart1', { cameraAiEnabled: false });
 
   const store = db.inMemoryDb;
   const oldVoiceId = `svt_old_${Date.now()}`;
@@ -83,7 +112,7 @@ async function runSmartSgateValidation({ cleanup = true } = {}) {
         id: testId,
         vendorId: 'v_smart1',
         userId: 'u_validate_mysql',
-        imageBase64: 'data:image/jpeg;base64,TEST',
+        imageBase64: sampleJpeg,
         at: new Date().toISOString(),
       });
       record(inserted, 'mysql_insert_camera', testId);
@@ -92,7 +121,7 @@ async function runSmartSgateValidation({ cleanup = true } = {}) {
       const frame2 = await nearby.appendCameraLiveFrame({
         vendorId: 'v_smart1',
         userId: 'u_validate_mysql',
-        imageBase64: 'data:image/jpeg;base64,TESTMYSQL2',
+        imageBase64: sampleJpeg,
       });
       record(frame2?.mysqlPersisted === true, 'mysql_append_camera', frame2?.mysqlPersisted ? 'ok' : 'not persisted');
       if (frame2?.id) cleanupFrameIds.push(frame2.id);
