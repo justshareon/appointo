@@ -230,12 +230,15 @@ function activeGateUserIdsForVendor(vendorId) {
   );
 }
 
-const SYNTHETIC_SMART_USER_IDS = new Set(['usr_smart1', 'usr_smartvendor1']);
+const DEMO_SMART_USER_IDS = new Set(['usr_smart1', 'usr_smartvendor1']);
 
+/** Only validation/script users are hidden from vendor “live” counts. Demo accounts (smart1@test.com) count as real. */
 function isSyntheticSmartUserId(userId) {
   const s = String(userId || '');
   if (!s) return true;
-  if (SYNTHETIC_SMART_USER_IDS.has(s)) return true;
+  if (process.env.SMART_HIDE_DEMO_LIVE === 'true' && DEMO_SMART_USER_IDS.has(s)) {
+    return true;
+  }
   return /^u_(sgate_val|validate)_/i.test(s) || /^scf_val_/i.test(s);
 }
 
@@ -516,11 +519,14 @@ async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsO
   const preview = getVendorLivePreview(key);
   const previewOk =
     preview && isAcceptableCameraPayload(preview.imageBase64) ? preview : null;
+  const previewFresh = previewOk && isRecentLiveAt(previewOk.at);
   const previewPick =
     markDelivered
       ? previewOk && previewOk.deliveredToVendor === false
         ? previewOk
-        : null
+        : previewFresh
+          ? previewOk
+          : null
       : previewOk;
   let usableMemory = memoryRows.filter((r) => isAcceptableCameraPayload(r.imageBase64));
   if (markDelivered) {
@@ -1231,6 +1237,8 @@ async function buildVendorDashboard(vendorId) {
       )
   );
 
+  const streamLiveUserIds = liveCustomerUserIdsForVendor(key);
+
   const connectInvites = listInvitesForVendor(key, { limit: 50 });
   const pendingOutbound = connectInvites.filter((i) => i.status === 'pending');
 
@@ -1268,9 +1276,9 @@ async function buildVendorDashboard(vendorId) {
       message: connectLink.message,
     },
     stats: {
-      connectedNow: Math.max(liveCustomers.length, realActiveGates.length),
+      connectedNow: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
       sgateSessions: realActiveGates.length,
-      totalUsers: Math.max(liveCustomers.length, realActiveGates.length),
+      totalUsers: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
       sharedScans: scans.length,
       voiceLines: voiceLines.length,
       cameraFrames: cameraFrames.length,
@@ -1301,6 +1309,11 @@ async function buildVendorDashboard(vendorId) {
         sessionId: g.id,
         userId: g.userId,
       })),
+      streamLiveUserIds: [...streamLiveUserIds],
+      renderNote:
+        streamLiveUserIds.size > 0 && realActiveGates.length === 0
+          ? 'Mic/camera live but no SGATE session on this server — Render may have multiple instances; use local API or redeploy backend.'
+          : null,
       recentTrace: getSmartGateTrace(25),
     },
   };
