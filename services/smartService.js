@@ -693,6 +693,7 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
       row.text = line;
       row.at = nowIso;
       row.userLabel = userLabel || row.userLabel;
+      row.deliveredToVendor = false;
       return row;
     }
   }
@@ -881,6 +882,32 @@ function setVendorVoiceListen(vendorId, listening = false) {
     updated += 1;
   });
   return { updated, listening: !!listening };
+}
+
+/** Vendor console Refresh — enable listen mode and ping connected customers to restart streams. */
+function requestVendorLiveRefresh(vendorId) {
+  const key = String(vendorId || '');
+  if (!key) return { updated: 0, listening: false, refreshAt: null };
+  const refreshAt = new Date().toISOString();
+  const rows = mem().smartNearbyGateSessions || [];
+  let updated = 0;
+  rows.forEach((r, i) => {
+    if (String(r.vendorId) !== key || r.disconnectedAt) return;
+    const prevSeq = Number(r.vendorSide?.vendorLiveRefreshSeq) || 0;
+    rows[i] = {
+      ...r,
+      vendorSide: {
+        ...r.vendorSide,
+        vendorListening: true,
+        vendorListeningAt: refreshAt,
+        vendorLiveRefreshAt: refreshAt,
+        vendorLiveRefreshSeq: prevSeq + 1,
+      },
+      lastHeartbeatAt: refreshAt,
+    };
+    updated += 1;
+  });
+  return { updated, listening: true, refreshAt, refreshSeq: updated };
 }
 
 function getVendorGateSessions(vendorId, { activeOnly = false, limit = 40 } = {}) {
@@ -1446,6 +1473,7 @@ module.exports = {
   recordGateConnection,
   updateGateHeartbeat,
   setVendorVoiceListen,
+  requestVendorLiveRefresh,
   endGateConnection,
   getUserActiveGate,
   getVendorGateSessions,

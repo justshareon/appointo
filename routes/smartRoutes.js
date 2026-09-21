@@ -454,6 +454,23 @@ router.post('/vendor/:vendorId/voice-listen', authenticateToken, async (req, res
   }
 });
 
+router.post('/vendor/:vendorId/live-refresh', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const result = nearby.requestVendorLiveRefresh(vendorId);
+    recordBackendFeatureScan(
+      'smart_scan',
+      'vendor_live_refresh',
+      `Vendor live refresh sessions=${result.updated}`,
+      { vendorId }
+    );
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 router.post('/vendor/:vendorId/clear-live-media', authenticateToken, async (req, res) => {
   try {
     const { vendorId } = req.params;
