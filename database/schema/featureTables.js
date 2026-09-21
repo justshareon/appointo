@@ -594,6 +594,29 @@ async function ensureSmart(pool) {
             INDEX idx_smart_voice_vendor_time (vendor_id, created_at)
         )
     `);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS smart_scan_snapshots (
+            vendor_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NOT NULL,
+            wifi_keys JSON NULL,
+            device_keys JSON NULL,
+            wifi_count INT DEFAULT 0,
+            device_count INT DEFAULT 0,
+            updated_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+            PRIMARY KEY (vendor_id, user_id)
+        )
+    `);
+    await ensureTable(pool, `
+        CREATE TABLE IF NOT EXISTS smart_scan_alerts (
+            id VARCHAR(64) PRIMARY KEY,
+            vendor_id VARCHAR(64) NOT NULL,
+            user_id VARCHAR(64) NULL,
+            user_display_name VARCHAR(255) NULL,
+            payload JSON NOT NULL,
+            created_at DATETIME(3) DEFAULT CURRENT_TIMESTAMP(3),
+            INDEX idx_smart_scan_alert_vendor (vendor_id, created_at)
+        )
+    `);
 }
 
 async function ensureRDetector(pool) {

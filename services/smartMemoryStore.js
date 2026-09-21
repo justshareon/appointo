@@ -23,7 +23,14 @@ const MAX_SESSIONS = 500;
 const MAX_DEVICE_LOG = 300;
 
 const SEED_VENDORS = [
-  { id: 'v_smart1', shop_name: 'Smart Home Hub', location_name: 'Mumbai', category: 'Smart Devices', features_smart: true },
+  {
+    id: 'v_smart1',
+    owner_id: 'usr_smartvendor1',
+    shop_name: 'Smart Home Hub',
+    location_name: 'Mumbai',
+    category: 'Smart Devices',
+    features_smart: true,
+  },
   { id: 'v_smart2', shop_name: 'IoT Connect Store', location_name: 'Delhi', category: 'Smart Devices', features_smart: true },
   { id: 'v_smart3', shop_name: 'Home Automation Pro', location_name: 'Bangalore', category: 'Smart Devices', features_smart: true },
 ];
@@ -54,6 +61,8 @@ function loadSeed() {
   mem.smartCameraLiveFrames = [];
   mem.smartNearbyGateSessions = [];
   mem.smartNearbyConnectInvites = [];
+  mem.smartNearbyScanAlerts = [];
+  mem.smartNearbyScanSnapshots = {};
 }
 
 function scheduleDispose() {

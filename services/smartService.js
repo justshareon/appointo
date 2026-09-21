@@ -34,7 +34,21 @@ const DEFAULT_POLICY = {
   dataRetentionDays: 1,
   /** true = event recordings + live preview; false = live stream only (no Recent gallery) */
   cameraAiEnabled: defaultCameraAiEnabled(),
+  /** true = customer does not see their own CSCAN preview (vendor-only view) */
+  customerCameraPreviewHidden: true,
+  /** contain = full frame; cover = crop fill (vendor display hint — client may ignore) */
+  vendorCameraFit: 'contain',
+  /** Seconds between live camera frames (5 | 30 | 60) — vendor sets load vs freshness */
+  cameraStreamIntervalSec: 30,
 };
+
+const CAMERA_STREAM_INTERVALS = new Set([5, 30, 60]);
+
+function normalizeCameraStreamIntervalSec(value) {
+  const n = parseInt(String(value ?? ''), 10);
+  if (CAMERA_STREAM_INTERVALS.has(n)) return n;
+  return DEFAULT_POLICY.cameraStreamIntervalSec;
+}
 
 const MYSQL_LIVE_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 let lastMysqlLivePurgeAt = 0;
@@ -168,12 +182,30 @@ function getVendorPolicy(vendorId) {
   return { vendorId: key, ...DEFAULT_POLICY, ...(row || {}) };
 }
 
+function attachStreamPolicyToSession(session) {
+  if (!session?.vendorId) return session;
+  const sec = normalizeCameraStreamIntervalSec(getVendorPolicy(session.vendorId).cameraStreamIntervalSec);
+  const ms = sec * 1000;
+  return {
+    ...session,
+    streamPolicy: {
+      cameraStreamIntervalSec: sec,
+      streamFlushMs: ms,
+      heartbeatMs: ms,
+    },
+  };
+}
+
 function setVendorPolicy(vendorId, patch = {}) {
   const key = String(vendorId);
   const policies = mem().smartNearbyPolicies;
+  const merged = { ...patch };
+  if (merged.cameraStreamIntervalSec != null) {
+    merged.cameraStreamIntervalSec = normalizeCameraStreamIntervalSec(merged.cameraStreamIntervalSec);
+  }
   const next = {
     ...getVendorPolicy(key),
-    ...patch,
+    ...merged,
     vendorId: key,
     updatedAt: new Date().toISOString(),
   };
@@ -204,8 +236,9 @@ async function listNearbyVendors({ city = '', lat, lng } = {}) {
   }));
 }
 
-function recordScanSession(payload = {}) {
+async function recordScanSession(payload = {}) {
   const store = mem();
+  const scanDeltaService = require('./smartScanDeltaService');
   const entry = {
     id: `cns_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     userId: payload.userId || null,
@@ -216,6 +249,15 @@ function recordScanSession(payload = {}) {
     location: payload.location || null,
     createdAt: new Date().toISOString(),
   };
+  if (entry.sharedWithVendor && entry.vendorId && entry.userId) {
+    entry.scanDelta = await scanDeltaService.applyScanDeltaAsync({
+      vendorId: entry.vendorId,
+      userId: entry.userId,
+      userDisplayName: payload.userDisplayName || null,
+      scan: entry.scan,
+      sharedWithVendor: true,
+    });
+  }
   store.smartNearbyScanSessions.unshift(entry);
   memStore.capSessions(store);
   return entry;
@@ -385,6 +427,49 @@ function setVendorLivePreview(vendorId, entry) {
 
 function getVendorLivePreview(vendorId) {
   return mem().smartCameraLivePreview?.[String(vendorId)] || null;
+}
+
+/** Vendor-initiated wipe — mic transcripts + camera recordings (memory + MySQL). Does not end SGATE sessions. */
+async function clearVendorLiveMedia(vendorId) {
+  const key = String(vendorId || '').trim();
+  if (!key) {
+    return { voiceRemoved: 0, cameraRemoved: 0, previewCleared: false, mysql: { camera: 0, voice: 0 } };
+  }
+  const store = mem();
+  let voiceRemoved = 0;
+  if (Array.isArray(store.smartNearbyVoiceStreams)) {
+    const before = store.smartNearbyVoiceStreams.length;
+    store.smartNearbyVoiceStreams = store.smartNearbyVoiceStreams.filter(
+      (r) => String(r.vendorId) !== key
+    );
+    voiceRemoved = before - store.smartNearbyVoiceStreams.length;
+  }
+  const camList = ensureCameraStore();
+  let cameraRemoved = 0;
+  for (let i = camList.length - 1; i >= 0; i -= 1) {
+    if (String(camList[i].vendorId) === key) {
+      camList.splice(i, 1);
+      cameraRemoved += 1;
+    }
+  }
+  let previewCleared = false;
+  if (store.smartCameraLivePreview && Object.prototype.hasOwnProperty.call(store.smartCameraLivePreview, key)) {
+    delete store.smartCameraLivePreview[key];
+    previewCleared = true;
+  }
+  let mysql = { camera: 0, voice: 0, skipped: true };
+  if (smartCameraPersistMysql()) {
+    mysql = await smartCameraMysql.deleteVendorLiveMedia(key);
+  }
+  logSmartGate('vendor_clear_live_media', {
+    vendorId: key,
+    voiceRemoved,
+    cameraRemoved,
+    previewCleared,
+    mysqlCamera: mysql.camera,
+    mysqlVoice: mysql.voice,
+  });
+  return { voiceRemoved, cameraRemoved, previewCleared, mysql };
 }
 
 async function persistCameraFrameMysql(entry, { vendorId, userId, sessionId } = {}) {
@@ -707,7 +792,7 @@ function recordGateConnection(payload = {}) {
     networkLabel: entry.networkLabel,
     message: `SGATE session ${entry.id} for shop ${entry.vendorId}`,
   });
-  return entry;
+  return attachStreamPolicyToSession(entry);
 }
 
 function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen, vendorListening } = {}) {
@@ -745,7 +830,7 @@ function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen
     });
   }
   rows[idx] = row;
-  return row;
+  return attachStreamPolicyToSession(row);
 }
 
 function endGateConnection(sessionId, reason = 'manual') {
@@ -770,9 +855,10 @@ function endGateConnection(sessionId, reason = 'manual') {
 }
 
 function getUserActiveGate(userId) {
-  return (mem().smartNearbyGateSessions || []).find(
+  const row = (mem().smartNearbyGateSessions || []).find(
     (r) => r.userId === userId && !r.disconnectedAt && r.inRange
-  ) || null;
+  );
+  return row ? attachStreamPolicyToSession(row) : null;
 }
 
 /** Vendor console — mark all active SGATE sessions as listen mode for connected customers. */
@@ -1257,6 +1343,20 @@ async function buildVendorDashboard(vendorId) {
     });
   }
 
+  const scanDeltaService = require('./smartScanDeltaService');
+  let scanTotals = await scanDeltaService.getVendorScanTotalsAsync(key);
+  if (!(scanTotals.wifiCount || scanTotals.deviceCount)) {
+    const fromSessions = scanDeltaService.deriveTotalsFromSharedScans(scans);
+    if (fromSessions.wifiCount || fromSessions.deviceCount) {
+      scanTotals = fromSessions;
+    }
+  }
+  const scanAlerts = await scanDeltaService.getVendorScanAlertsAsync(key, 24);
+  const lastScanAlert = scanAlerts[0] || null;
+  const scanDeltaStore = require('./smartScanDeltaMysqlService').mysqlScanDeltaEnabled()
+    ? 'mysql'
+    : 'memory_only';
+
   logSmartGate('vendor_dashboard_built', {
     vendorId: key,
     connectedNow: activeGates.length,
@@ -1279,11 +1379,16 @@ async function buildVendorDashboard(vendorId) {
       connectedNow: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
       sgateSessions: realActiveGates.length,
       totalUsers: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
-      sharedScans: scans.length,
+      sharedScans: scans.filter((s) => s.sharedWithVendor).length,
       voiceLines: voiceLines.length,
       cameraFrames: cameraFrames.length,
       pendingInvites: pendingOutbound.length,
+      nearbyWifiCount: scanTotals.wifiCount,
+      nearbyDeviceCount: scanTotals.deviceCount,
+      scanNetWifi: lastScanAlert?.netWifi ?? 0,
+      scanNetDevices: lastScanAlert?.netDevices ?? 0,
     },
+    scanAlerts,
     activeGates,
     users: liveCustomers,
     recentGates,
@@ -1314,6 +1419,8 @@ async function buildVendorDashboard(vendorId) {
         streamLiveUserIds.size > 0 && realActiveGates.length === 0
           ? 'Mic/camera live but no SGATE session on this server — Render may have multiple instances; use local API or redeploy backend.'
           : null,
+      scanDeltaStore,
+      sharedScanSessions: scans.filter((s) => s.sharedWithVendor).length,
       recentTrace: getSmartGateTrace(25),
     },
   };
@@ -1361,6 +1468,7 @@ module.exports = {
   purgeExpiredLiveStreams,
   purgeExpiredLiveStreamsMemory,
   purgeExpiredLiveStreamsMysql,
+  clearVendorLiveMedia,
   smartCameraPersistMysql,
 };
 

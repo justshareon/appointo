@@ -115,6 +115,13 @@ const buildMessage = (eventKey, payload) => {
           payload.message
           || `${payload.vendorName || 'A vendor'} invited you to connect on SGATE — tap Accept in SMART to link mic and scans.`,
       };
+    case 'smart_scan_delta':
+      return {
+        subject: payload.title || 'SMART scan — new WiFi or devices',
+        text:
+          payload.message
+          || `Customer scan changed near your shop. ${payload.customerName || 'Customer'} — check SMART vendor console.`,
+      };
     case 'subscription_updated':
       return {
         subject: 'Subscription Updated',
@@ -242,7 +249,7 @@ class NotificationService {
 
     if (isInAppEnabled) {
       const targetIds = new Set();
-      if (payload.userId) targetIds.add(String(payload.userId));
+      if (payload.userId && eventKey !== 'smart_scan_delta') targetIds.add(String(payload.userId));
       if (payload.targetUserId) targetIds.add(String(payload.targetUserId));
       if (payload.vendorId) {
         try {

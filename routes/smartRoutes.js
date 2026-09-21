@@ -47,6 +47,11 @@ function denyUnlessVendor(req, res, vendorId) {
   return true;
 }
 
+function smartVendorOwnerUserId(vendorId) {
+  const row = (nearby.getSmartVendors?.(100) || []).find((v) => String(v.id) === String(vendorId));
+  return row?.owner_id || row?.ownerId || null;
+}
+
 router.get('/vendor/me', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.userId;
@@ -113,8 +118,10 @@ router.post('/scan', authenticateToken, async (req, res) => {
         error: 'User opt-in required before sharing scan with vendor',
       });
     }
-    const session = nearby.recordScanSession({
-      userId: req.user?.id || req.userId,
+    const userId = req.user?.id || req.userId;
+    const session = await nearby.recordScanSession({
+      userId,
+      userDisplayName: req.user?.name || req.user?.email || null,
       vendorId,
       sharedWithVendor,
       consent,
@@ -122,11 +129,40 @@ router.post('/scan', authenticateToken, async (req, res) => {
       location,
     });
     recordBackendFeatureScan('smart_scan', 'scan_saved', 'SMART scan session recorded', {
-      userId: req.user?.id || req.userId,
+      userId,
       vendorId,
       sharedWithVendor: !!sharedWithVendor,
     });
-    res.json({ success: true, sessionId: session.id });
+    const delta = session.scanDelta;
+    if (
+      sharedWithVendor
+      && vendorId
+      && delta?.changed
+      && (delta.addedWifi?.length || delta.addedDevices?.length || delta.removedWifi?.length || delta.removedDevices?.length)
+    ) {
+      const notificationService = require('../services/notificationService');
+      const parts = [];
+      if (delta.addedWifi?.length) parts.push(`+${delta.addedWifi.length} WiFi`);
+      if (delta.removedWifi?.length) parts.push(`-${delta.removedWifi.length} WiFi`);
+      if (delta.addedDevices?.length) parts.push(`+${delta.addedDevices.length} device(s)`);
+      if (delta.removedDevices?.length) parts.push(`-${delta.removedDevices.length} device(s)`);
+      await notificationService.notify('smart_scan_delta', {
+        vendorId: String(vendorId),
+        targetUserId: smartVendorOwnerUserId(vendorId),
+        customerUserId: userId,
+        customerName: req.user?.name || req.user?.email || userId,
+        delta,
+        title: `SMART scan update · ${parts.join(', ')}`,
+        message: [
+          delta.addedWifi?.length ? `New WiFi: ${delta.addedWifi.slice(0, 3).join(', ')}` : null,
+          delta.addedDevices?.length ? `New devices: ${delta.addedDevices.slice(0, 3).join(', ')}` : null,
+          `Totals: ${delta.wifiCount} WiFi · ${delta.deviceCount} devices`,
+        ]
+          .filter(Boolean)
+          .join(' · '),
+      }).catch(() => {});
+    }
+    res.json({ success: true, sessionId: session.id, scanDelta: session.scanDelta || null });
   } catch (err) {
     LOG.error('[Smart] scan post error:', err.message);
     recordBackendFeatureScan('smart_scan', 'scan_error', err.message, { route: 'smart/scan' });
@@ -288,8 +324,12 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
       success: true,
       frames,
       latest: frames[0] || null,
-      policy: { cameraAiEnabled: policy.cameraAiEnabled === true },
-      bufferMs: 30000,
+      policy: {
+        cameraAiEnabled: policy.cameraAiEnabled === true,
+        cameraStreamIntervalSec: policy.cameraStreamIntervalSec ?? 30,
+        customerCameraPreviewHidden: policy.customerCameraPreviewHidden !== false,
+      },
+      bufferMs: (policy.cameraStreamIntervalSec ?? 30) * 1000,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -410,6 +450,25 @@ router.post('/vendor/:vendorId/voice-listen', authenticateToken, async (req, res
     });
     res.json({ success: true, ...result });
   } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/vendor/:vendorId/clear-live-media', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const result = await nearby.clearVendorLiveMedia(vendorId);
+    recordBackendFeatureScan('smart_scan', 'vendor_clear_live_media', 'Vendor cleared mic + camera buffers', {
+      vendorId,
+      voiceRemoved: result.voiceRemoved,
+      cameraRemoved: result.cameraRemoved,
+      mysqlCamera: result.mysql?.camera,
+      mysqlVoice: result.mysql?.voice,
+    });
+    res.json({ success: true, ...result });
+  } catch (err) {
+    LOG.error('[Smart] clear-live-media error:', err.message);
     res.status(500).json({ success: false, error: err.message });
   }
 });

@@ -105,6 +105,28 @@ async function listVendorFrames(vendorId, { since = null, limit = 12 } = {}) {
   }
 }
 
+async function deleteVendorLiveMedia(vendorId) {
+  const pool = await getPool();
+  if (!pool || !vendorId) return { camera: 0, voice: 0, skipped: true };
+  const key = String(vendorId);
+  try {
+    const [camRes] = await pool.query('DELETE FROM smart_camera_frames WHERE vendor_id = ?', [key]);
+    let voice = 0;
+    try {
+      const [voiceRes] = await pool.query('DELETE FROM smart_voice_lines WHERE vendor_id = ?', [key]);
+      voice = voiceRes?.affectedRows || 0;
+    } catch (voiceErr) {
+      if (!/doesn't exist|Unknown table/i.test(String(voiceErr.message))) {
+        LOG.warning('[Smart] MySQL vendor voice purge:', voiceErr.message);
+      }
+    }
+    return { camera: camRes?.affectedRows || 0, voice, skipped: false };
+  } catch (err) {
+    LOG.error('[Smart] MySQL vendor live media clear failed:', err.message);
+    return { camera: 0, voice: 0, error: err.message, skipped: false };
+  }
+}
+
 async function deleteLiveStreamsOlderThan(cutoffDate) {
   const pool = await getPool();
   if (!pool || !cutoffDate) return { camera: 0, voice: 0 };
@@ -130,5 +152,6 @@ async function deleteLiveStreamsOlderThan(cutoffDate) {
 module.exports = {
   insertCameraFrame,
   listVendorFrames,
+  deleteVendorLiveMedia,
   deleteLiveStreamsOlderThan,
 };
