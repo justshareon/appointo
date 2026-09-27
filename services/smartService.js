@@ -1482,15 +1482,21 @@ function setVendorVoiceListen(vendorId, listening = false) {
   return { updated, listening: !!listening };
 }
 
-/** Vendor console Refresh — enable listen mode and ping connected customers to restart streams. */
+/** Vendor console Refresh — enable listen mode and ping customers (with or without SGATE) to restart streams. */
 function requestVendorLiveRefresh(vendorId) {
   const key = String(vendorId || '');
   if (!key) return { updated: 0, listening: false, refreshAt: null };
   const refreshAt = new Date().toISOString();
+  const policies = ensurePolicyStore();
+  policies[key] = {
+    ...(policies[key] || {}),
+    vendorId: key,
+    vendorLiveRefreshAt: refreshAt,
+  };
   const rows = mem().smartNearbyGateSessions || [];
   let updated = 0;
   rows.forEach((r, i) => {
-    if (String(r.vendorId) !== key || r.disconnectedAt) return;
+    if (String(r.vendorId) !== key) return;
     const prevSeq = Number(r.vendorSide?.vendorLiveRefreshSeq) || 0;
     rows[i] = {
       ...r,
@@ -1501,9 +1507,9 @@ function requestVendorLiveRefresh(vendorId) {
         vendorLiveRefreshAt: refreshAt,
         vendorLiveRefreshSeq: prevSeq + 1,
       },
-      lastHeartbeatAt: refreshAt,
+      lastHeartbeatAt: r.disconnectedAt ? r.lastHeartbeatAt : refreshAt,
     };
-    updated += 1;
+    if (!r.disconnectedAt) updated += 1;
   });
   return { updated, listening: true, refreshAt, refreshSeq: updated };
 }
