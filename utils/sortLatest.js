@@ -25,7 +25,12 @@ function numericId(item, fields = DEFAULT_ID_FIELDS) {
     if (v == null || v === '') continue;
     const n = Number(v);
     if (Number.isFinite(n)) return n;
-    const m = String(v).match(/(\d+)\s*$/);
+    const str = String(v);
+    // Match prefixed timestamp IDs like svt_1790531615802_c726 or sgate_1790531246627_lhhel
+    const tsMatch = str.match(/^[a-z0-9]+_(\d{10,})(?:_|$)/i);
+    if (tsMatch) return Number(tsMatch[1]);
+    // Only match trailing digits when the prefix does not contain a random alphanumeric suffix
+    const m = str.match(/^(?:[a-z]+_)?(\d+)\s*$/i);
     if (m) return Number(m[1]);
   }
   return null;
@@ -45,6 +50,11 @@ function dateMs(item, fields = DEFAULT_DATE_FIELDS) {
 function compareLatestFirst(a, b, opts = {}) {
   const idFields = opts.idFields || DEFAULT_ID_FIELDS;
   const dateFields = opts.dateFields || DEFAULT_DATE_FIELDS;
+  if (Array.isArray(opts.dateFields) && opts.dateFields.length > 0) {
+    const ad = dateMs(a, dateFields);
+    const bd = dateMs(b, dateFields);
+    if (ad !== bd) return bd - ad;
+  }
   const ai = numericId(a, idFields);
   const bi = numericId(b, idFields);
   if (ai != null && bi != null && ai !== bi) return bi - ai;

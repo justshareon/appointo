@@ -361,7 +361,7 @@ router.get('/vendor/:vendorId/voice-stream', authenticateToken, async (req, res)
   try {
     const { vendorId } = req.params;
     if (!denyUnlessVendor(req, res, vendorId)) return;
-    const lines = nearby.getVendorVoiceStream(vendorId, {
+    const lines = await nearby.getVendorVoiceStream(vendorId, {
       since: req.query.since || null,
       limit: parseInt(req.query.limit, 10) || 80,
       markDelivered: true,
@@ -495,6 +495,9 @@ router.get('/gate/status', authenticateToken, async (req, res) => {
       vendorPolicy: {
         vendorId: vendorPolicy.vendorId,
         recordingEnabled: vendorPolicy.recordingEnabled !== false,
+        vendorListening: vendorPolicy.vendorListening !== false,
+        vendorListeningAt: vendorPolicy.vendorListeningAt || null,
+        vendorLiveRefreshAt: vendorPolicy.vendorLiveRefreshAt || null,
         cameraStreamIntervalSec: vendorPolicy.cameraStreamIntervalSec ?? 30,
         dataRetentionDays: vendorPolicy.dataRetentionDays ?? 1,
         storeOfflineUntilOnline: vendorPolicy.storeOfflineUntilOnline !== false,

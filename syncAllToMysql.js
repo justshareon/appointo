@@ -1311,14 +1311,23 @@ const syncRDetectorData = async ({ onProgress } = {}) => {
 };
 
 // ====================
-// SMART MODULE SYNC (users, vendor, mappings for login)
+// SMART MODULE SYNC (tables, users, vendor, mappings, voice/camera streams)
 // ====================
 const syncSmartData = async ({ onProgress } = {}) => {
-    LOG.info('[Smart Sync] Starting SMART user/vendor sync...');
+    LOG.info('[Smart Sync] Starting SMART schema, user, vendor, and stream sync...');
     const db = require('./database');
+    const { ensureFeatureSchema } = require('./database/schema/featureTables');
+    const smartCameraMysql = require('./services/smartCameraMysqlService');
     const pool = await getPool();
     let queriesSynced = 0;
     let itemsSynced = 0;
+
+    try {
+        await ensureFeatureSchema('smart', db);
+        queriesSynced += 4;
+    } catch (schemaErr) {
+        LOG.warning('[Smart Sync] ensureFeatureSchema(smart) warning:', schemaErr.message);
+    }
 
     if (typeof db.ensureAllUsersAndVendors === 'function') {
         await db.ensureAllUsersAndVendors();
@@ -1352,16 +1361,40 @@ const syncSmartData = async ({ onProgress } = {}) => {
                 inMemoryDb.smartNearbyVendors = (mysqlSmart || []).map((v) => ({ ...v, features_smart: true }));
                 queriesSynced += 1;
             }
+
+            // Sync any in-memory SMART voice lines to MySQL smart_voice_lines
+            const voiceRows = inMemoryDb.smartNearbyVoiceStreams || [];
+            for (const entry of voiceRows) {
+                if (entry?.id && entry?.text) {
+                    const ok = await smartCameraMysql.insertVoiceLine(entry);
+                    if (ok) {
+                        queriesSynced += 1;
+                        itemsSynced += 1;
+                    }
+                }
+            }
+
+            // Sync any in-memory SMART camera frames to MySQL smart_camera_frames
+            const camRows = inMemoryDb.smartCameraLiveFrames || [];
+            for (const frame of camRows) {
+                if (frame?.id && frame?.imageBase64) {
+                    const ok = await smartCameraMysql.insertCameraFrame(frame);
+                    if (ok) {
+                        queriesSynced += 1;
+                        itemsSynced += 1;
+                    }
+                }
+            }
         } catch (err) {
             LOG.warning('[Smart Sync] MySQL verify skipped:', err.message);
-            itemsSynced = 3;
+            itemsSynced = Math.max(itemsSynced, 3);
         }
     } else {
         itemsSynced = 3;
     }
 
     if (onProgress) await onProgress({ version: 1, queriesSynced, itemsSynced, totalItems: Math.max(itemsSynced, 1) });
-    LOG.success(`[Smart Sync] SMART synced — ${itemsSynced} vendor(s), users + SGATE-ready vendors`);
+    LOG.success(`[Smart Sync] SMART synced — ${itemsSynced} item(s), schema + users + SGATE-ready vendors`);
     return doneSync({ itemsSynced: Math.max(itemsSynced, 1), version: 1, queriesSynced, totalItems: Math.max(itemsSynced, 1) });
 };
 

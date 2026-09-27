@@ -969,6 +969,9 @@ function appendVoiceTranscript({
       row.receivedAt = nowIso;
       row.userLabel = userLabel || row.userLabel;
       row.deliveredToVendor = false;
+      if (smartCameraPersistMysql()) {
+        smartCameraMysql.insertVoiceLine(row).catch(() => {});
+      }
       return row;
     }
   }
@@ -1008,14 +1011,14 @@ function appendVoiceTranscript({
   if (streams.length > MAX_VOICE_LINES) {
     streams.length = MAX_VOICE_LINES;
   }
-  if (isFinal && smartCameraPersistMysql()) {
+  if (smartCameraPersistMysql()) {
     smartCameraMysql.insertVoiceLine(entry).catch(() => {});
   }
   purgeExpiredLiveStreams({ mysql: false });
   return entry;
 }
 
-function getVendorVoiceStream(vendorId, { since = null, limit = 80, markDelivered = false } = {}) {
+async function getVendorVoiceStream(vendorId, { since = null, limit = 80, markDelivered = false } = {}) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
   const streams = mem().smartNearbyVoiceStreams || [];
@@ -1029,7 +1032,16 @@ function getVendorVoiceStream(vendorId, { since = null, limit = 80, markDelivere
       );
     }
   }
-  const out = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  let mergedRows = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
+  if (smartCameraPersistMysql()) {
+    const mysqlRows = await smartCameraMysql.listVendorVoiceLines(key, { since, limit });
+    const byId = new Map();
+    [...mysqlRows, ...mergedRows].forEach((r) => {
+      if (r?.id) byId.set(r.id, r);
+    });
+    mergedRows = sortLatestFirst([...byId.values()], { dateFields: ['at'] }).slice(0, limit);
+  }
+  const out = mergedRows;
   if (markDelivered) {
     const nowIso = new Date().toISOString();
     out.forEach((row) => {
@@ -1460,26 +1472,62 @@ function getUserActiveGate(userId, { markOnline = false } = {}) {
   return attachStreamPolicyToSession(row);
 }
 
-/** Vendor console — mark all active SGATE sessions as listen mode for connected customers. */
+/** Vendor console — mark all active SGATE sessions and vendor policy as listen mode for connected/optional customers. */
 function setVendorVoiceListen(vendorId, listening = false) {
   const key = String(vendorId || '');
   if (!key) return { updated: 0 };
-  const rows = mem().smartNearbyGateSessions || [];
+  const nowIso = new Date().toISOString();
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyPolicies)) store.smartNearbyPolicies = [];
+  const prevPolicy = getVendorPolicy(key);
+  const nextPolicy = {
+    ...prevPolicy,
+    vendorId: key,
+    vendorListening: !!listening,
+    vendorListeningAt: listening ? nowIso : prevPolicy.vendorListeningAt || null,
+    updatedAt: nowIso,
+  };
+  const pIdx = store.smartNearbyPolicies.findIndex((p) => String(p.vendorId) === key);
+  if (pIdx >= 0) store.smartNearbyPolicies[pIdx] = nextPolicy;
+  else store.smartNearbyPolicies.push(nextPolicy);
+
+  const rows = store.smartNearbyGateSessions || [];
   let updated = 0;
+  const targetUserIds = new Set(mappedCustomerUserIdsForVendor(key));
   rows.forEach((r, i) => {
-    if (String(r.vendorId) !== key || r.disconnectedAt) return;
+    if (String(r.vendorId) !== key) return;
+    if (r.userId) targetUserIds.add(String(r.userId));
+    if (r.disconnectedAt) return;
     rows[i] = {
       ...r,
       vendorSide: {
         ...r.vendorSide,
         vendorListening: !!listening,
-        vendorListeningAt: listening ? new Date().toISOString() : r.vendorSide?.vendorListeningAt || null,
+        vendorListeningAt: listening ? nowIso : r.vendorSide?.vendorListeningAt || null,
       },
-      lastHeartbeatAt: new Date().toISOString(),
+      lastHeartbeatAt: nowIso,
     };
     updated += 1;
   });
-  return { updated, listening: !!listening };
+
+  targetUserIds.forEach((uid) => {
+    if (!uid) return;
+    updateUserMobileState(uid, key, {
+      micEnabled: !!listening,
+    });
+    try {
+      sendVendorRemoteCommand({
+        vendorId: key,
+        userId: uid,
+        command: 'toggle_mic',
+        params: { enabled: !!listening },
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  });
+
+  return { updated: Math.max(updated, targetUserIds.size), listening: !!listening };
 }
 
 /** Vendor console Refresh — enable listen mode and ping customers (with or without SGATE) to restart streams. */
@@ -1487,16 +1535,27 @@ function requestVendorLiveRefresh(vendorId) {
   const key = String(vendorId || '');
   if (!key) return { updated: 0, listening: false, refreshAt: null };
   const refreshAt = new Date().toISOString();
-  const policies = ensurePolicyStore();
-  policies[key] = {
-    ...(policies[key] || {}),
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyPolicies)) store.smartNearbyPolicies = [];
+  const prevPolicy = getVendorPolicy(key);
+  const nextPolicy = {
+    ...prevPolicy,
     vendorId: key,
+    vendorListening: true,
+    vendorListeningAt: refreshAt,
     vendorLiveRefreshAt: refreshAt,
+    updatedAt: refreshAt,
   };
-  const rows = mem().smartNearbyGateSessions || [];
+  const pIdx = store.smartNearbyPolicies.findIndex((p) => String(p.vendorId) === key);
+  if (pIdx >= 0) store.smartNearbyPolicies[pIdx] = nextPolicy;
+  else store.smartNearbyPolicies.push(nextPolicy);
+
+  const rows = store.smartNearbyGateSessions || [];
   let updated = 0;
+  const targetUserIds = new Set(mappedCustomerUserIdsForVendor(key));
   rows.forEach((r, i) => {
     if (String(r.vendorId) !== key) return;
+    if (r.userId) targetUserIds.add(String(r.userId));
     const prevSeq = Number(r.vendorSide?.vendorLiveRefreshSeq) || 0;
     rows[i] = {
       ...r,
@@ -1511,7 +1570,30 @@ function requestVendorLiveRefresh(vendorId) {
     };
     if (!r.disconnectedAt) updated += 1;
   });
-  return { updated, listening: true, refreshAt, refreshSeq: updated };
+
+  targetUserIds.forEach((uid) => {
+    if (!uid) return;
+    updateUserMobileState(uid, key, {
+      micEnabled: true,
+    });
+    try {
+      sendVendorRemoteCommand({
+        vendorId: key,
+        userId: uid,
+        command: 'toggle_mic',
+        params: { enabled: true, refresh: true },
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  });
+
+  return {
+    updated: Math.max(updated, targetUserIds.size),
+    listening: true,
+    refreshAt,
+    refreshSeq: Math.max(updated, 1),
+  };
 }
 
 function getVendorGateSessions(vendorId, { activeOnly = false, limit = 40 } = {}) {
@@ -2384,7 +2466,7 @@ async function buildVendorDashboard(vendorId) {
   const activeGates = getVendorGateSessions(key, { activeOnly: true, limit: 100 });
   const recentGates = getVendorGateSessions(key, { limit: 60 });
   const scans = getVendorSessions(key, 80);
-  const voiceLines = getVendorVoiceStream(key, { limit: 200 });
+  const voiceLines = await getVendorVoiceStream(key, { limit: 200 });
   const deviceControls = getVendorDeviceControls(key, { limit: 80 });
   const connectInvites = listInvitesForVendor(key, { limit: 50 });
   const undeliveredForShop = listUndeliveredMessagesForVendor(key, { includeDelivered: false });
