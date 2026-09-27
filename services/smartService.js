@@ -32,6 +32,10 @@ const DEFAULT_POLICY = {
   micAmbientCheck: true,
   autoPromptOnVisit: false,
   dataRetentionDays: 1,
+  /** Store undelivered messages, voice lines, camera frames & invites while offline until user/vendor is online */
+  storeOfflineUntilOnline: true,
+  /** Master vendor switch: when true, all smart users automatically record mic & camera at cameraStreamIntervalSec; when false, recording is paused */
+  recordingEnabled: true,
   /** true = event recordings + live preview; false = live stream only (no Recent gallery) */
   cameraAiEnabled: defaultCameraAiEnabled(),
   /** true = customer does not see their own CSCAN preview (vendor-only view) */
@@ -50,11 +54,33 @@ function normalizeCameraStreamIntervalSec(value) {
   return DEFAULT_POLICY.cameraStreamIntervalSec;
 }
 
+function normalizeDataRetentionDays(value, fallback = 1) {
+  const n = parseInt(String(value ?? ''), 10);
+  if (!Number.isFinite(n) || n < 1) return Math.max(1, fallback || 1);
+  return Math.min(n, 365);
+}
+
 const MYSQL_LIVE_PURGE_INTERVAL_MS = 60 * 60 * 1000;
 let lastMysqlLivePurgeAt = 0;
 
 function smartLiveRetentionDays() {
   return getSmartLiveRetentionDaysSync();
+}
+
+function getVendorRetentionDays(vendorId) {
+  const baseDays = smartLiveRetentionDays();
+  if (!vendorId) return baseDays;
+  const store = mem();
+  const policies = store.smartNearbyPolicies || [];
+  const row = policies.find((p) => String(p.vendorId) === String(vendorId));
+  if (row?.dataRetentionDays != null) {
+    return normalizeDataRetentionDays(row.dataRetentionDays, baseDays);
+  }
+  return baseDays;
+}
+
+function getVendorRetentionCutoffMs(vendorId) {
+  return Date.now() - getVendorRetentionDays(vendorId) * 24 * 60 * 60 * 1000;
 }
 
 function smartLiveRetentionCutoffDate() {
@@ -66,24 +92,48 @@ function isLiveStreamRowFresh(row, cutoffMs) {
   return Number.isFinite(t) && t >= cutoffMs;
 }
 
+function isRowFreshForVendorPolicy(row, defaultCutoffMs) {
+  const cutoffMs = row?.vendorId ? getVendorRetentionCutoffMs(row.vendorId) : defaultCutoffMs;
+  return isLiveStreamRowFresh(row, cutoffMs);
+}
+
 function purgeExpiredLiveStreamsMemory() {
-  const cutoffMs = smartLiveRetentionCutoffDate().getTime();
+  const defaultCutoffMs = smartLiveRetentionCutoffDate().getTime();
   const store = mem();
   let voiceRemoved = 0;
   let cameraRemoved = 0;
   if (Array.isArray(store.smartNearbyVoiceStreams)) {
     const before = store.smartNearbyVoiceStreams.length;
     store.smartNearbyVoiceStreams = store.smartNearbyVoiceStreams.filter((r) =>
-      isLiveStreamRowFresh(r, cutoffMs)
+      isRowFreshForVendorPolicy(r, defaultCutoffMs)
     );
     voiceRemoved = before - store.smartNearbyVoiceStreams.length;
   }
   const camList = ensureCameraStore();
   const camBefore = camList.length;
   for (let i = camList.length - 1; i >= 0; i -= 1) {
-    if (!isLiveStreamRowFresh(camList[i], cutoffMs)) camList.splice(i, 1);
+    if (!isRowFreshForVendorPolicy(camList[i], defaultCutoffMs)) camList.splice(i, 1);
   }
   cameraRemoved = camBefore - camList.length;
+
+  if (Array.isArray(store.smartNearbyUndeliveredMessages)) {
+    const now = Date.now();
+    store.smartNearbyUndeliveredMessages = store.smartNearbyUndeliveredMessages.filter((m) => {
+      const exp = m?.expiresAt ? new Date(m.expiresAt).getTime() : 0;
+      if (exp && exp < now) return false;
+      return isRowFreshForVendorPolicy(m, defaultCutoffMs);
+    });
+  }
+
+  if (Array.isArray(store.smartNearbyRemoteCommands)) {
+    const now = Date.now();
+    store.smartNearbyRemoteCommands = store.smartNearbyRemoteCommands.filter((c) => {
+      const exp = c?.expiresAt ? new Date(c.expiresAt).getTime() : 0;
+      if (exp && exp < now) return false;
+      return isRowFreshForVendorPolicy(c, defaultCutoffMs);
+    });
+  }
+
   return { voiceRemoved, cameraRemoved, retentionDays: smartLiveRetentionDays() };
 }
 
@@ -179,39 +229,192 @@ function getVendorPolicy(vendorId) {
   const key = String(vendorId);
   const policies = mem().smartNearbyPolicies || [];
   const row = policies.find((p) => String(p.vendorId) === key);
-  return { vendorId: key, ...DEFAULT_POLICY, ...(row || {}) };
+  const baseRetention = smartLiveRetentionDays();
+  return {
+    vendorId: key,
+    ...DEFAULT_POLICY,
+    dataRetentionDays: baseRetention,
+    ...(row || {}),
+  };
+}
+
+function getUserMobileState(userId, vendorId = null) {
+  const uid = String(userId || '');
+  const store = mem();
+  if (!store.smartUserMobileState || typeof store.smartUserMobileState !== 'object') {
+    store.smartUserMobileState = {};
+  }
+  const existing = uid ? store.smartUserMobileState[uid] || {} : {};
+  const vKey = vendorId ? String(vendorId) : existing.vendorId || 'v_smart1';
+  const policy = getVendorPolicy(vKey);
+  const vendorRecOn = policy.recordingEnabled !== false;
+  const intervalSec = normalizeCameraStreamIntervalSec(
+    existing.streamIntervalSec || existing.cameraStreamIntervalSec || policy.cameraStreamIntervalSec
+  );
+  const micEnabled = vendorRecOn && existing.micEnabled !== false;
+  const cameraEnabled = vendorRecOn && existing.cameraEnabled !== false;
+  return {
+    userId: uid || null,
+    vendorId: vKey,
+    operatingMode: existing.operatingMode || (vendorRecOn ? 'auto' : 'idle'),
+    recordingEnabled: vendorRecOn && existing.recordingEnabled !== false && (micEnabled || cameraEnabled),
+    micEnabled,
+    cameraEnabled,
+    userMicOverride: existing.micEnabled,
+    userCameraOverride: existing.cameraEnabled,
+    cameraFacing: existing.cameraFacing === 'front' ? 'front' : 'back',
+    streamIntervalSec: intervalSec,
+    cameraStreamIntervalSec: intervalSec,
+    withWifiScan: existing.withWifiScan === true,
+    activeScreen: existing.activeScreen || null,
+    lastCommand: existing.lastCommand || null,
+    lastCommandAt: existing.lastCommandAt || null,
+    lastAckAt: existing.lastAckAt || null,
+    updatedAt: existing.updatedAt || null,
+  };
+}
+
+function updateUserMobileState(userId, vendorId, patch = {}) {
+  const uid = String(userId || '');
+  if (!uid) return null;
+  const store = mem();
+  if (!store.smartUserMobileState || typeof store.smartUserMobileState !== 'object') {
+    store.smartUserMobileState = {};
+  }
+  const prev = store.smartUserMobileState[uid] || {};
+  const nowIso = new Date().toISOString();
+  const next = {
+    ...prev,
+    ...patch,
+    userId: uid,
+    vendorId: vendorId ? String(vendorId) : prev.vendorId || 'v_smart1',
+    updatedAt: nowIso,
+  };
+  if (patch.streamIntervalSec != null || patch.cameraStreamIntervalSec != null) {
+    const normSec = normalizeCameraStreamIntervalSec(
+      patch.streamIntervalSec ?? patch.cameraStreamIntervalSec
+    );
+    next.streamIntervalSec = normSec;
+    next.cameraStreamIntervalSec = normSec;
+  }
+  if (patch.cameraFacing != null || patch.facing != null) {
+    const face = patch.cameraFacing ?? patch.facing;
+    next.cameraFacing = face === 'front' ? 'front' : 'back';
+  }
+  store.smartUserMobileState[uid] = next;
+  return getUserMobileState(uid, next.vendorId);
 }
 
 function attachStreamPolicyToSession(session) {
   if (!session?.vendorId) return session;
-  const sec = normalizeCameraStreamIntervalSec(getVendorPolicy(session.vendorId).cameraStreamIntervalSec);
+  const policy = getVendorPolicy(session.vendorId);
+  const mobileState = session.userId
+    ? getUserMobileState(session.userId, session.vendorId)
+    : null;
+  const sec = normalizeCameraStreamIntervalSec(
+    mobileState?.streamIntervalSec || policy.cameraStreamIntervalSec
+  );
   const ms = sec * 1000;
+  const retentionDays = normalizeDataRetentionDays(policy.dataRetentionDays, smartLiveRetentionDays());
+  const recordingEnabled = policy.recordingEnabled !== false;
   return {
     ...session,
+    recordingEnabled,
+    mobileState,
     streamPolicy: {
+      recordingEnabled,
+      micEnabled: mobileState ? mobileState.micEnabled : recordingEnabled,
+      cameraEnabled: mobileState ? mobileState.cameraEnabled : recordingEnabled,
+      cameraFacing: mobileState?.cameraFacing || 'back',
+      operatingMode: mobileState?.operatingMode || (recordingEnabled ? 'auto' : 'idle'),
       cameraStreamIntervalSec: sec,
+      cameraStreamIntervalMs: ms,
       streamFlushMs: ms,
       heartbeatMs: ms,
+      dataRetentionDays: retentionDays,
+      storeOfflineUntilOnline: policy.storeOfflineUntilOnline !== false,
+      cameraAiEnabled: policy.cameraAiEnabled === true,
     },
   };
 }
 
 function setVendorPolicy(vendorId, patch = {}) {
   const key = String(vendorId);
-  const policies = mem().smartNearbyPolicies;
+  const store = mem();
+  const policies = store.smartNearbyPolicies;
+  const prevPolicy = getVendorPolicy(key);
   const merged = { ...patch };
   if (merged.cameraStreamIntervalSec != null) {
     merged.cameraStreamIntervalSec = normalizeCameraStreamIntervalSec(merged.cameraStreamIntervalSec);
   }
+  if (merged.dataRetentionDays != null) {
+    merged.dataRetentionDays = normalizeDataRetentionDays(merged.dataRetentionDays, smartLiveRetentionDays());
+  }
+  if (merged.recordingEnabled != null) {
+    merged.recordingEnabled =
+      merged.recordingEnabled !== false &&
+      merged.recordingEnabled !== 'false' &&
+      merged.recordingEnabled !== 0;
+  }
+  const nowIso = new Date().toISOString();
   const next = {
-    ...getVendorPolicy(key),
+    ...prevPolicy,
     ...merged,
     vendorId: key,
-    updatedAt: new Date().toISOString(),
+    updatedAt: nowIso,
   };
   const idx = policies.findIndex((p) => String(p.vendorId) === key);
   if (idx >= 0) policies[idx] = next;
   else policies.push(next);
+
+  const recEnabled = next.recordingEnabled !== false;
+  const sessions = store.smartNearbyGateSessions || [];
+  sessions.forEach((g) => {
+    if (String(g.vendorId) === key && !g.disconnectedAt) {
+      g.recordingEnabled = recEnabled;
+      g.vendorSide = {
+        ...(g.vendorSide || {}),
+        vendorListening: recEnabled,
+        vendorListeningAt: nowIso,
+        vendorRefreshRequestedAt: nowIso,
+      };
+      if (g.userId) {
+        updateUserMobileState(g.userId, key, {
+          micEnabled: recEnabled,
+          cameraEnabled: recEnabled,
+          operatingMode: recEnabled ? 'auto' : 'idle',
+          streamIntervalSec: next.cameraStreamIntervalSec,
+        });
+      }
+    }
+  });
+
+  if (recEnabled && (patch.recordingEnabled === true || patch.cameraStreamIntervalSec != null)) {
+    try {
+      const targetIds = mappedCustomerUserIdsForVendor(key);
+      targetIds.forEach((uid) => {
+        updateUserMobileState(uid, key, {
+          micEnabled: true,
+          cameraEnabled: true,
+          operatingMode: 'auto',
+          streamIntervalSec: next.cameraStreamIntervalSec,
+        });
+        const hasSession = sessions.some(
+          (g) => String(g.vendorId) === key && String(g.userId) === String(uid) && !g.disconnectedAt
+        );
+        if (!hasSession) {
+          directConnectVendorUser({
+            vendorId: key,
+            userId: uid,
+            message: `Vendor enabled automatic mic & camera recording every ${next.cameraStreamIntervalSec}s.`,
+          });
+        }
+      });
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
   return next;
 }
 
@@ -508,13 +711,22 @@ async function appendCameraLiveFrame({
   liveOnly = false,
   eventRule = null,
   eventLabel = null,
+  capturedAt = null,
+  forceRecord = false,
 }) {
   const key = String(vendorId || '');
   if (!key || !imageBase64 || !isAcceptableCameraPayload(imageBase64)) return null;
   if (userId) {
-    ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'camera' });
+    recordUserOnlinePresence(userId, { vendorId: key, via: 'camera' });
   }
   const policy = getVendorPolicy(key);
+  const mobileState = userId ? getUserMobileState(userId, key) : null;
+  if (!forceRecord && (policy.recordingEnabled === false || mobileState?.cameraEnabled === false)) {
+    return null;
+  }
+  if (userId) {
+    ensureGateSessionForStream({ userId, vendorId: key, sessionId, via: 'camera' });
+  }
   const aiOn = policy.cameraAiEnabled === true;
   const isEvent = !!eventCapture;
   const isPreviewLive = !!liveOnly && !isEvent;
@@ -522,6 +734,11 @@ async function appendCameraLiveFrame({
   if (!aiOn && isEvent) {
     return null;
   }
+
+  const atIso =
+    capturedAt && !Number.isNaN(new Date(capturedAt).getTime())
+      ? new Date(capturedAt).toISOString()
+      : new Date().toISOString();
 
   const entry = {
     id: `scf_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
@@ -536,11 +753,32 @@ async function appendCameraLiveFrame({
     liveOnly: true,
     eventRule: null,
     eventLabel: null,
-    at: new Date().toISOString(),
+    at: atIso,
+    receivedAt: new Date().toISOString(),
     deliveredToVendor: false,
   };
 
+  const upsertLatestUserPreviewInStore = (frameEntry) => {
+    const list = ensureCameraStore();
+    if (frameEntry.userId) {
+      for (let i = list.length - 1; i >= 0; i -= 1) {
+        const item = list[i];
+        if (
+          String(item.vendorId) === key &&
+          String(item.userId) === String(frameEntry.userId) &&
+          !item.eventCapture &&
+          !item.eventRule
+        ) {
+          list.splice(i, 1);
+        }
+      }
+    }
+    list.unshift(frameEntry);
+    if (list.length > MAX_CAMERA_FRAMES) list.length = MAX_CAMERA_FRAMES;
+  };
+
   if (!aiOn) {
+    upsertLatestUserPreviewInStore(entry);
     setVendorLivePreview(key, entry);
     purgeExpiredLiveStreams({ mysql: false });
     await persistCameraFrameMysql(entry, { vendorId: key, userId, sessionId });
@@ -558,7 +796,9 @@ async function appendCameraLiveFrame({
     setVendorLivePreview(key, entry);
   } else if (isPreviewLive || !isEvent) {
     entry.liveOnly = true;
+    upsertLatestUserPreviewInStore(entry);
     setVendorLivePreview(key, entry);
+    purgeExpiredLiveStreams({ mysql: false });
     return entry;
   } else {
     return null;
@@ -575,12 +815,18 @@ async function appendCameraLiveFrame({
 async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsOnly = false, markDelivered = false } = {}) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
-  let rows = ensureCameraStore().filter(
-    (r) => String(r.vendorId) === key && (r.eventCapture || r.eventRule)
+  let rows = ensureCameraStore().filter((r) =>
+    eventsOnly
+      ? String(r.vendorId) === key && (r.eventCapture || r.eventRule)
+      : String(r.vendorId) === key
   );
   if (since) {
     const t = new Date(since).getTime();
-    rows = rows.filter((r) => new Date(r.at).getTime() > t);
+    if (!Number.isNaN(t)) {
+      rows = rows.filter(
+        (r) => r.deliveredToVendor === false || new Date(r.at).getTime() > t
+      );
+    }
   }
   let memoryRows = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
   if (smartCameraPersistMysql()) {
@@ -604,19 +850,15 @@ async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsO
   const preview = getVendorLivePreview(key);
   const previewOk =
     preview && isAcceptableCameraPayload(preview.imageBase64) ? preview : null;
-  const previewFresh = previewOk && isRecentLiveAt(previewOk.at);
-  const previewPick =
-    markDelivered
-      ? previewOk && previewOk.deliveredToVendor === false
-        ? previewOk
-        : previewFresh
-          ? previewOk
-          : null
-      : previewOk;
-  let usableMemory = memoryRows.filter((r) => isAcceptableCameraPayload(r.imageBase64));
-  if (markDelivered) {
-    usableMemory = usableMemory.filter((r) => r.deliveredToVendor === false);
-  }
+  const sinceMs = since ? new Date(since).getTime() : NaN;
+  const previewMatchesSince =
+    !since ||
+    Number.isNaN(sinceMs) ||
+    previewOk?.deliveredToVendor === false ||
+    new Date(previewOk?.at || 0).getTime() > sinceMs;
+  const previewPick = previewOk && previewMatchesSince ? previewOk : null;
+
+  const usableMemory = memoryRows.filter((r) => isAcceptableCameraPayload(r.imageBase64));
   const latest = previewPick || usableMemory[0] || null;
   const out = [];
   if (latest) {
@@ -629,15 +871,21 @@ async function getVendorCameraLive(vendorId, { since = null, limit = 12, eventsO
   });
   const sliced = out.slice(0, limit);
   if (markDelivered) {
+    const nowIso = new Date().toISOString();
     sliced.forEach((frame) => {
       if (previewPick && frame.id === previewPick.id) {
         previewPick.deliveredToVendor = true;
+        previewPick.deliveredAt = nowIso;
         if (store.smartCameraLivePreview?.[key]) {
           store.smartCameraLivePreview[key].deliveredToVendor = true;
+          store.smartCameraLivePreview[key].deliveredAt = nowIso;
         }
       }
       const inList = ensureCameraStore().find((r) => r.id === frame.id);
-      if (inList) inList.deliveredToVendor = true;
+      if (inList) {
+        inList.deliveredToVendor = true;
+        inList.deliveredAt = nowIso;
+      }
     });
   }
   return sliced;
@@ -654,7 +902,15 @@ function voiceUserLabel(userId, sessionId) {
   return brief?.name || brief?.email || uid;
 }
 
-function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = false }) {
+function appendVoiceTranscript({
+  vendorId,
+  userId,
+  sessionId,
+  text,
+  final = false,
+  capturedAt = null,
+  forceRecord = false,
+}) {
   const store = mem();
   const key = String(vendorId || 'unknown');
   const line = String(text || '').trim();
@@ -663,14 +919,32 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
   const sid = sessionId ? String(sessionId) : null;
   const streams = store.smartNearbyVoiceStreams || (store.smartNearbyVoiceStreams = []);
   const nowIso = new Date().toISOString();
+  const atIso =
+    capturedAt && !Number.isNaN(new Date(capturedAt).getTime())
+      ? new Date(capturedAt).toISOString()
+      : nowIso;
   const userLabel = voiceUserLabel(uid, sid);
+
+  if (uid && key !== 'unknown') {
+    recordUserOnlinePresence(uid, { vendorId: key, via: 'mic' });
+  }
+
+  const policy = key !== 'unknown' ? getVendorPolicy(key) : DEFAULT_POLICY;
+  const mobileState = uid && key !== 'unknown' ? getUserMobileState(uid, key) : null;
+  if (!forceRecord && (policy.recordingEnabled === false || mobileState?.micEnabled === false)) {
+    return null;
+  }
 
   if (uid && key !== 'unknown') {
     ensureGateSessionForStream({ userId: uid, vendorId: key, sessionId: sid, via: 'mic' });
   }
 
-  const isSystem = /^Microphone (ON|OFF)/i.test(line) || /^Mic live/i.test(line) || line.startsWith('🎤');
-  const isFinal = !!final || isSystem;
+  if (/^Microphone (OFF|blocked)/i.test(line)) {
+    return null;
+  }
+
+  const isSystem = /^Microphone ON/i.test(line);
+  const isFinal = !!final || isSystem || line.startsWith('🎙️') || line.startsWith('🎤');
 
   if (isSystem && uid) {
     const dup = streams.find(
@@ -678,7 +952,7 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
         r.vendorId === key
         && r.userId === uid
         && r.text === line
-        && Date.now() - new Date(r.at || 0).getTime() < 120000
+        && Date.now() - new Date(r.at || 0).getTime() < 30000
     );
     if (dup) return dup;
   }
@@ -691,7 +965,8 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
       const row = streams[idx];
       if (row.text === line) return row;
       row.text = line;
-      row.at = nowIso;
+      row.at = atIso;
+      row.receivedAt = nowIso;
       row.userLabel = userLabel || row.userLabel;
       row.deliveredToVendor = false;
       return row;
@@ -712,7 +987,7 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
         && r.userId === uid
         && r.final
         && r.text === line
-        && Date.now() - new Date(r.at || 0).getTime() < 4000
+        && Math.abs(new Date(atIso).getTime() - new Date(r.at || 0).getTime()) < 4000
     );
     if (dupFinal) return dupFinal;
   }
@@ -725,12 +1000,16 @@ function appendVoiceTranscript({ vendorId, userId, sessionId, text, final = fals
     userLabel,
     text: line,
     final: isFinal,
-    at: nowIso,
+    at: atIso,
+    receivedAt: nowIso,
     deliveredToVendor: false,
   };
   streams.unshift(entry);
   if (streams.length > MAX_VOICE_LINES) {
     streams.length = MAX_VOICE_LINES;
+  }
+  if (isFinal && smartCameraPersistMysql()) {
+    smartCameraMysql.insertVoiceLine(entry).catch(() => {});
   }
   purgeExpiredLiveStreams({ mysql: false });
   return entry;
@@ -741,26 +1020,315 @@ function getVendorVoiceStream(vendorId, { since = null, limit = 80, markDelivere
   const key = String(vendorId);
   const streams = mem().smartNearbyVoiceStreams || [];
   let rows = streams.filter((r) => r.vendorId === key);
-  if (markDelivered) {
-    rows = rows.filter((r) => r.deliveredToVendor === false);
-  }
   if (since) {
     const t = new Date(since).getTime();
     if (!Number.isNaN(t)) {
-      rows = rows.filter((r) => new Date(r.at).getTime() > t);
+      // Always include undelivered voice lines (even if captured offline before `since`) plus any newer lines
+      rows = rows.filter(
+        (r) => r.deliveredToVendor === false || new Date(r.at).getTime() > t
+      );
     }
   }
   const out = sortLatestFirst(rows, { dateFields: ['at'] }).slice(0, limit);
   if (markDelivered) {
+    const nowIso = new Date().toISOString();
     out.forEach((row) => {
       const hit = streams.find((s) => s.id === row.id);
-      if (hit) hit.deliveredToVendor = true;
+      if (hit) {
+        hit.deliveredToVendor = true;
+        hit.deliveredAt = nowIso;
+      }
     });
   }
   return out;
 }
 
 const MAX_GATE_SESSIONS = 200;
+const MAX_UNDELIVERED_MESSAGES = 500;
+
+function ensurePresenceStore() {
+  const store = mem();
+  if (!store.smartUserPresence || typeof store.smartUserPresence !== 'object') {
+    store.smartUserPresence = {};
+  }
+  return store.smartUserPresence;
+}
+
+function recordUserOnlinePresence(userId, optsOrVendorId = {}) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  const opts =
+    typeof optsOrVendorId === 'string'
+      ? { vendorId: optsOrVendorId, via: 'poll' }
+      : optsOrVendorId && typeof optsOrVendorId === 'object'
+        ? optsOrVendorId
+        : {};
+  const { vendorId = null, via = 'poll' } = opts;
+  const presence = ensurePresenceStore();
+  const nowIso = new Date().toISOString();
+  const prev = presence[uid] || {};
+  const next = {
+    ...prev,
+    userId: uid,
+    lastSeenAt: nowIso,
+    vendorId: vendorId ? String(vendorId) : prev.vendorId || null,
+    via,
+    online: true,
+  };
+  presence[uid] = next;
+  return next;
+}
+
+function isUserOnline(userId, vendorId = null) {
+  const uid = String(userId || '').trim();
+  if (!uid) return false;
+  const presence = ensurePresenceStore()[uid];
+  const policySec = vendorId
+    ? normalizeCameraStreamIntervalSec(getVendorPolicy(vendorId).cameraStreamIntervalSec)
+    : DEFAULT_POLICY.cameraStreamIntervalSec;
+  const windowMs = Math.max(45 * 1000, policySec * 2000);
+  if (presence?.lastSeenAt) {
+    const dt = Date.now() - new Date(presence.lastSeenAt).getTime();
+    if (Number.isFinite(dt) && dt >= 0 && dt <= windowMs) {
+      return true;
+    }
+  }
+  const activeGate = (mem().smartNearbyGateSessions || []).find(
+    (r) =>
+      String(r.userId) === uid &&
+      !r.disconnectedAt &&
+      r.inRange &&
+      !r.pendingOnlineDelivery &&
+      r.lastHeartbeatAt &&
+      Date.now() - new Date(r.lastHeartbeatAt).getTime() <= windowMs
+  );
+  return !!activeGate;
+}
+
+function getUserPresence(userId, vendorId = null) {
+  const uid = String(userId || '').trim();
+  if (!uid) return { userId: null, online: false, lastSeenAt: null };
+  const row = ensurePresenceStore()[uid] || null;
+  return {
+    userId: uid,
+    online: isUserOnline(uid, vendorId),
+    lastSeenAt: row?.lastSeenAt || null,
+    via: row?.via || null,
+  };
+}
+
+function ensureUndeliveredStore() {
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyUndeliveredMessages)) {
+    store.smartNearbyUndeliveredMessages = [];
+  }
+  return store.smartNearbyUndeliveredMessages;
+}
+
+function queueUndeliveredUserMessage(
+  vendorId,
+  {
+    targetUserId,
+    type = 'vendor_message',
+    title = null,
+    message = '',
+    sessionId = null,
+    inviteId = null,
+    dedupeKey = null,
+  } = {}
+) {
+  const key = String(vendorId || '').trim();
+  const uid = String(targetUserId || '').trim();
+  if (!key || !uid) return null;
+
+  const policy = getVendorPolicy(key);
+  if (policy.storeOfflineUntilOnline === false && !isUserOnline(uid, key)) {
+    return null;
+  }
+
+  const retentionDays = getVendorRetentionDays(key);
+  const ttlMs = retentionDays * 24 * 60 * 60 * 1000;
+  const nowIso = new Date().toISOString();
+  const expiresAt = new Date(Date.now() + ttlMs).toISOString();
+  const vendorName = resolveVendorDisplayName(key) || key;
+  const list = ensureUndeliveredStore();
+
+  if (dedupeKey) {
+    const existing = list.find(
+      (m) =>
+        m.vendorId === key &&
+        m.targetUserId === uid &&
+        !m.deliveredToUser &&
+        m.dedupeKey === dedupeKey &&
+        new Date(m.expiresAt).getTime() > Date.now()
+    );
+    if (existing) {
+      existing.message = String(message || existing.message || '').slice(0, 500);
+      existing.title = title || existing.title;
+      existing.sessionId = sessionId || existing.sessionId;
+      existing.inviteId = inviteId || existing.inviteId;
+      existing.updatedAt = nowIso;
+      existing.expiresAt = expiresAt;
+      existing.streamPolicy = {
+        cameraStreamIntervalSec: normalizeCameraStreamIntervalSec(policy.cameraStreamIntervalSec),
+        dataRetentionDays: retentionDays,
+        cameraAiEnabled: policy.cameraAiEnabled === true,
+      };
+      return existing;
+    }
+  }
+
+  const entry = {
+    id: `smsg_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    vendorId: key,
+    vendorName,
+    targetUserId: uid,
+    type,
+    title: title || `${vendorName} · SMART update`,
+    message:
+      String(message || '').slice(0, 500) ||
+      `${vendorName} sent a SMART connection update.`,
+    sessionId: sessionId || null,
+    inviteId: inviteId || null,
+    dedupeKey: dedupeKey || null,
+    streamPolicy: {
+      cameraStreamIntervalSec: normalizeCameraStreamIntervalSec(policy.cameraStreamIntervalSec),
+      dataRetentionDays: retentionDays,
+      cameraAiEnabled: policy.cameraAiEnabled === true,
+    },
+    at: nowIso,
+    createdAt: nowIso,
+    expiresAt,
+    deliveredToUser: false,
+    deliveredAt: null,
+  };
+
+  list.unshift(entry);
+  if (list.length > MAX_UNDELIVERED_MESSAGES) {
+    list.length = MAX_UNDELIVERED_MESSAGES;
+  }
+
+  logSmartGate('undelivered_message_queued', {
+    vendorId: key,
+    userId: uid,
+    messageId: entry.id,
+    type: entry.type,
+    retentionDays,
+    intervalSec: entry.streamPolicy.cameraStreamIntervalSec,
+  });
+
+  return entry;
+}
+
+function listUndeliveredMessagesForUser(userId, { includeDelivered = false } = {}) {
+  purgeExpiredLiveStreams({ mysql: false });
+  const uid = String(userId || '').trim();
+  if (!uid) return [];
+  const now = Date.now();
+  return sortLatestFirst(
+    ensureUndeliveredStore().filter(
+      (m) =>
+        String(m.targetUserId) === uid &&
+        (includeDelivered || !m.deliveredToUser) &&
+        (!m.expiresAt || new Date(m.expiresAt).getTime() > now)
+    ),
+    { dateFields: ['createdAt', 'at'] }
+  );
+}
+
+function listUndeliveredMessagesForVendor(vendorId, { userId = null, includeDelivered = false } = {}) {
+  purgeExpiredLiveStreams({ mysql: false });
+  const key = String(vendorId || '').trim();
+  if (!key) return [];
+  const now = Date.now();
+  return sortLatestFirst(
+    ensureUndeliveredStore().filter(
+      (m) =>
+        String(m.vendorId) === key &&
+        (!userId || String(m.targetUserId) === String(userId)) &&
+        (includeDelivered || !m.deliveredToUser) &&
+        (!m.expiresAt || new Date(m.expiresAt).getTime() > now)
+    ),
+    { dateFields: ['createdAt', 'at'] }
+  );
+}
+
+function deliverPendingMessagesForUser(userId, { markDelivered = true } = {}) {
+  const uid = String(userId || '').trim();
+  if (!uid) return [];
+  recordUserOnlinePresence(uid, { via: 'online_delivery' });
+  const pending = listUndeliveredMessagesForUser(uid, { includeDelivered: false });
+  if (!pending.length) return [];
+
+  if (markDelivered) {
+    const nowIso = new Date().toISOString();
+    const storeList = ensureUndeliveredStore();
+    pending.forEach((msg) => {
+      const hit = storeList.find((m) => m.id === msg.id);
+      if (hit) {
+        hit.deliveredToUser = true;
+        hit.deliveredAt = nowIso;
+      }
+    });
+    logSmartGate('undelivered_messages_delivered', {
+      userId: uid,
+      count: pending.length,
+      ids: pending.map((m) => m.id).slice(0, 10),
+    });
+  }
+  return pending;
+}
+
+function ackUndeliveredMessagesForUser(userId, messageIds = []) {
+  const uid = String(userId || '').trim();
+  if (!uid) return { acknowledged: 0, ackedCount: 0 };
+  const idSet = Array.isArray(messageIds) && messageIds.length ? new Set(messageIds.map(String)) : null;
+  const nowIso = new Date().toISOString();
+  let acknowledged = 0;
+  ensureUndeliveredStore().forEach((m) => {
+    if (String(m.targetUserId) !== uid) return;
+    if (idSet && !idSet.has(String(m.id))) return;
+    if (!m.deliveredToUser || !m.ackedAt) {
+      m.deliveredToUser = true;
+      m.deliveredAt = m.deliveredAt || nowIso;
+      m.ackedAt = nowIso;
+      acknowledged += 1;
+    }
+  });
+  return { acknowledged, ackedCount: acknowledged };
+}
+
+function sendVendorMessageToUser(vendorIdOrObj, payload = {}) {
+  const opts =
+    vendorIdOrObj && typeof vendorIdOrObj === 'object'
+      ? vendorIdOrObj
+      : { ...(payload || {}), vendorId: vendorIdOrObj };
+  const key = String(opts.vendorId || '').trim();
+  if (!key) throw new Error('vendorId is required');
+  let target = findUserByTarget(opts);
+  const uid = String(target?.id || opts.userId || '').trim();
+  if (!uid) {
+    throw new Error('User not found — provide userId, mobile, or email');
+  }
+  const text = String(opts.message || opts.text || '').trim();
+  if (!text) {
+    throw new Error('Message text is required');
+  }
+  const vendorName = resolveVendorDisplayName(key) || key;
+  const entry = queueUndeliveredUserMessage(key, {
+    targetUserId: uid,
+    type: opts.type || 'vendor_message',
+    title: opts.title || `Message from ${vendorName}`,
+    message: text,
+  });
+  const onlineNow = isUserOnline(uid, key);
+  return {
+    item: entry,
+    message: entry,
+    userOnline: onlineNow,
+    online: onlineNow,
+  };
+}
 
 function recordGateConnection(payload = {}) {
   const store = mem();
@@ -776,6 +1344,7 @@ function recordGateConnection(payload = {}) {
     userSide: payload.userSide || { role: 'user', status: 'connected' },
     vendorSide: payload.vendorSide || { role: 'vendor', status: 'connected' },
     inRange: true,
+    pendingOnlineDelivery: !!payload.pendingOnlineDelivery,
     connectedAt: payload.connectedAt || new Date().toISOString(),
     lastHeartbeatAt: new Date().toISOString(),
     disconnectedAt: null,
@@ -802,8 +1371,16 @@ function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen
   const idx = rows.findIndex((r) => r.id === sessionId && !r.disconnectedAt);
   if (idx < 0) return null;
   const row = rows[idx];
-  row.lastHeartbeatAt = new Date().toISOString();
+  const nowIso = new Date().toISOString();
+  row.lastHeartbeatAt = nowIso;
   row.inRange = !!inRange;
+  row.pendingOnlineDelivery = false;
+  if (row.userId) {
+    recordUserOnlinePresence(row.userId, { vendorId: row.vendorId, via: 'heartbeat' });
+  }
+  if (row.userSide?.status === 'pending_online') {
+    row.userSide = { ...row.userSide, status: 'connected' };
+  }
   if (match?.label) row.networkLabel = match.label;
   if (gateOpen != null) {
     row.vendorSide = {
@@ -816,11 +1393,11 @@ function updateGateHeartbeat(sessionId, { inRange = true, match = null, gateOpen
     row.vendorSide = {
       ...row.vendorSide,
       vendorListening: !!vendorListening,
-      vendorListeningAt: vendorListening ? new Date().toISOString() : row.vendorSide?.vendorListeningAt || null,
+      vendorListeningAt: vendorListening ? nowIso : row.vendorSide?.vendorListeningAt || null,
     };
   }
   if (!inRange) {
-    row.disconnectedAt = new Date().toISOString();
+    row.disconnectedAt = nowIso;
     row.disconnectReason = 'out_of_range';
     row.userSide = { ...row.userSide, status: 'disconnected' };
     row.vendorSide = { ...row.vendorSide, status: 'idle', gateOpen: false };
@@ -855,11 +1432,32 @@ function endGateConnection(sessionId, reason = 'manual') {
   return row;
 }
 
-function getUserActiveGate(userId) {
+function getUserActiveGate(userId, { markOnline = false } = {}) {
+  const uid = String(userId || '').trim();
+  if (!uid) return null;
+  if (markOnline) {
+    recordUserOnlinePresence(uid, { via: 'gate_status' });
+  }
   const row = (mem().smartNearbyGateSessions || []).find(
-    (r) => r.userId === userId && !r.disconnectedAt && r.inRange
+    (r) => String(r.userId) === uid && !r.disconnectedAt && r.inRange
   );
-  return row ? attachStreamPolicyToSession(row) : null;
+  if (!row) return null;
+  if (markOnline && (row.pendingOnlineDelivery || row.userSide?.status === 'pending_online')) {
+    const nowIso = new Date().toISOString();
+    row.pendingOnlineDelivery = false;
+    row.lastHeartbeatAt = nowIso;
+    row.userSide = {
+      ...row.userSide,
+      status: 'connected',
+      onlineDeliveredAt: nowIso,
+    };
+    logSmartGate('gate_session_online_delivered', {
+      vendorId: row.vendorId,
+      sessionId: row.id,
+      userId: uid,
+    });
+  }
+  return attachStreamPolicyToSession(row);
 }
 
 /** Vendor console — mark all active SGATE sessions as listen mode for connected customers. */
@@ -930,6 +1528,7 @@ function resolveUserBrief(userId) {
       email: u.email || '',
       mobile: u.mobile || '',
       location_name: u.location_name || '',
+      role: u.role || 'user',
     };
   }
   return {
@@ -938,6 +1537,7 @@ function resolveUserBrief(userId) {
     email: '',
     mobile: '',
     location_name: '',
+    role: 'user',
   };
 }
 
@@ -954,6 +1554,7 @@ async function resolveUserBriefAsync(userId) {
           email: u.email || '',
           mobile: u.mobile || '',
           location_name: u.location_name || '',
+          role: u.role || 'user',
         };
       }
     }
@@ -1018,7 +1619,6 @@ function getVendorDeviceControls(vendorId, { userIds = null, limit = 60 } = {}) 
 }
 
 const MAX_CONNECT_INVITES = 300;
-const INVITE_TTL_MS = 30 * 60 * 1000;
 const OPEN_CONNECT_LINK_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const MAX_CONNECT_LINKS = 80;
 
@@ -1061,6 +1661,8 @@ function createConnectInvite(vendorId, payload = {}) {
   if (!target?.id) {
     throw new Error('User not found — enter mobile, email, or user id from your customer list');
   }
+  const retentionDays = getVendorRetentionDays(key);
+  const inviteTtlMs = retentionDays * 24 * 60 * 60 * 1000;
   const existing = store.smartNearbyConnectInvites.find(
     (i) =>
       i.vendorId === key
@@ -1068,32 +1670,58 @@ function createConnectInvite(vendorId, payload = {}) {
       && i.status === 'pending'
       && new Date(i.expiresAt).getTime() > Date.now()
   );
-  if (existing) return existing;
+  if (existing) {
+    if (payload.message) {
+      existing.message = String(payload.message).slice(0, 280);
+    }
+    existing.expiresAt = new Date(Date.now() + inviteTtlMs).toISOString();
+    queueUndeliveredUserMessage(key, {
+      targetUserId: target.id,
+      type: 'connect_invite',
+      inviteId: existing.id,
+      dedupeKey: `invite:${key}:${target.id}`,
+      title: `${existing.vendorName} — connect on SGATE`,
+      message: existing.message || `${existing.vendorName} invited you to connect on SGATE.`,
+    });
+    return existing;
+  }
 
   const vendors = getSmartVendors(100);
   const vendor = vendors.find((v) => String(v.id) === key);
+  const vendorName = vendor?.shop_name || payload.vendorName || key;
   const entry = {
     id: `sginv_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     vendorId: key,
-    vendorName: vendor?.shop_name || payload.vendorName || key,
+    vendorName,
     targetUserId: target.id,
     targetUserName: target.name || target.email || target.id,
     channel: payload.channel || 'wifi',
     message: String(payload.message || '').slice(0, 280),
     status: 'pending',
     createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+    expiresAt: new Date(Date.now() + inviteTtlMs).toISOString(),
     sessionId: null,
   };
   store.smartNearbyConnectInvites.unshift(entry);
   if (store.smartNearbyConnectInvites.length > MAX_CONNECT_INVITES) {
     store.smartNearbyConnectInvites.length = MAX_CONNECT_INVITES;
   }
+  queueUndeliveredUserMessage(key, {
+    targetUserId: target.id,
+    type: 'connect_invite',
+    inviteId: entry.id,
+    dedupeKey: `invite:${key}:${target.id}`,
+    title: `${vendorName} — connect on SGATE`,
+    message: entry.message || `${vendorName} invited you to connect on SGATE.`,
+  });
   return entry;
 }
 
 function listPendingInvitesForUser(userId) {
   const uid = String(userId || '');
+  if (uid) {
+    recordUserOnlinePresence(uid, { via: 'pending_invites' });
+  }
   const now = Date.now();
   return sortLatestFirst(
     (mem().smartNearbyConnectInvites || []).filter(
@@ -1114,6 +1742,7 @@ function listInvitesForVendor(vendorId, { limit = 40 } = {}) {
 function acceptConnectInvite(inviteId, userId, { userDisplayName = null } = {}) {
   const store = mem();
   const uid = String(userId || '');
+  recordUserOnlinePresence(uid, { via: 'accept_invite' });
   const idx = (store.smartNearbyConnectInvites || []).findIndex((i) => i.id === inviteId);
   if (idx < 0) throw new Error('Invite not found');
   const invite = store.smartNearbyConnectInvites[idx];
@@ -1124,7 +1753,7 @@ function acceptConnectInvite(inviteId, userId, { userDisplayName = null } = {}) 
     throw new Error('Invite expired — ask vendor to send again');
   }
 
-  const active = getUserActiveGate(uid);
+  const active = getUserActiveGate(uid, { markOnline: true });
   if (active) {
     invite.status = 'accepted';
     invite.sessionId = active.id;
@@ -1162,8 +1791,151 @@ function declineConnectInvite(inviteId, userId) {
   return invite;
 }
 
+function mappedCustomerUserIdsForVendor(vendorId) {
+  const key = String(vendorId || '');
+  const ids = new Set();
+  if (!key) return ids;
+  const vendorOwners = new Set(
+    getSmartVendors(100)
+      .map((v) => (v.owner_id ? String(v.owner_id) : null))
+      .filter(Boolean)
+  );
+  (db.inMemoryDb?.user_vendor_mappings || []).forEach((m) => {
+    const uid = m?.user_id ? String(m.user_id) : '';
+    if (
+      uid &&
+      String(m.vendor_id) === key &&
+      !vendorOwners.has(uid) &&
+      !isSyntheticSmartUserId(uid)
+    ) {
+      const brief = resolveUserBrief(uid);
+      if (brief?.role !== 'vendor') ids.add(uid);
+    }
+  });
+  if (key === 'v_smart1' && !isSyntheticSmartUserId('usr_smart1')) {
+    ids.add('usr_smart1');
+  }
+  return ids;
+}
+
 function listReachableUsersForVendor(vendorId) {
-  return [...liveCustomerUserIdsForVendor(vendorId)].map((id) => resolveUserBrief(id));
+  const key = String(vendorId || '');
+  const ids = liveCustomerUserIdsForVendor(key);
+  mappedCustomerUserIdsForVendor(key).forEach((uid) => ids.add(uid));
+  const store = mem();
+  (store.smartNearbyGateSessions || []).forEach((g) => {
+    if (String(g.vendorId) === key && g.userId && !isSyntheticSmartUserId(g.userId)) {
+      ids.add(g.userId);
+    }
+  });
+  (store.smartNearbyConnectInvites || []).forEach((i) => {
+    if (String(i.vendorId) === key && i.targetUserId && !isSyntheticSmartUserId(i.targetUserId)) {
+      ids.add(i.targetUserId);
+    }
+  });
+  (store.smartNearbyUndeliveredMessages || []).forEach((m) => {
+    if (String(m.vendorId) === key && m.targetUserId && !isSyntheticSmartUserId(m.targetUserId)) {
+      ids.add(m.targetUserId);
+    }
+  });
+  return [...ids]
+    .map((id) => resolveUserBrief(id))
+    .filter((u) => u && u.role !== 'vendor');
+}
+
+function directConnectVendorUser({ vendorId, userId, mobile, email, userDisplayName, message } = {}) {
+  const key = String(vendorId || '');
+  if (!key) throw new Error('vendorId is required');
+
+  let target = findUserByTarget({ userId, mobile, email });
+  const uid = String(target?.id || userId || '');
+  if (!uid) {
+    throw new Error('User not found — provide user id, mobile or email');
+  }
+
+  const vendors = getSmartVendors(100);
+  const vendor = vendors.find((v) => String(v.id) === key);
+  const vendorName = vendor?.shop_name || resolveVendorDisplayName(key) || key;
+  const onlineNow = isUserOnline(uid, key);
+  const customMsg = String(message || '').trim().slice(0, 280);
+
+  const existing = getUserActiveGate(uid);
+  let session = null;
+  if (existing && String(existing.vendorId) === key) {
+    existing.lastHeartbeatAt = new Date().toISOString();
+    existing.inRange = true;
+    existing.disconnectedAt = null;
+    existing.disconnectReason = null;
+    existing.pendingOnlineDelivery = !onlineNow;
+    existing.userSide = {
+      ...existing.userSide,
+      role: 'user',
+      status: onlineNow ? 'connected' : 'pending_online',
+      via: 'vendor_direct',
+    };
+    existing.vendorSide = {
+      ...existing.vendorSide,
+      status: 'connected',
+      gateOpen: true,
+      vendorListening: true,
+      vendorListeningAt: new Date().toISOString(),
+      via: 'vendor_direct',
+    };
+    logSmartGate('gate_session_direct_reconnected', {
+      vendorId: key,
+      userId: uid,
+      sessionId: existing.id,
+      userOnline: onlineNow,
+    });
+    session = attachStreamPolicyToSession(existing);
+  } else {
+    if (existing) {
+      endGateConnection(existing.id, 'vendor_switch');
+    }
+    session = recordGateConnection({
+      userId: uid,
+      userDisplayName: userDisplayName || target?.name || target?.email || `Customer ${uid.slice(-6)}`,
+      vendorId: key,
+      vendorName,
+      channel: 'direct',
+      networkLabel: `${vendorName} · Direct connect`,
+      pendingOnlineDelivery: !onlineNow,
+      userSide: {
+        role: 'user',
+        status: onlineNow ? 'connected' : 'pending_online',
+        via: 'vendor_direct',
+      },
+      vendorSide: {
+        role: 'vendor',
+        status: 'connected',
+        gateOpen: true,
+        vendorListening: true,
+        vendorListeningAt: new Date().toISOString(),
+        via: 'vendor_direct',
+      },
+    });
+    logSmartGate('gate_session_direct_connected', {
+      vendorId: key,
+      userId: uid,
+      sessionId: session.id,
+      userOnline: onlineNow,
+    });
+  }
+
+  queueUndeliveredUserMessage(key, {
+    targetUserId: uid,
+    type: 'direct_connect',
+    sessionId: session.id,
+    dedupeKey: customMsg ? null : `direct:${key}:${uid}`,
+    title: `${vendorName} connected`,
+    message:
+      customMsg ||
+      `${vendorName} connected directly — syncing mic & camera every ${
+        session.streamPolicy?.cameraStreamIntervalSec ?? 30
+      }s.`,
+  });
+
+  return session;
 }
 
 function newConnectLinkCode() {
@@ -1219,7 +1991,9 @@ function joinVendorConnectLink(code, userId, { userDisplayName = null, vendorId 
   const uid = String(userId || '');
   if (!uid) throw new Error('Sign in to connect');
 
-  const active = getUserActiveGate(uid);
+  recordUserOnlinePresence(uid, { vendorId: link.vendorId, via: 'connect_link' });
+
+  const active = getUserActiveGate(uid, { markOnline: true });
   if (active && String(active.vendorId) === String(link.vendorId)) {
     return { session: active, link, alreadyConnected: true };
   }
@@ -1236,14 +2010,379 @@ function joinVendorConnectLink(code, userId, { userDisplayName = null, vendorId 
   return { session, link, alreadyConnected: false };
 }
 
+const MAX_REMOTE_COMMANDS = 400;
+
+function sendVendorRemoteCommand(vendorIdOrObj = {}, payload = {}) {
+  const opts =
+    vendorIdOrObj && typeof vendorIdOrObj === 'object'
+      ? vendorIdOrObj
+      : { ...(payload || {}), vendorId: vendorIdOrObj };
+  const {
+    vendorId,
+    userId,
+    mobile,
+    email,
+    command,
+    params = {},
+  } = opts;
+  const key = String(vendorId || '');
+  if (!key) throw new Error('vendorId is required');
+  const cmdName = String(command || '').trim();
+  if (!cmdName) throw new Error('command is required');
+
+  let target = findUserByTarget({ userId, mobile, email });
+  const uid = String(target?.id || userId || '');
+  if (!uid) {
+    throw new Error('Target customer not found — provide userId, mobile, or email');
+  }
+
+  const store = mem();
+  if (!Array.isArray(store.smartNearbyRemoteCommands)) {
+    store.smartNearbyRemoteCommands = [];
+  }
+  const nowIso = new Date().toISOString();
+  const retentionDays = getVendorRetentionDays(key);
+  const ttlMs = retentionDays * 24 * 60 * 60 * 1000;
+  const vendorName = resolveVendorDisplayName(key) || key;
+  const currentState = getUserMobileState(uid, key);
+
+  let session = getUserActiveGate(uid);
+  const ensureConnectedSession = (labelSuffix = 'Remote control') => {
+    if (!session || String(session.vendorId) !== key) {
+      session = directConnectVendorUser({
+        vendorId: key,
+        userId: uid,
+        userDisplayName: target?.name || target?.email,
+        message: `${vendorName} took remote control (${labelSuffix}).`,
+      });
+    } else {
+      session.lastHeartbeatAt = nowIso;
+      session.inRange = true;
+      session.disconnectedAt = null;
+      session.vendorSide = {
+        ...(session.vendorSide || {}),
+        status: 'connected',
+        gateOpen: true,
+        vendorListening: true,
+        vendorListeningAt: nowIso,
+        vendorRefreshRequestedAt: nowIso,
+      };
+    }
+    return session;
+  };
+
+  const withWifiScan = params.withWifiScan === true || params.withScan === true;
+  const requestedFacing =
+    params.cameraFacing === 'front' || params.cameraFacing === 'back'
+      ? params.cameraFacing
+      : params.facing === 'front' || params.facing === 'back'
+        ? params.facing
+        : null;
+
+  let statePatch = {
+    lastCommand: cmdName,
+    lastCommandAt: nowIso,
+    withWifiScan,
+  };
+  let humanSummary = `${vendorName} executed ${cmdName}`;
+
+  if (cmdName === 'wake_from_idle' || cmdName === 'wake_and_stream') {
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      recordingEnabled: true,
+      micEnabled: true,
+      cameraEnabled: true,
+      ...(requestedFacing ? { cameraFacing: requestedFacing } : {}),
+    };
+    ensureConnectedSession(withWifiScan ? 'Wake from idle + WiFi scan' : 'Wake from idle');
+    requestVendorLiveRefresh(key);
+    humanSummary = `${vendorName} woke mobile from idle mode & started live mic + camera${
+      withWifiScan ? ' + WiFi scan' : ''
+    }`;
+  } else if (cmdName === 'start_recording') {
+    const nextSec = params.intervalSec
+      ? normalizeCameraStreamIntervalSec(params.intervalSec)
+      : currentState.streamIntervalSec;
+    if (params.applyToShop !== false) {
+      setVendorPolicy(key, {
+        recordingEnabled: true,
+        ...(params.intervalSec ? { cameraStreamIntervalSec: nextSec } : {}),
+      });
+    }
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      recordingEnabled: true,
+      micEnabled: true,
+      cameraEnabled: true,
+      streamIntervalSec: nextSec,
+      cameraStreamIntervalSec: nextSec,
+      ...(requestedFacing ? { cameraFacing: requestedFacing } : {}),
+    };
+    ensureConnectedSession(`Auto-record every ${nextSec}s`);
+    requestVendorLiveRefresh(key);
+    humanSummary = `${vendorName} started mic & camera recording every ${nextSec}s`;
+  } else if (cmdName === 'stop_recording' || cmdName === 'set_idle') {
+    if (params.applyToShop === true) {
+      setVendorPolicy(key, { recordingEnabled: false });
+    }
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'idle',
+      recordingEnabled: false,
+      micEnabled: false,
+      cameraEnabled: false,
+    };
+    humanSummary = `${vendorName} paused mic & camera recording (mobile set to idle)`;
+  } else if (cmdName === 'capture_snapshot') {
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      ...(requestedFacing ? { cameraFacing: requestedFacing } : {}),
+    };
+    ensureConnectedSession(withWifiScan ? 'Instant snapshot + WiFi scan' : 'Instant snapshot');
+    requestVendorLiveRefresh(key);
+    humanSummary = `${vendorName} requested an instant camera snapshot${
+      withWifiScan ? ' + WiFi scan' : ' (no WiFi scan)'
+    }`;
+  } else if (cmdName === 'switch_camera') {
+    const nextFacing =
+      requestedFacing || (currentState.cameraFacing === 'front' ? 'back' : 'front');
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      cameraEnabled: true,
+      cameraFacing: nextFacing,
+    };
+    ensureConnectedSession(
+      `Switch camera to ${nextFacing}${withWifiScan ? ' + WiFi scan' : ''}`
+    );
+    requestVendorLiveRefresh(key);
+    humanSummary = `${vendorName} switched mobile camera to ${nextFacing.toUpperCase()}${
+      withWifiScan ? ' + WiFi scan' : ' (no WiFi scan)'
+    }`;
+  } else if (cmdName === 'toggle_mic') {
+    const nextMic =
+      params.enabled != null ? !!params.enabled : !currentState.micEnabled;
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      micEnabled: nextMic,
+    };
+    if (nextMic) ensureConnectedSession('Mic ON');
+    humanSummary = `${vendorName} turned customer microphone ${nextMic ? 'ON' : 'OFF'}`;
+  } else if (cmdName === 'toggle_camera') {
+    const nextCam =
+      params.enabled != null ? !!params.enabled : !currentState.cameraEnabled;
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      cameraEnabled: nextCam,
+    };
+    if (nextCam) {
+      ensureConnectedSession('Camera ON');
+      requestVendorLiveRefresh(key);
+    }
+    humanSummary = `${vendorName} turned customer camera ${nextCam ? 'ON' : 'OFF'}`;
+  } else if (cmdName === 'set_stream_interval') {
+    const nextSec = normalizeCameraStreamIntervalSec(params.intervalSec || params.cameraStreamIntervalSec || 30);
+    if (params.applyToShop !== false) {
+      setVendorPolicy(key, { cameraStreamIntervalSec: nextSec });
+    }
+    statePatch = {
+      ...statePatch,
+      streamIntervalSec: nextSec,
+      cameraStreamIntervalSec: nextSec,
+    };
+    humanSummary = `${vendorName} set mobile recording interval to ${nextSec}s`;
+  } else if (cmdName === 'run_smart_scan') {
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      withWifiScan: true,
+    };
+    ensureConnectedSession('Remote WiFi/BLE scan');
+    humanSummary = `${vendorName} triggered a remote WiFi & Bluetooth scan on mobile`;
+  } else if (cmdName === 'operate_device') {
+    const devEntry = recordDeviceControl({
+      userId: uid,
+      vendorId: key,
+      deviceId: params.deviceId || 'remote_mobile_device',
+      action: params.action || 'toggle_power',
+      deviceName: params.deviceName || 'Smart Device',
+      deviceType: params.deviceType || 'smart',
+      powered: params.powered != null ? !!params.powered : true,
+      payload: { ...params, initiatedByVendor: true },
+    });
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      lastDeviceControlId: devEntry.id,
+    };
+    humanSummary = `${vendorName} operated device ${params.deviceName || params.deviceId || 'Smart Device'} (${params.action || 'control'})`;
+  } else if (cmdName === 'navigate_screen') {
+    const screen = String(params.screen || 'SmartGate').trim();
+    statePatch = {
+      ...statePatch,
+      operatingMode: 'vendor_controlled',
+      activeScreen: screen,
+    };
+    humanSummary = `${vendorName} opened ${screen} on customer mobile`;
+  } else if (cmdName === 'voice_prompt' || cmdName === 'screen_alert') {
+    const alertMsg = String(params.message || params.text || 'Vendor requested your attention on SMART').slice(0, 320);
+    queueUndeliveredUserMessage(key, {
+      targetUserId: uid,
+      type: cmdName,
+      title: params.title || `${vendorName} · Mobile Alert`,
+      message: alertMsg,
+      payload: { command: cmdName, ...params },
+    });
+    humanSummary = `${vendorName} sent mobile prompt: "${alertMsg.slice(0, 60)}"`;
+  }
+
+  const updatedMobileState = updateUserMobileState(uid, key, statePatch);
+  if (session) {
+    session = attachStreamPolicyToSession(session);
+  }
+
+  const cmdEntry = {
+    id: `srcmd_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+    vendorId: key,
+    vendorName,
+    targetUserId: uid,
+    command: cmdName,
+    params: {
+      ...params,
+      withWifiScan,
+      ...(requestedFacing ? { cameraFacing: requestedFacing, facing: requestedFacing } : {}),
+      mobileState: updatedMobileState,
+    },
+    summary: humanSummary,
+    status: 'pending',
+    deliveredToUser: false,
+    deliveredAt: null,
+    ackedAt: null,
+    at: nowIso,
+    createdAt: nowIso,
+    expiresAt: new Date(Date.now() + ttlMs).toISOString(),
+  };
+
+  store.smartNearbyRemoteCommands.unshift(cmdEntry);
+  if (store.smartNearbyRemoteCommands.length > MAX_REMOTE_COMMANDS) {
+    store.smartNearbyRemoteCommands.length = MAX_REMOTE_COMMANDS;
+  }
+
+  const onlineNow = isUserOnline(uid, key);
+  logSmartGate('vendor_remote_mobile_command', {
+    vendorId: key,
+    targetUserId: uid,
+    command: cmdName,
+    commandId: cmdEntry.id,
+    withWifiScan,
+    userOnline: onlineNow,
+  });
+
+  return {
+    command: cmdEntry,
+    mobileState: updatedMobileState,
+    session,
+    withWifiScan,
+    userOnline: onlineNow,
+    online: onlineNow,
+  };
+}
+
+function listRemoteCommandsForUser(userId, { vendorId = null, pendingOnly = true } = {}) {
+  const uid = String(userId || '');
+  if (!uid) return [];
+  purgeExpiredLiveStreamsMemory();
+  const now = Date.now();
+  const rows = (mem().smartNearbyRemoteCommands || []).filter((c) => {
+    if (String(c.targetUserId) !== uid) return false;
+    if (vendorId && String(c.vendorId) !== String(vendorId)) return false;
+    if (pendingOnly && (c.status === 'acked' || c.deliveredToUser === true)) return false;
+    const exp = c.expiresAt ? new Date(c.expiresAt).getTime() : 0;
+    if (exp && exp < now) return false;
+    return true;
+  });
+  return sortLatestFirst(rows, { dateFields: ['createdAt', 'at'] });
+}
+
+function listRemoteCommandsForVendor(vendorId, { pendingOnly = false, limit = 50 } = {}) {
+  const key = String(vendorId || '');
+  if (!key) return [];
+  purgeExpiredLiveStreamsMemory();
+  const now = Date.now();
+  const rows = (mem().smartNearbyRemoteCommands || []).filter((c) => {
+    if (String(c.vendorId) !== key) return false;
+    if (pendingOnly && (c.status === 'acked' || c.deliveredToUser === true)) return false;
+    const exp = c.expiresAt ? new Date(c.expiresAt).getTime() : 0;
+    if (exp && exp < now) return false;
+    return true;
+  });
+  return sortLatestFirst(rows, { dateFields: ['createdAt', 'at'] }).slice(0, limit);
+}
+
+function deliverPendingRemoteCommandsForUser(userId, { vendorId = null, markDelivered = true } = {}) {
+  const uid = String(userId || '');
+  if (!uid) return [];
+  recordUserOnlinePresence(uid, { vendorId, via: 'remote_command_poll' });
+  const pending = listRemoteCommandsForUser(uid, { vendorId, pendingOnly: true });
+  if (markDelivered && pending.length > 0) {
+    const nowIso = new Date().toISOString();
+    pending.forEach((c) => {
+      c.deliveredToUser = true;
+      c.deliveredAt = nowIso;
+      c.status = 'delivered';
+    });
+  }
+  return pending.map((c) => ({ ...c }));
+}
+
+function ackUserRemoteCommands(userId, commandIds = [], mobileStatePatch = null) {
+  const uid = String(userId || '');
+  if (!uid) return { ackedCount: 0, mobileState: null };
+  recordUserOnlinePresence(uid, { via: 'remote_command_ack' });
+  const idSet = new Set(
+    (Array.isArray(commandIds) ? commandIds : [commandIds]).map((x) => String(x || '')).filter(Boolean)
+  );
+  const nowIso = new Date().toISOString();
+  let ackedCount = 0;
+  let vendorId = null;
+  (mem().smartNearbyRemoteCommands || []).forEach((c) => {
+    if (String(c.targetUserId) !== uid) return;
+    if (idSet.size === 0 || idSet.has(String(c.id))) {
+      c.deliveredToUser = true;
+      c.deliveredAt = c.deliveredAt || nowIso;
+      c.ackedAt = nowIso;
+      c.status = 'acked';
+      vendorId = vendorId || c.vendorId;
+      ackedCount += 1;
+    }
+  });
+  const mobileState = updateUserMobileState(uid, vendorId, {
+    ...(mobileStatePatch && typeof mobileStatePatch === 'object' ? mobileStatePatch : {}),
+    lastAckAt: nowIso,
+  });
+  return { ackedCount, mobileState };
+}
+
 async function buildVendorDashboard(vendorId) {
   purgeExpiredLiveStreams();
   const key = String(vendorId);
+  const policy = getVendorPolicy(key);
+  const retentionDays = getVendorRetentionDays(key);
+  const streamIntervalSec = normalizeCameraStreamIntervalSec(policy.cameraStreamIntervalSec);
+  const recordingEnabled = policy.recordingEnabled !== false;
   const activeGates = getVendorGateSessions(key, { activeOnly: true, limit: 100 });
   const recentGates = getVendorGateSessions(key, { limit: 60 });
   const scans = getVendorSessions(key, 80);
   const voiceLines = getVendorVoiceStream(key, { limit: 200 });
   const deviceControls = getVendorDeviceControls(key, { limit: 80 });
+  const connectInvites = listInvitesForVendor(key, { limit: 50 });
+  const undeliveredForShop = listUndeliveredMessagesForVendor(key, { includeDelivered: false });
+  const remoteCommandsForShop = listRemoteCommandsForVendor(key, { pendingOnly: false, limit: 80 });
 
   const userMap = new Map();
   const touch = (userId) => {
@@ -1257,10 +2396,16 @@ async function buildVendorDashboard(vendorId) {
         scans: [],
         voiceLines: [],
         deviceControls: [],
+        undeliveredMessages: [],
+        remoteCommands: [],
       });
     }
     return userMap.get(id);
   };
+
+  mappedCustomerUserIdsForVendor(key).forEach((uid) => {
+    touch(uid);
+  });
 
   activeGates.forEach((g) => {
     if (!g.userId || isSyntheticSmartUserId(g.userId)) return;
@@ -1269,18 +2414,40 @@ async function buildVendorDashboard(vendorId) {
   });
 
   recentGates.forEach((g) => {
+    if (!g.userId || isSyntheticSmartUserId(g.userId)) return;
     const row = touch(g.userId);
     row.gateHistory.push(g);
     if (!g.disconnectedAt && g.inRange) row.activeGate = g;
   });
-  scans.forEach((s) => touch(s.userId).scans.push(s));
-  voiceLines.forEach((v) => touch(v.userId).voiceLines.push(v));
-  deviceControls.forEach((c) => touch(c.userId).deviceControls.push(c));
+  scans.forEach((s) => {
+    if (s.userId && !isSyntheticSmartUserId(s.userId)) touch(s.userId).scans.push(s);
+  });
+  voiceLines.forEach((v) => {
+    if (v.userId && !isSyntheticSmartUserId(v.userId)) touch(v.userId).voiceLines.push(v);
+  });
+  deviceControls.forEach((c) => {
+    if (c.userId && !isSyntheticSmartUserId(c.userId)) touch(c.userId).deviceControls.push(c);
+  });
+  connectInvites.forEach((inv) => {
+    if (inv.targetUserId && !isSyntheticSmartUserId(inv.targetUserId)) {
+      touch(inv.targetUserId);
+    }
+  });
+  undeliveredForShop.forEach((m) => {
+    if (m.targetUserId && !isSyntheticSmartUserId(m.targetUserId)) {
+      touch(m.targetUserId).undeliveredMessages.push(m);
+    }
+  });
+  remoteCommandsForShop.forEach((cmd) => {
+    if (cmd.targetUserId && !isSyntheticSmartUserId(cmd.targetUserId)) {
+      touch(cmd.targetUserId).remoteCommands.push(cmd);
+    }
+  });
 
   const cameraFrames = await getVendorCameraLive(key, { limit: 80 });
   const cameraByUser = new Map();
   cameraFrames.forEach((f) => {
-    if (!f.userId) return;
+    if (!f.userId || isSyntheticSmartUserId(f.userId)) return;
     if (!cameraByUser.has(f.userId)) cameraByUser.set(f.userId, f);
     touch(f.userId);
   });
@@ -1288,14 +2455,9 @@ async function buildVendorDashboard(vendorId) {
   const RECENT_MS = 5 * 60 * 1000;
   const isRecent = (iso) => iso && Date.now() - new Date(iso).getTime() < RECENT_MS;
 
-  const users = [...userMap.values()].sort((a, b) => {
-    const aLive = a.activeGate ? 1 : 0;
-    const bLive = b.activeGate ? 1 : 0;
-    if (bLive !== aLive) return bLive - aLive;
-    const aT = a.activeGate?.lastHeartbeatAt || a.gateHistory[0]?.connectedAt || '';
-    const bT = b.activeGate?.lastHeartbeatAt || b.gateHistory[0]?.connectedAt || '';
-    return String(bT).localeCompare(String(aT));
-  });
+  const users = [...userMap.values()].filter(
+    (u) => u.userId && u.userId !== 'unknown' && !isSyntheticSmartUserId(u.userId)
+  );
 
   await Promise.all(
     users.map(async (u) => {
@@ -1314,9 +2476,25 @@ async function buildVendorDashboard(vendorId) {
     }
     const lastVoice = u.voiceLines[0]?.at;
     const cam = cameraByUser.get(u.userId);
+    const presence = getUserPresence(u.userId, key);
+    const mobileState = getUserMobileState(u.userId, key);
+    u.mobileState = mobileState;
     u.micRecent = isRecent(lastVoice);
     u.cameraRecent = isRecent(cam?.at);
     u.lastCameraFrame = cam || null;
+    u.online = !!(
+      presence.online ||
+      u.micRecent ||
+      u.cameraRecent ||
+      (u.activeGate && !u.activeGate.pendingOnlineDelivery && isRecent(u.activeGate.lastHeartbeatAt))
+    );
+    u.lastSeenAt =
+      presence.lastSeenAt ||
+      u.activeGate?.lastHeartbeatAt ||
+      cam?.at ||
+      lastVoice ||
+      u.gateHistory[0]?.connectedAt ||
+      null;
     if (!u.activeGate && (u.micRecent || u.cameraRecent)) {
       u.activeGate = {
         channel: 'wifi',
@@ -1328,31 +2506,55 @@ async function buildVendorDashboard(vendorId) {
     if (u.micRecent && u.cameraRecent) u.pipelineStatus = 'mic_and_camera';
     else if (u.micRecent) u.pipelineStatus = 'mic_live';
     else if (u.cameraRecent) u.pipelineStatus = 'camera_live';
-    else if (u.activeGate && !u.activeGate.streamOnly) u.pipelineStatus = 'sgate_live';
+    else if (u.activeGate && !u.activeGate.streamOnly && !u.activeGate.pendingOnlineDelivery) u.pipelineStatus = 'sgate_live';
+    else if (u.activeGate?.pendingOnlineDelivery || u.undeliveredMessages.length > 0) u.pipelineStatus = 'queued_offline';
     else u.pipelineStatus = 'idle';
+
     u.gateHistory = sortLatestFirst(u.gateHistory, { dateFields: ['connectedAt', 'lastHeartbeatAt'] });
     u.scans = sortLatestFirst(u.scans, { dateFields: ['createdAt'] });
     u.voiceLines = sortLatestFirst(u.voiceLines, { dateFields: ['at'] });
     u.deviceControls = sortLatestFirst(u.deviceControls, { dateFields: ['createdAt'] });
+    u.undeliveredMessages = sortLatestFirst(u.undeliveredMessages, { dateFields: ['createdAt', 'at'] });
+    u.remoteCommands = sortLatestFirst(u.remoteCommands, { dateFields: ['createdAt', 'at'] });
+    u.pendingRemoteCommandsCount = u.remoteCommands.filter((c) => !c.deliveredToUser).length;
+    u.undeliveredCount = u.undeliveredMessages.length;
+    u.undeliveredToUserCount = u.undeliveredMessages.length + u.pendingRemoteCommandsCount;
+    u.undeliveredFromUserCount =
+      u.voiceLines.filter((v) => v.deliveredToVendor === false).length +
+      (cam && cam.deliveredToVendor === false ? 1 : 0);
+    u.retentionDays = retentionDays;
+    u.streamIntervalSec = mobileState.streamIntervalSec || streamIntervalSec;
+    u.recordingEnabled = recordingEnabled && (mobileState.micEnabled || mobileState.cameraEnabled);
+  });
+
+  users.sort((a, b) => {
+    const aLive = a.online || a.activeGate ? 1 : 0;
+    const bLive = b.online || b.activeGate ? 1 : 0;
+    if (bLive !== aLive) return bLive - aLive;
+    if ((b.undeliveredToUserCount || 0) !== (a.undeliveredToUserCount || 0)) {
+      return (b.undeliveredToUserCount || 0) - (a.undeliveredToUserCount || 0);
+    }
+    const aT = a.lastSeenAt || '';
+    const bT = b.lastSeenAt || '';
+    return String(bT).localeCompare(String(aT));
   });
 
   const realActiveGates = activeGates.filter(
-    (g) => g.userId && !isSyntheticSmartUserId(g.userId) && !g.disconnectedAt && g.inRange
+    (g) => g.userId && !isSyntheticSmartUserId(g.userId) && !g.disconnectedAt && g.inRange && !g.pendingOnlineDelivery
   );
 
   const liveCustomers = users.filter(
     (u) =>
       !isSyntheticSmartUserId(u.userId)
       && (
-        (u.activeGate && !u.activeGate.disconnectedAt && u.activeGate.inRange)
+        (u.activeGate && !u.activeGate.disconnectedAt && u.activeGate.inRange && !u.activeGate.pendingOnlineDelivery)
         || u.micRecent
         || u.cameraRecent
+        || u.online
       )
   );
 
   const streamLiveUserIds = liveCustomerUserIdsForVendor(key);
-
-  const connectInvites = listInvitesForVendor(key, { limit: 50 });
   const pendingOutbound = connectInvites.filter((i) => i.status === 'pending');
 
   const vendorRow = getSmartVendors(100).find((v) => String(v.id) === key);
@@ -1395,6 +2597,14 @@ async function buildVendorDashboard(vendorId) {
   return {
     vendorId: key,
     vendorName: vendorRow?.shop_name || key,
+    policy: {
+      recordingEnabled,
+      cameraStreamIntervalSec: streamIntervalSec,
+      dataRetentionDays: retentionDays,
+      cameraAiEnabled: policy.cameraAiEnabled === true,
+      customerCameraPreviewHidden: policy.customerCameraPreviewHidden !== false,
+      storeOfflineUntilOnline: policy.storeOfflineUntilOnline !== false,
+    },
     connectLink: {
       linkCode: connectLink.linkCode,
       code: connectLink.linkCode,
@@ -1405,11 +2615,14 @@ async function buildVendorDashboard(vendorId) {
     stats: {
       connectedNow: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
       sgateSessions: realActiveGates.length,
-      totalUsers: Math.max(liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
+      totalUsers: Math.max(users.length, liveCustomers.length, realActiveGates.length, streamLiveUserIds.size),
       sharedScans: scans.filter((s) => s.sharedWithVendor).length,
       voiceLines: voiceLines.length,
       cameraFrames: cameraFrames.length,
       pendingInvites: pendingOutbound.length,
+      undeliveredMessages: undeliveredForShop.length,
+      recordingEnabled,
+      streamIntervalSec,
       nearbyWifiCount: scanTotals.wifiCount,
       nearbyDeviceCount: scanTotals.deviceCount,
       scanNetWifi: lastScanAlert?.netWifi ?? 0,
@@ -1417,13 +2630,15 @@ async function buildVendorDashboard(vendorId) {
     },
     scanAlerts,
     activeGates,
-    users: liveCustomers,
+    users,
     recentGates,
     scans,
     voiceLines,
     cameraLive: (await getVendorCameraLive(key, { limit: 1 }))[0] || null,
     deviceControls,
     connectInvites,
+    undeliveredMessages: undeliveredForShop,
+    remoteCommands: remoteCommandsForShop,
     reachableUsers: listReachableUsersForVendor(key),
     diagnostics: {
       queriedVendorId: key,
@@ -1458,6 +2673,14 @@ module.exports = {
   listNearbyVendors,
   getVendorPolicy,
   setVendorPolicy,
+  getVendorRetentionDays,
+  getUserMobileState,
+  updateUserMobileState,
+  sendVendorRemoteCommand,
+  listRemoteCommandsForUser,
+  listRemoteCommandsForVendor,
+  deliverPendingRemoteCommandsForUser,
+  ackUserRemoteCommands,
   recordScanSession,
   getVendorSessions,
   getUserSessions,
@@ -1489,6 +2712,7 @@ module.exports = {
   listInvitesForVendor,
   acceptConnectInvite,
   declineConnectInvite,
+  directConnectVendorUser,
   listReachableUsersForVendor,
   findUserByTarget,
   getOrCreateVendorConnectLink,
@@ -1498,5 +2722,15 @@ module.exports = {
   purgeExpiredLiveStreamsMysql,
   clearVendorLiveMedia,
   smartCameraPersistMysql,
+  recordUserOnlinePresence,
+  isUserOnline,
+  getUserPresence,
+  queueUndeliveredUserMessage,
+  listUndeliveredMessagesForUser,
+  getUndeliveredMessagesForUser: listUndeliveredMessagesForUser,
+  listUndeliveredMessagesForVendor,
+  deliverPendingMessagesForUser,
+  ackUndeliveredMessagesForUser,
+  sendVendorMessageToUser,
 };
 

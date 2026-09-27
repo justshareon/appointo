@@ -149,9 +149,72 @@ async function deleteLiveStreamsOlderThan(cutoffDate) {
   }
 }
 
+async function insertVoiceLine(entry) {
+  const pool = await getPool();
+  if (!pool || !entry?.id || !entry?.text) return false;
+  try {
+    await pool.query(
+      `INSERT INTO smart_voice_lines
+        (id, vendor_id, user_id, session_id, line_text, is_final, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE line_text = VALUES(line_text), is_final = VALUES(is_final), created_at = VALUES(created_at)`,
+      [
+        entry.id,
+        String(entry.vendorId),
+        entry.userId || null,
+        entry.sessionId || null,
+        String(entry.text).slice(0, 2000),
+        entry.final ? 1 : 0,
+        entry.at ? new Date(entry.at) : new Date(),
+      ]
+    );
+    return true;
+  } catch (err) {
+    if (!/doesn't exist|Unknown table/i.test(String(err.message))) {
+      LOG.warning('[Smart] MySQL voice line insert failed:', err.message);
+    }
+    return false;
+  }
+}
+
+async function listVendorVoiceLines(vendorId, { since = null, limit = 80 } = {}) {
+  const pool = await getPool();
+  if (!pool) return [];
+  const key = String(vendorId);
+  const lim = Math.min(Math.max(Number(limit) || 80, 1), 200);
+  try {
+    let sql = `SELECT id, vendor_id, user_id, session_id, line_text, is_final, created_at
+               FROM smart_voice_lines WHERE vendor_id = ?`;
+    const params = [key];
+    if (since) {
+      sql += ' AND created_at > ?';
+      params.push(new Date(since));
+    }
+    sql += ' ORDER BY created_at DESC LIMIT ?';
+    params.push(lim);
+    const [rows] = await pool.query(sql, params);
+    return (rows || []).map((row) => ({
+      id: row.id,
+      vendorId: row.vendor_id,
+      userId: row.user_id,
+      sessionId: row.session_id,
+      text: row.line_text,
+      final: !!row.is_final,
+      at: row.created_at instanceof Date ? row.created_at.toISOString() : row.created_at,
+    }));
+  } catch (err) {
+    if (!/doesn't exist|Unknown table/i.test(String(err.message))) {
+      LOG.warning('[Smart] MySQL voice line list failed:', err.message);
+    }
+    return [];
+  }
+}
+
 module.exports = {
   insertCameraFrame,
   listVendorFrames,
+  insertVoiceLine,
+  listVendorVoiceLines,
   deleteVendorLiveMedia,
   deleteLiveStreamsOlderThan,
 };

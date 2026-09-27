@@ -13,6 +13,8 @@ const STORE_KEYS = [
   'smartCameraLiveFrames',
   'smartNearbyGateSessions',
   'smartNearbyConnectInvites',
+  'smartNearbyUndeliveredMessages',
+  'smartNearbyRemoteCommands',
 ];
 
 const IDLE_MS = parseInt(
@@ -48,27 +50,29 @@ function ensureArrays(mem) {
   STORE_KEYS.forEach((key) => {
     if (!Array.isArray(mem[key])) mem[key] = [];
   });
+  if (!mem.smartUserPresence || typeof mem.smartUserPresence !== 'object') {
+    mem.smartUserPresence = {};
+  }
+  if (!mem.smartUserMobileState || typeof mem.smartUserMobileState !== 'object') {
+    mem.smartUserMobileState = {};
+  }
 }
 
 function loadSeed() {
   const mem = getMem();
   if (!mem) return;
-  mem.smartNearbyVendors = SEED_VENDORS.map((v) => ({ ...v }));
-  mem.smartNearbyScanSessions = [];
-  mem.smartNearbyDeviceControls = [];
-  mem.smartNearbyPolicies = [];
-  mem.smartNearbyVoiceStreams = [];
-  mem.smartCameraLiveFrames = [];
-  mem.smartNearbyGateSessions = [];
-  mem.smartNearbyConnectInvites = [];
-  mem.smartNearbyScanAlerts = [];
-  mem.smartNearbyScanSnapshots = {};
+  if (!Array.isArray(mem.smartNearbyVendors) || mem.smartNearbyVendors.length === 0) {
+    mem.smartNearbyVendors = SEED_VENDORS.map((v) => ({ ...v }));
+  }
+  ensureArrays(mem);
+  if (!Array.isArray(mem.smartNearbyScanAlerts)) mem.smartNearbyScanAlerts = [];
+  if (!mem.smartNearbyScanSnapshots) mem.smartNearbyScanSnapshots = {};
 }
 
 function scheduleDispose() {
   if (idleTimer) clearTimeout(idleTimer);
   idleTimer = setTimeout(() => {
-    if (refCount === 0) dispose();
+    if (refCount === 0) dispose({ force: false });
   }, IDLE_MS);
   if (typeof idleTimer.unref === 'function') idleTimer.unref();
 }
@@ -81,6 +85,8 @@ function initStore() {
     ensureArrays(mem);
     active = true;
     LOG.info('[SmartMem] Initialized in-memory store');
+  } else {
+    ensureArrays(mem);
   }
   scheduleDispose();
   return mem;
@@ -96,12 +102,47 @@ function release() {
   if (refCount === 0) scheduleDispose();
 }
 
-function dispose() {
-  if (refCount > 0) return { disposed: false, reason: 'in_use' };
+function dispose(options = {}) {
+  const force = options === true || options?.force === true;
+  if (refCount > 0 && !force) return { disposed: false, reason: 'in_use' };
   const mem = getMem();
   if (!mem || !active) return { disposed: false, reason: 'not_active' };
 
+  if (!force) {
+    // Preserve vendor policies, undelivered messages, pending invites, and retained streams per vendor setting.
+    const hasUndeliveredMessages =
+      Array.isArray(mem.smartNearbyUndeliveredMessages) &&
+      mem.smartNearbyUndeliveredMessages.some((m) => !m.deliveredToUser);
+    const hasUndeliveredVoice =
+      Array.isArray(mem.smartNearbyVoiceStreams) &&
+      mem.smartNearbyVoiceStreams.some((v) => v.deliveredToVendor === false);
+    const hasUndeliveredCamera =
+      Array.isArray(mem.smartCameraLiveFrames) &&
+      mem.smartCameraLiveFrames.some((c) => c.deliveredToVendor === false);
+    const hasPendingInvites =
+      Array.isArray(mem.smartNearbyConnectInvites) &&
+      mem.smartNearbyConnectInvites.some((i) => i.status === 'pending');
+    const hasActiveGates =
+      Array.isArray(mem.smartNearbyGateSessions) &&
+      mem.smartNearbyGateSessions.some((g) => !g.disconnectedAt && g.inRange);
+
+    if (
+      hasUndeliveredMessages ||
+      hasUndeliveredVoice ||
+      hasUndeliveredCamera ||
+      hasPendingInvites ||
+      hasActiveGates
+    ) {
+      return {
+        disposed: false,
+        reason: 'retained_undelivered_or_active_data',
+      };
+    }
+  }
+
   STORE_KEYS.forEach((key) => {
+    if (key === 'smartNearbyPolicies' && !force) return;
+    if (key === 'smartNearbyVendors' && !force) return;
     if (Array.isArray(mem[key])) mem[key].length = 0;
   });
 
@@ -109,8 +150,10 @@ function dispose() {
     clearTimeout(idleTimer);
     idleTimer = null;
   }
-  active = false;
-  LOG.info('[SmartMem] Disposed in-memory store (all nearby data cleared)');
+  if (force) {
+    active = false;
+  }
+  LOG.info('[SmartMem] Disposed idle ephemeral buffers (policies & retained data preserved)');
   return { disposed: true };
 }
 

@@ -248,18 +248,28 @@ router.get('/session/status', authenticateToken, async (req, res) => {
 
 router.post('/voice/stream', authenticateToken, async (req, res) => {
   try {
-    const { vendorId, sessionId, text, final } = req.body || {};
+    const { vendorId, sessionId, text, final, capturedAt, at, forceRecord } = req.body || {};
     if (!vendorId || !text) {
       return res.status(400).json({ success: false, error: 'vendorId and text required' });
     }
+    const userId = req.user?.id || req.userId;
+    nearby.recordUserOnlinePresence(userId, vendorId);
     const entry = nearby.appendVoiceTranscript({
       vendorId,
       sessionId,
       text,
       final,
-      userId: req.user?.id || req.userId,
+      capturedAt: capturedAt || at || null,
+      forceRecord: forceRecord === true || forceRecord === 'true',
+      userId,
     });
-    res.json({ success: true, entry });
+    const policy = nearby.getVendorPolicy(vendorId);
+    res.json({
+      success: true,
+      entry,
+      recordingEnabled: policy.recordingEnabled !== false,
+      skipped: !entry && policy.recordingEnabled === false,
+    });
   } catch (err) {
     LOG.error('[Smart] voice stream error:', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -279,10 +289,15 @@ router.post('/camera/frame', authenticateToken, async (req, res) => {
       liveOnly,
       eventRule,
       eventLabel,
+      capturedAt,
+      at,
+      forceRecord,
     } = req.body || {};
     if (!vendorId || !imageBase64) {
       return res.status(400).json({ success: false, error: 'vendorId and imageBase64 required' });
     }
+    const userId = req.user?.id || req.userId;
+    nearby.recordUserOnlinePresence(userId, vendorId);
     const entry = await nearby.appendCameraLiveFrame({
       vendorId,
       sessionId,
@@ -294,13 +309,18 @@ router.post('/camera/frame', authenticateToken, async (req, res) => {
       liveOnly: liveOnly === true || liveOnly === 'true',
       eventRule: eventRule || null,
       eventLabel: eventLabel || null,
-      userId: req.user?.id || req.userId,
+      capturedAt: capturedAt || at || null,
+      forceRecord: forceRecord === true || forceRecord === 'true',
+      userId,
     });
+    const policy = nearby.getVendorPolicy(vendorId);
     res.json({
       success: true,
       entry: entry
         ? { id: entry.id, at: entry.at, mysqlPersisted: entry.mysqlPersisted === true }
         : null,
+      recordingEnabled: policy.recordingEnabled !== false,
+      skipped: !entry && policy.recordingEnabled === false,
     });
   } catch (err) {
     LOG.error('[Smart] camera frame error:', err.message);
@@ -325,6 +345,7 @@ router.get('/vendor/:vendorId/camera-live', authenticateToken, async (req, res) 
       frames,
       latest: frames[0] || null,
       policy: {
+        recordingEnabled: policy.recordingEnabled !== false,
         cameraAiEnabled: policy.cameraAiEnabled === true,
         cameraStreamIntervalSec: policy.cameraStreamIntervalSec ?? 30,
         customerCameraPreviewHidden: policy.customerCameraPreviewHidden !== false,
@@ -345,11 +366,13 @@ router.get('/vendor/:vendorId/voice-stream', authenticateToken, async (req, res)
       limit: parseInt(req.query.limit, 10) || 80,
       markDelivered: true,
     });
+    const policy = nearby.getVendorPolicy(vendorId);
     res.json({
       success: true,
       lines,
       count: lines.length,
-      bufferMs: 30000,
+      recordingEnabled: policy.recordingEnabled !== false,
+      bufferMs: (policy.cameraStreamIntervalSec ?? 30) * 1000,
     });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -364,12 +387,21 @@ router.post('/gate/connect', authenticateToken, async (req, res) => {
       return res.status(400).json({ success: false, error: 'vendorId and channel required' });
     }
     const userId = req.user?.id || req.userId;
-    const existing = nearby.getUserActiveGate(userId);
+    nearby.recordUserOnlinePresence(userId, vendorId);
+    const existing = nearby.getUserActiveGate(userId, { markOnline: true });
     if (existing) {
       if (!existing.vendorName && existing.vendorId) {
         existing.vendorName = nearby.resolveVendorDisplayName(existing.vendorId);
       }
-      return res.status(409).json({ success: false, error: 'Already connected on SGATE', session: existing });
+      const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, { markDelivered: true });
+      const remoteCommands = nearby.deliverPendingRemoteCommandsForUser(userId, { markDelivered: true });
+      return res.status(409).json({
+        success: false,
+        error: 'Already connected on SGATE',
+        session: existing,
+        undeliveredMessages,
+        remoteCommands,
+      });
     }
     const session = nearby.recordGateConnection({
       userId,
@@ -382,7 +414,15 @@ router.post('/gate/connect', authenticateToken, async (req, res) => {
       vendorSide,
       connectedAt,
     });
-    res.json({ success: true, session });
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, {
+      vendorId,
+      markDelivered: true,
+    });
+    const remoteCommands = nearby.deliverPendingRemoteCommandsForUser(userId, {
+      vendorId,
+      markDelivered: true,
+    });
+    res.json({ success: true, session, undeliveredMessages, remoteCommands });
   } catch (err) {
     LOG.error('[Smart] gate connect error:', err.message);
     res.status(500).json({ success: false, error: err.message });
@@ -395,11 +435,22 @@ router.post('/gate/heartbeat', authenticateToken, async (req, res) => {
     if (!sessionId) {
       return res.status(400).json({ success: false, error: 'sessionId required' });
     }
+    const userId = req.user?.id || req.userId;
     const session = nearby.updateGateHeartbeat(sessionId, { inRange, match, gateOpen, vendorListening });
     if (!session) {
+      nearby.recordUserOnlinePresence(userId);
       return res.status(404).json({ success: false, error: 'Gate session not found' });
     }
-    res.json({ success: true, session });
+    nearby.recordUserOnlinePresence(userId, session.vendorId);
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, {
+      vendorId: session.vendorId,
+      markDelivered: true,
+    });
+    const remoteCommands = nearby.deliverPendingRemoteCommandsForUser(userId, {
+      vendorId: session.vendorId,
+      markDelivered: true,
+    });
+    res.json({ success: true, session, undeliveredMessages, remoteCommands });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -424,11 +475,31 @@ router.post('/gate/disconnect', authenticateToken, async (req, res) => {
 router.get('/gate/status', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.userId;
-    const session = nearby.getUserActiveGate(userId);
+    const session = nearby.getUserActiveGate(userId, { markOnline: true });
     if (session && !session.vendorName && session.vendorId) {
       session.vendorName = nearby.resolveVendorDisplayName(session.vendorId);
     }
-    res.json({ success: true, session, connected: !!session });
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, { markDelivered: true });
+    const remoteCommands = nearby.deliverPendingRemoteCommandsForUser(userId, { markDelivered: true });
+    const pendingInvites = nearby.listPendingInvitesForUser(userId);
+    const mobileState = nearby.getUserMobileState(userId, session?.vendorId || null);
+    const vendorPolicy = nearby.getVendorPolicy(session?.vendorId || mobileState?.vendorId || 'v_smart1');
+    res.json({
+      success: true,
+      session,
+      connected: !!session,
+      undeliveredMessages,
+      remoteCommands,
+      pendingInvites,
+      mobileState,
+      vendorPolicy: {
+        vendorId: vendorPolicy.vendorId,
+        recordingEnabled: vendorPolicy.recordingEnabled !== false,
+        cameraStreamIntervalSec: vendorPolicy.cameraStreamIntervalSec ?? 30,
+        dataRetentionDays: vendorPolicy.dataRetentionDays ?? 1,
+        storeOfflineUntilOnline: vendorPolicy.storeOfflineUntilOnline !== false,
+      },
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -541,10 +612,261 @@ router.post('/vendor/:vendorId/connect-invite', authenticateToken, async (req, r
       message: invite.message,
       title: `${invite.vendorName} — connect on SGATE`,
     });
-    res.json({ success: true, invite });
+    res.json({ success: true, invite, userOnline: nearby.isUserOnline(target.id, vendorId) });
   } catch (err) {
     LOG.error('[Smart] connect-invite error:', err.message);
     res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+/** Vendor → user direct connect (bypasses proximity gate; auto-links if user is logged in, queues for online delivery if offline) */
+router.post('/vendor/:vendorId/direct-connect', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const body = req.body || {};
+    let target = nearby.findUserByTarget(body);
+    if (!target?.id && (body.mobile || body.email)) {
+      try {
+        const pool = typeof db.getPool === 'function' ? db.getPool() : null;
+        if (pool) {
+          const phone = String(body.mobile || '').replace(/\D/g, '').slice(-10);
+          const em = String(body.email || '').trim().toLowerCase();
+          let rows = [];
+          if (phone) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE REPLACE(mobile, " ", "") LIKE ? LIMIT 1',
+              [`%${phone}`]
+            );
+          } else if (em) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE LOWER(email) = ? LIMIT 1',
+              [em]
+            );
+          }
+          if (rows?.[0]) target = rows[0];
+        }
+      } catch (lookupErr) {
+        LOG.warning('[Smart] direct-connect user lookup:', lookupErr.message);
+      }
+    }
+    const userId = target?.id || body.userId;
+    if (!userId) {
+      return res.status(404).json({ success: false, error: 'User not found — enter valid customer mobile, email or user id' });
+    }
+    const userOnline = nearby.isUserOnline(userId, vendorId);
+    const session = nearby.directConnectVendorUser({
+      vendorId,
+      userId,
+      mobile: body.mobile || target?.mobile,
+      email: body.email || target?.email,
+      userDisplayName: target?.name || body.userDisplayName,
+      message: body.message,
+    });
+    try {
+      const notificationService = require('../services/notificationService');
+      await notificationService.notify('smart_connect_request', {
+        targetUserId: userId,
+        userId,
+        vendorId,
+        vendorName: session.vendorName,
+        sessionId: session.id,
+        message:
+          body.message ||
+          `${session.vendorName || 'Vendor'} connected directly for live mic & camera.`,
+        title: `${session.vendorName || 'Vendor'} connected`,
+      });
+    } catch (_) {}
+    res.json({
+      success: true,
+      session,
+      userOnline,
+      queuedForOnlineDelivery: !userOnline,
+    });
+  } catch (err) {
+    LOG.error('[Smart] direct-connect error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Vendor → user message stored per vendor retention policy until user is online */
+router.post('/vendor/:vendorId/message', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const body = req.body || {};
+    let target = nearby.findUserByTarget(body);
+    if (!target?.id && (body.mobile || body.email)) {
+      try {
+        const pool = typeof db.getPool === 'function' ? db.getPool() : null;
+        if (pool) {
+          const phone = String(body.mobile || '').replace(/\D/g, '').slice(-10);
+          const em = String(body.email || '').trim().toLowerCase();
+          let rows = [];
+          if (phone) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE REPLACE(mobile, " ", "") LIKE ? LIMIT 1',
+              [`%${phone}`]
+            );
+          } else if (em) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE LOWER(email) = ? LIMIT 1',
+              [em]
+            );
+          }
+          if (rows?.[0]) target = rows[0];
+        }
+      } catch (lookupErr) {
+        LOG.warning('[Smart] vendor message user lookup:', lookupErr.message);
+      }
+    }
+    const userId = target?.id || body.userId;
+    if (!userId) {
+      return res.status(404).json({ success: false, error: 'Target customer not found' });
+    }
+    if (!body.message || !String(body.message).trim()) {
+      return res.status(400).json({ success: false, error: 'message is required' });
+    }
+    const result = nearby.sendVendorMessageToUser({
+      vendorId,
+      userId,
+      title: body.title,
+      message: body.message,
+      payload: body.payload,
+    });
+    const entry = result?.item || result?.message || result;
+    const userOnline = result?.userOnline ?? nearby.isUserOnline(userId, vendorId);
+    try {
+      const notificationService = require('../services/notificationService');
+      await notificationService.notify('smart_vendor_message', {
+        targetUserId: userId,
+        userId,
+        vendorId,
+        vendorName: entry?.vendorName,
+        messageId: entry?.id,
+        message: entry?.message,
+        title: entry?.title,
+      });
+    } catch (_) {}
+    res.json({
+      success: true,
+      item: entry,
+      message: entry,
+      userOnline,
+      online: userOnline,
+    });
+  } catch (err) {
+    LOG.error('[Smart] vendor message error:', err.message);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/messages/undelivered', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const markDelivered = req.query.ack !== '0' && req.query.ack !== 'false';
+    const messages = nearby.deliverPendingMessagesForUser(userId, {
+      vendorId: req.query.vendorId || null,
+      markDelivered,
+    });
+    res.json({ success: true, messages, count: messages.length });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/messages/ack', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const { messageIds } = req.body || {};
+    const result = nearby.ackUndeliveredMessagesForUser(userId, messageIds || []);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+/** Vendor → user remote mobile control (wakes & operates user mobile from idle mode based on requirement) */
+router.post('/vendor/:vendorId/mobile-control', authenticateToken, async (req, res) => {
+  try {
+    const { vendorId } = req.params;
+    if (!denyUnlessVendor(req, res, vendorId)) return;
+    const body = req.body || {};
+    let target = nearby.findUserByTarget(body);
+    if (!target?.id && (body.mobile || body.email)) {
+      try {
+        const pool = typeof db.getPool === 'function' ? db.getPool() : null;
+        if (pool) {
+          const phone = String(body.mobile || '').replace(/\D/g, '').slice(-10);
+          const em = String(body.email || '').trim().toLowerCase();
+          let rows = [];
+          if (phone) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE REPLACE(mobile, " ", "") LIKE ? LIMIT 1',
+              [`%${phone}`]
+            );
+          } else if (em) {
+            [rows] = await pool.query(
+              'SELECT id, name, email, mobile FROM users WHERE LOWER(email) = ? LIMIT 1',
+              [em]
+            );
+          }
+          if (rows?.[0]) target = rows[0];
+        }
+      } catch (lookupErr) {
+        LOG.warning('[Smart] mobile-control user lookup:', lookupErr.message);
+      }
+    }
+    const userId = target?.id || body.userId;
+    if (!userId) {
+      return res.status(404).json({ success: false, error: 'Target customer not found' });
+    }
+    const result = nearby.sendVendorRemoteCommand({
+      vendorId,
+      userId,
+      mobile: body.mobile || target?.mobile,
+      email: body.email || target?.email,
+      command: body.command || body.action,
+      params: body.params || body.payload || {},
+    });
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (err) {
+    LOG.error('[Smart] mobile-control error:', err.message);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/mobile-control/pending', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const markDelivered = req.query.ack !== '0' && req.query.ack !== 'false';
+    const commands = nearby.deliverPendingRemoteCommandsForUser(userId, {
+      vendorId: req.query.vendorId || null,
+      markDelivered,
+    });
+    const mobileState = nearby.getUserMobileState(userId, req.query.vendorId || null);
+    res.json({
+      success: true,
+      commands,
+      count: commands.length,
+      mobileState,
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/mobile-control/ack', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user?.id || req.userId;
+    const { commandIds, mobileState } = req.body || {};
+    const result = nearby.ackUserRemoteCommands(userId, commandIds || [], mobileState || null);
+    res.json({ success: true, ...result });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -571,7 +893,11 @@ router.post('/connect/join', authenticateToken, async (req, res) => {
       userDisplayName: body.userDisplayName || req.user?.name || null,
       vendorId: body.vendorId || null,
     });
-    res.json({ success: true, ...result });
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, {
+      vendorId: result?.session?.vendorId || body.vendorId || null,
+      markDelivered: true,
+    });
+    res.json({ success: true, ...result, undeliveredMessages });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -580,8 +906,15 @@ router.post('/connect/join', authenticateToken, async (req, res) => {
 router.get('/connect-invites/pending', authenticateToken, async (req, res) => {
   try {
     const userId = req.user?.id || req.userId;
+    nearby.recordUserOnlinePresence(userId);
     const invites = nearby.listPendingInvitesForUser(userId);
-    res.json({ success: true, invites, count: invites.length });
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, { markDelivered: true });
+    res.json({
+      success: true,
+      invites,
+      count: invites.length,
+      undeliveredMessages,
+    });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
@@ -593,7 +926,11 @@ router.post('/connect-invites/:inviteId/accept', authenticateToken, async (req, 
     const result = nearby.acceptConnectInvite(req.params.inviteId, userId, {
       userDisplayName: req.body?.userDisplayName || req.user?.name || null,
     });
-    res.json({ success: true, ...result });
+    const undeliveredMessages = nearby.deliverPendingMessagesForUser(userId, {
+      vendorId: result?.session?.vendorId || null,
+      markDelivered: true,
+    });
+    res.json({ success: true, ...result, undeliveredMessages });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
