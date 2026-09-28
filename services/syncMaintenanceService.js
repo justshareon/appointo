@@ -100,6 +100,19 @@ async function runReleaseMaintenanceSteps(triggerSource = 'auto', { skipDrift = 
   }
 
   try {
+    const { syncSmartToMysql } = require('../syncSmartToMysql');
+    const smartSync = await syncSmartToMysql({ triggerSource: `maintenance:${triggerSource}` });
+    push(
+      'sync_smart_mysql',
+      smartSync?.ok !== false,
+      `items=${smartSync?.itemsSynced ?? 0} queries=${smartSync?.queriesSynced ?? 0}`,
+      { smartSync }
+    );
+  } catch (err) {
+    push('sync_smart_mysql', false, err.message);
+  }
+
+  try {
     const { syncSmartSettingsFromEnvAndValidate } = require('./smartSgateAdminService');
     const validation = await syncSmartSettingsFromEnvAndValidate();
     push(

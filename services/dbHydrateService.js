@@ -119,17 +119,15 @@ async function hydrateOnStartup() {
 
         let smartVendorRows = 0;
         try {
-            if (pool && (!mem.smartNearbyVendors || mem.smartNearbyVendors.length === 0)) {
-                const [rows] = await pool.query(
-                    `SELECT * FROM vendors WHERE features_smart = 1 OR features_smart = TRUE LIMIT 50`
-                );
-                if (rows?.length) {
-                    mem.smartNearbyVendors = rows.map((v) => ({ ...v, features_smart: true }));
-                    smartVendorRows = rows.length;
-                }
-            }
+            const { syncSmartToMysql } = require('../syncSmartToMysql');
+            const smartRes = await syncSmartToMysql({
+                hydrateOnly: true,
+                pool,
+                triggerSource: 'startup_hydrate',
+            });
+            smartVendorRows = Number(smartRes?.itemsSynced) || (mem.smartNearbyVendors?.length || 0);
         } catch (err) {
-            LOG.warning(`[Hydrate] SMART vendors pull skipped: ${err.message}`);
+            LOG.warning(`[Hydrate] SMART sync/pull skipped: ${err.message}`);
         }
 
         LOG.info(

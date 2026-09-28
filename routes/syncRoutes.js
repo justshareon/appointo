@@ -187,6 +187,25 @@ const setupSyncRoutes = (router) => {
         return syncProducts();
     }));
 
+    router.post('/orders', runEntitySync('orders', async () => {
+        const { syncOrders } = require('../syncAllToMysql');
+        return syncOrders();
+    }));
+
+    router.post('/smart', async (req, res) => {
+        try {
+            const { syncSmartToMysql } = require('../syncSmartToMysql');
+            const result = await syncSmartToMysql({
+                triggerSource: 'api_smart',
+                hydrateOnly: req.query.hydrateOnly === 'true' || req.body?.hydrateOnly === true,
+            });
+            res.json({ status: 'success', ...result });
+        } catch (err) {
+            LOG.error('[Sync API] /smart failed:', err.message);
+            res.status(500).json({ status: 'error', error: err.message });
+        }
+    });
+
     const runRecentSync = (defaultHours) => async (req, res) => {
         if (getCombinedSyncing()) {
             return res.status(409).json({

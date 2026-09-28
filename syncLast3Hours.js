@@ -569,7 +569,42 @@ async function hydrateFromMysqlRecent(pool) {
     LOG.warning(`[3h] hydrate trust_score projects: ${e.message}`);
   }
 
+  try {
+    const { syncSmartToMysql } = require('./syncSmartToMysql');
+    const smartRes = await syncSmartToMysql({
+      hydrateOnly: true,
+      pool,
+      triggerSource: 'recent_hydrate',
+    });
+    added += Number(smartRes?.itemsSynced) || 0;
+  } catch (e) {
+    LOG.warning(`[3h] hydrate smart: ${e.message}`);
+  }
+
   return added;
+}
+
+async function syncRecentSmart(pool) {
+  try {
+    const { syncSmartToMysql } = require('./syncSmartToMysql');
+    const res = await syncSmartToMysql({
+      pool,
+      triggerSource: 'recent_sync',
+    });
+    return Number(res?.itemsSynced) || 0;
+  } catch (e) {
+    LOG.warning(`[3h] smart sync fallback: ${e.message}`);
+    return 0;
+  }
+}
+
+async function safeRecentStep(label, fn) {
+  try {
+    return (await fn()) || 0;
+  } catch (err) {
+    LOG.warning(`[3h] Module "${label}" fallback (did not block other modules): ${err.message}`);
+    return 0;
+  }
 }
 
 async function runSyncLast3Hours({ hydrateOnly = false, hours } = {}) {
@@ -588,7 +623,7 @@ async function runSyncLast3Hours({ hydrateOnly = false, hours } = {}) {
 
     if (hydrateOnly) {
       LOG.info(`[Hydrate] Pulling last ${windowHours}h from MySQL into memory`);
-      const hydrated = await hydrateFromMysqlRecent(pool);
+      const hydrated = await safeRecentStep('hydrate', () => hydrateFromMysqlRecent(pool));
       return { hydrated, hours: windowHours };
     }
 
@@ -596,45 +631,47 @@ async function runSyncLast3Hours({ hydrateOnly = false, hours } = {}) {
     LOG.info(`═══ Last ${windowHours}h activity sync (memory ↔ MySQL) ═══`);
     LOG.info(`Cutoff: ${cutoffDate.toISOString()}`);
 
-    const hydrated = await hydrateFromMysqlRecent(pool);
+    const hydrated = await safeRecentStep('hydrate', () => hydrateFromMysqlRecent(pool));
 
-  const counts = {
-    users: await syncRecentUsers(pool),
-    vendors: await syncRecentVendors(pool),
-    mappings: await syncRecentMappings(pool),
-    products: await syncRecentProducts(pool),
-    appointments: await syncRecentAppointments(pool),
-    queues: await syncRecentQueues(pool),
-    orders: await syncRecentOrders(pool),
-    chat: await syncRecentChat(pool),
-    news_cache: await syncRecentNewsCache(pool),
-    r_detector: await syncRecentRDetector(pool),
-    suraksha: await syncRecentSuraksha(pool),
-    trust_score: await syncRecentTrustScore(pool),
-    hydrated,
-  };
+    const counts = {
+      users: await safeRecentStep('users', () => syncRecentUsers(pool)),
+      vendors: await safeRecentStep('vendors', () => syncRecentVendors(pool)),
+      mappings: await safeRecentStep('mappings', () => syncRecentMappings(pool)),
+      products: await safeRecentStep('products', () => syncRecentProducts(pool)),
+      appointments: await safeRecentStep('appointments', () => syncRecentAppointments(pool)),
+      queues: await safeRecentStep('queues', () => syncRecentQueues(pool)),
+      orders: await safeRecentStep('orders', () => syncRecentOrders(pool)),
+      chat: await safeRecentStep('chat', () => syncRecentChat(pool)),
+      news_cache: await safeRecentStep('news_cache', () => syncRecentNewsCache(pool)),
+      r_detector: await safeRecentStep('r_detector', () => syncRecentRDetector(pool)),
+      suraksha: await safeRecentStep('suraksha', () => syncRecentSuraksha(pool)),
+      trust_score: await safeRecentStep('trust_score', () => syncRecentTrustScore(pool)),
+      smart: await safeRecentStep('smart', () => syncRecentSmart(pool)),
+      hydrated,
+    };
 
-  const written =
-    counts.users +
-    counts.vendors +
-    counts.mappings +
-    counts.products +
-    counts.appointments +
-    counts.queues +
-    counts.orders +
-    counts.chat +
-    counts.news_cache +
-    counts.r_detector +
-    counts.suraksha +
-    counts.trust_score;
+    const written =
+      counts.users +
+      counts.vendors +
+      counts.mappings +
+      counts.products +
+      counts.appointments +
+      counts.queues +
+      counts.orders +
+      counts.chat +
+      counts.news_cache +
+      counts.r_detector +
+      counts.suraksha +
+      counts.trust_score +
+      counts.smart;
 
-  LOG.info('');
-  if (written === 0 && hydrated === 0) {
-    LOG.success(`Nothing missed in last ${windowHours}h — left as-is.`);
-  } else {
-    LOG.success(`Synced missed activity: ${JSON.stringify(counts)}`);
-  }
-  LOG.info('═══════════════════════════════════════════');
+    LOG.info('');
+    if (written === 0 && hydrated === 0) {
+      LOG.success(`Nothing missed in last ${windowHours}h — left as-is.`);
+    } else {
+      LOG.success(`Synced missed activity: ${JSON.stringify(counts)}`);
+    }
+    LOG.info('═══════════════════════════════════════════');
     return { ...counts, hours: windowHours };
   } finally {
     activeCutoffMs = savedCutoffMs;

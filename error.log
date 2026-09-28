@@ -4,3 +4,5 @@
 [2026-09-15T07:51:30.144Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
 [2026-09-15T07:51:35.607Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
 [2026-09-15T07:51:38.407Z] [ERROR] [RSS News] Fetch failed | Request failed with status code 403
+[2026-09-27T19:51:33.494Z] [WARN] [Trading Data Sync] Table ensure (non-fatal): | stockDataService.ensureTables is not a function
+[2026-09-28T06:26:17.090Z] [WARN] [Trading Data Sync] Table ensure (non-fatal): | stockDataService.ensureTables is not a function

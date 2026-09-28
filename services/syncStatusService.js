@@ -320,43 +320,55 @@ async function startRunFailedOnly(triggerSource = 'auto-failed-retry') {
 async function getModuleCheckpoint(moduleKey) {
     const pool = await getPool();
     if (!pool) return { status: 'PENDING', version: 0, queriesSynced: 0, itemsSynced: 0, totalItems: 0 };
-    await init();
-    const [rows] = await pool.query(
-        `SELECT status, version, queries_synced, items_synced, total_items
-         FROM sync_module_state WHERE module_key = ?`,
-        [moduleKey]
-    );
-    const r = rows[0] || {};
-    return {
-        status: r.status || 'PENDING',
-        version: r.version || 0,
-        queriesSynced: r.queries_synced || 0,
-        itemsSynced: r.items_synced || 0,
-        totalItems: r.total_items || 0,
-    };
+    try {
+        await init();
+        const [rows] = await pool.query(
+            `SELECT status, version, queries_synced, items_synced, total_items
+             FROM sync_module_state WHERE module_key = ?`,
+            [moduleKey]
+        );
+        const r = rows[0] || {};
+        return {
+            status: r.status || 'PENDING',
+            version: r.version || 0,
+            queriesSynced: r.queries_synced || 0,
+            itemsSynced: r.items_synced || 0,
+            totalItems: r.total_items || 0,
+        };
+    } catch (_) {
+        return { status: 'PENDING', version: 0, queriesSynced: 0, itemsSynced: 0, totalItems: 0 };
+    }
 }
 
 async function markInProgress(moduleKey, runId) {
     const pool = await getPool();
     if (!pool) return;
-    await pool.query(
-        `UPDATE sync_module_state
-         SET status = 'IN_PROGRESS', last_run_id = ?, last_started_at = NOW(), last_error = NULL
-         WHERE module_key = ?`,
-        [runId, moduleKey]
-    );
+    try {
+        await pool.query(
+            `UPDATE sync_module_state
+             SET status = 'IN_PROGRESS', last_run_id = ?, last_started_at = NOW(), last_error = NULL
+             WHERE module_key = ?`,
+            [runId, moduleKey]
+        );
+    } catch (_) {
+        /* non-fatal status update */
+    }
 }
 
 async function updateProgress(moduleKey, { version = 0, queriesSynced = 0, itemsSynced = 0, totalItems = 0 } = {}) {
     const pool = await getPool();
     if (!pool) return;
-    await pool.query(
-        `UPDATE sync_module_state
-         SET version = ?, queries_synced = ?, items_synced = ?,
-             total_items = CASE WHEN ? > 0 THEN ? ELSE total_items END
-         WHERE module_key = ?`,
-        [version, queriesSynced, itemsSynced, totalItems, totalItems, moduleKey]
-    );
+    try {
+        await pool.query(
+            `UPDATE sync_module_state
+             SET version = ?, queries_synced = ?, items_synced = ?,
+                 total_items = CASE WHEN ? > 0 THEN ? ELSE total_items END
+             WHERE module_key = ?`,
+            [version, queriesSynced, itemsSynced, totalItems, totalItems, moduleKey]
+        );
+    } catch (_) {
+        /* non-fatal progress update */
+    }
 }
 
 async function markSuccess(moduleKey, {
@@ -365,38 +377,50 @@ async function markSuccess(moduleKey, {
 } = {}) {
     const pool = await getPool();
     if (!pool) return;
-    await pool.query(
-        `UPDATE sync_module_state
-         SET status = 'SUCCESS', items_synced = ?, version = ?, queries_synced = ?,
-             total_items = CASE WHEN ? > 0 THEN ? ELSE total_items END,
-             last_completed_at = NOW(), last_duration_ms = ?, last_error = NULL, last_run_id = ?
-         WHERE module_key = ?`,
-        [itemsSynced, version, queriesSynced, totalItems, totalItems, durationMs, runId, moduleKey]
-    );
-    if (runId) {
+    try {
         await pool.query(
-            `UPDATE sync_runs
-             SET completed_modules = completed_modules + 1,
-                 items_synced = items_synced + ?,
-                 queries_synced = queries_synced + ?
-             WHERE id = ?`,
-            [itemsSynced, queriesSynced, runId]
+            `UPDATE sync_module_state
+             SET status = 'SUCCESS', items_synced = ?, version = ?, queries_synced = ?,
+                 total_items = CASE WHEN ? > 0 THEN ? ELSE total_items END,
+                 last_completed_at = NOW(), last_duration_ms = ?, last_error = NULL, last_run_id = ?
+             WHERE module_key = ?`,
+            [itemsSynced, version, queriesSynced, totalItems, totalItems, durationMs, runId, moduleKey]
         );
+    } catch (_) {
+        /* non-fatal */
+    }
+    if (runId) {
+        try {
+            await pool.query(
+                `UPDATE sync_runs
+                 SET completed_modules = completed_modules + 1,
+                     items_synced = items_synced + ?,
+                     queries_synced = queries_synced + ?
+                 WHERE id = ?`,
+                [itemsSynced, queriesSynced, runId]
+            );
+        } catch (_) {
+            /* non-fatal */
+        }
     }
 }
 
 async function markSkipped(moduleKey, runId) {
     const pool = await getPool();
     if (!pool) return;
-    await pool.query(
-        `UPDATE sync_module_state SET status = 'SKIPPED', last_run_id = ? WHERE module_key = ?`,
-        [runId, moduleKey]
-    );
-    if (runId) {
+    try {
         await pool.query(
-            `UPDATE sync_runs SET completed_modules = completed_modules + 1 WHERE id = ?`,
-            [runId]
+            `UPDATE sync_module_state SET status = 'SKIPPED', last_run_id = ? WHERE module_key = ?`,
+            [runId, moduleKey]
         );
+        if (runId) {
+            await pool.query(
+                `UPDATE sync_runs SET completed_modules = completed_modules + 1 WHERE id = ?`,
+                [runId]
+            );
+        }
+    } catch (_) {
+        /* non-fatal */
     }
 }
 
@@ -409,29 +433,37 @@ async function markFailed(moduleKey, { error = '', durationMs = 0, version = 0, 
     } catch (_) {
         /* ignore */
     }
-    await pool.query(
-        `UPDATE sync_module_state
-         SET status = 'FAILED', last_completed_at = NOW(), last_duration_ms = ?,
-             last_error = ?, last_run_id = ?,
-             version = CASE WHEN ? > 0 THEN ? ELSE version END,
-             queries_synced = CASE WHEN ? > 0 THEN ? ELSE queries_synced END
-         WHERE module_key = ?`,
-        [durationMs, String(error).slice(0, 2000), runId, version, version, queriesSynced, queriesSynced, moduleKey]
-    );
-    if (runId) {
-        await pool.query(`UPDATE sync_runs SET failed_modules = failed_modules + 1 WHERE id = ?`, [runId]);
+    try {
+        await pool.query(
+            `UPDATE sync_module_state
+             SET status = 'FAILED', last_completed_at = NOW(), last_duration_ms = ?,
+                 last_error = ?, last_run_id = ?,
+                 version = CASE WHEN ? > 0 THEN ? ELSE version END,
+                 queries_synced = CASE WHEN ? > 0 THEN ? ELSE queries_synced END
+             WHERE module_key = ?`,
+            [durationMs, String(error).slice(0, 2000), runId, version, version, queriesSynced, queriesSynced, moduleKey]
+        );
+        if (runId) {
+            await pool.query(`UPDATE sync_runs SET failed_modules = failed_modules + 1 WHERE id = ?`, [runId]);
+        }
+    } catch (_) {
+        /* non-fatal */
     }
 }
 
 async function completeRun(runId, { success = true, totalSynced = 0, queriesSynced = 0, error = null } = {}) {
     const pool = await getPool();
     if (!pool || !runId) return;
-    await pool.query(
-        `UPDATE sync_runs
-         SET status = ?, items_synced = ?, queries_synced = ?, error_message = ?, completed_at = NOW()
-         WHERE id = ?`,
-        [success ? 'SUCCESS' : 'FAILED', totalSynced, queriesSynced, error, runId]
-    );
+    try {
+        await pool.query(
+            `UPDATE sync_runs
+             SET status = ?, items_synced = ?, queries_synced = ?, error_message = ?, completed_at = NOW()
+             WHERE id = ?`,
+            [success ? 'SUCCESS' : 'FAILED', totalSynced, queriesSynced, error, runId]
+        );
+    } catch (_) {
+        /* non-fatal */
+    }
 }
 
 function normalizeResult(result) {
