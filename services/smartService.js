@@ -38,8 +38,10 @@ const DEFAULT_POLICY = {
   recordingEnabled: true,
   /** true = event recordings + live preview; false = live stream only (no Recent gallery) */
   cameraAiEnabled: defaultCameraAiEnabled(),
-  /** true = customer does not see their own CSCAN preview (vendor-only view) */
-  customerCameraPreviewHidden: true,
+  /** false = customer sees their own CSCAN preview; true = hidden on customer screen (vendor-only view) */
+  customerCameraPreviewHidden: false,
+  /** false = customer sees live voice data preview on their screen first; true = hidden on customer screen, records in background for vendor only */
+  customerVoicePreviewHidden: false,
   /** contain = full frame; cover = crop fill (vendor display hint — client may ignore) */
   vendorCameraFit: 'contain',
   /** Seconds between live camera frames (5 | 30 | 60) — vendor sets load vs freshness */
@@ -418,6 +420,8 @@ function attachStreamPolicyToSession(session) {
       dataRetentionDays: retentionDays,
       storeOfflineUntilOnline: policy.storeOfflineUntilOnline !== false,
       cameraAiEnabled: policy.cameraAiEnabled === true,
+      customerCameraPreviewHidden: policy.customerCameraPreviewHidden !== false,
+      customerVoicePreviewHidden: policy.customerVoicePreviewHidden === true,
     },
   };
 }
@@ -439,6 +443,18 @@ function setVendorPolicy(vendorId, patch = {}) {
       merged.recordingEnabled !== false &&
       merged.recordingEnabled !== 'false' &&
       merged.recordingEnabled !== 0;
+  }
+  if (merged.customerCameraPreviewHidden != null) {
+    merged.customerCameraPreviewHidden =
+      merged.customerCameraPreviewHidden === true ||
+      merged.customerCameraPreviewHidden === 'true' ||
+      merged.customerCameraPreviewHidden === 1;
+  }
+  if (merged.customerVoicePreviewHidden != null) {
+    merged.customerVoicePreviewHidden =
+      merged.customerVoicePreviewHidden === true ||
+      merged.customerVoicePreviewHidden === 'true' ||
+      merged.customerVoicePreviewHidden === 1;
   }
   const nowIso = new Date().toISOString();
   const next = {
